@@ -1,8 +1,10 @@
 *.csv
 *.fits
 *.vscode
-
-
+*.png
+*.txt
+*.fits
+*.dat
 # History files
 .Rhistory
 .Rapp.history

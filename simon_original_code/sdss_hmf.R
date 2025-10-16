@@ -282,7 +282,7 @@ phimrp <- A / factor
 #
 # Prime sdss with zmax and vmax values using multi+1 member
 #
-sdssgalsx <- Rfits_read_table("/Users/sdriver/Drpbx/active/hmf/sdssdr10table1.fits", ext = 2)
+sdssgalsx <- Rfits_read_table("../data/sdssdr10table1.fits", ext = 2)
 names(sdssgalsx)[6] <- "rank"
 names(sdssgalsx)[9] <- "redshift"
 names(sdssgalsx)[31] <- "absmag_r"
@@ -291,7 +291,7 @@ sdssgals <- sdssgalsx[rank == multi & redshift < zlimitsdss + 0.05, c("idcl", "r
 sdssgals$dmax <- 10^(0.2 * (17.77 - sdssgals$absmag_r - 25 - 1.5 * log10(1 + sdssgals$redshift)))
 #
 #
-sdssx <- Rfits_read_table("/Users/sdriver/Drpbx/active/hmf/sdssdr10table2.fits", ext = 2)
+sdssx <- Rfits_read_table("../data/sdssdr10table2.fits", ext = 2)
 names(sdssx)[10] <- "zcl"
 names(sdssx)[2] <- "nrich"
 names(sdssx)[15] <- "mass"
@@ -342,7 +342,7 @@ sdsshmf2 <- weighted.hist(log10(sdss$mass), w = 1 / sdss$weightszlimit, breaks =
 # cosvariance[is.na(cosvariance)]=0
 cosvariance <- cosvar(volumesdss, 1)
 #
-png(filename = paste0("/Users/sdriver/Drpbx/active/hmf/sdsshmf", multi, ".png"), width = 18.0, height = 12.0, units = "cm", res = 240)
+png(filename = paste0("sdsshmf", multi, ".png"), width = 18.0, height = 12.0, units = "cm", res = 240)
 #
 par(fig = c(0, 1, 0.8, 1), mar = c(0, 3.35, 0.25, 0.25), oma = c(0, 0, 0, 0))
 magplot(sdsshmf$mids - 0.5 * logbin, sdsshmf$counts, xlim = c(12, 16), grid = FALSE, type = "s", ylab = "N", majorn = c(5, 2), labels = c(0, 1))
@@ -405,7 +405,7 @@ sdssf[is.na(sdssf)] <- 0.9999
 sdssf[is.infinite(sdssf)] <- 0.0
 sdssf <- ifelse(sdssf >= 1.0, 0.9999, sdssf)
 #
-elmo14 <- fread("/Users/sdriver/Drpbx/active/hmf/elmo.csv")
+elmo14 <- fread("../data/elmo.csv")
 elmo14$V1 <- elmo14$V1 + 10.0 + log10(100 / ho)
 elmo14$V2 <- 1.0 * elmo14$V2 * (ho / 100)^3
 elmo14$V3 <- 1.0 * elmo14$V3 * (ho / 100)^3
@@ -477,11 +477,11 @@ tmp <- dev.off()
 # write
 #
 sdsstable <- paste(rev(sdssx), rev(round(sdsshmf$counts, 3)), rev(round(log10(sdsshmf2$counts), 3)), rev(round(log10(sdssy), 3)), rev(round(rootnerr, 3)), rev(round(mcerr, 3)), rev(round(cosvariance, 3)), rev(round(sdssf, 3)), sep = " $&$ ")
-write(sdsstable, file = paste0("/Users/sdriver/Drpbx/active/hmf/sdsstable", multi, ".txt"), append = FALSE)
+write(sdsstable, file = paste0("sdsstable", multi, ".txt"), append = FALSE)
 sdsstable2 <- as.data.frame(cbind(rev(sdssx), rev(sdsshmf$counts), rev(log10(sdsshmf2$counts)), rev(log10(sdssy)), rev(rootnerr), rev(mcerr), rev(cosvariance), rev(sdssf)))
-write.csv(sdsstable2, paste0("/Users/sdriver/Drpbx/active/hmf/sdsshmf", multi, ".csv"), row.names = FALSE)
+write.csv(sdsstable2, paste0("sdsshmf", multi, ".csv"), row.names = FALSE)
 #
-png(filename = paste0("/Users/sdriver/Drpbx/active/hmf/sdsscov", multi, ".png"), width = 16.0, height = 16.0, units = "cm", res = 240)
+png(filename = paste0("sdsscov", multi, ".png"), width = 16.0, height = 16.0, units = "cm", res = 240)
 par(mar = c(3, 3.5, 0.25, 0.25), oma = c(0, 0, 0, 0))
 params <- cbind(mstar[!is.na(mstar)], log10(phistar[!is.na(mstar)]), alphastar[!is.na(mstar)], betastar[!is.na(mstar)])
 fitvals <- mymagtri(params,

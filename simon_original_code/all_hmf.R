@@ -293,12 +293,12 @@ if (myoption == "Omega") {
 #
 # Read in data
 #
-reflex <- fread("/Users/sdriver/Drpbx/active/hmf/reflex.csv")
-reflex2 <- fread("/Users/sdriver/Drpbx/active/hmf/reflex2.csv")
-tpigg <- fread("/Users/sdriver/Drpbx/active/hmf/tpigg.dat", sep = " ", data.table = FALSE)
-gama <- fread("/Users/sdriver/Drpbx/active/hmf/gamahmfGAMA5.csv", sep = ",", data.table = FALSE)
+reflex <- fread("../data/reflex.csv")
+reflex2 <- fread("../data/reflex2.csv")
+tpigg <- fread("../data/tpigg.dat", sep = " ", data.table = FALSE)
+gama <- fread("../gamahmfGAMA5.csv", sep = ",", data.table = FALSE)
 gama <- gama[gama$V1 > 12.7 & !is.infinite(gama$V4), ]
-sdss <- fread("/Users/sdriver/Drpbx/active/hmf/sdsshmf5.csv", sep = ",", data.table = FALSE)
+sdss <- fread("./sdsshmf5.csv", sep = ",", data.table = FALSE)
 sdss <- sdss[sdss$V1 > 12.9 & !is.infinite(sdss$V4), ]
 #
 # New HMF
@@ -314,7 +314,7 @@ phimrp <- A / factor
 #
 # Plot combined HMF
 #
-png(filename = paste0("/Users/sdriver/Drpbx/active/hmf/allhmf", myoption, ".png"), width = 20.0, height = 12.0, units = "cm", res = 240)
+png(filename = paste0("./allhmf", myoption, ".png"), width = 20.0, height = 12.0, units = "cm", res = 240)
 par(fig = c(0, 1, 0, 1), mar = c(3, 3.5, 0.25, 0.25), oma = c(0, 0, 0, 0))
 magplot(0, 0, xlim = c(12.75, 16), ylim = c(-8, -2), unlog = "xy", xlab = expression("Halo Mass (M"["\u0298"] ~ ")"), ylab = expression("log"[10] ~ "(number density) [Mpc"^-3 ~ "dex"^-1 ~ "]"))
 # lines(mrpx,log10(mrpy)-log10(factor),lty=2,lwd=2)
@@ -346,7 +346,7 @@ tpigg$do <- tpigg$V4
 #
 # SDSS DR10
 #
-elmo14 <- fread("/Users/sdriver/Drpbx/active/hmf/elmo.csv")
+elmo14 <- fread("./elmo.csv")
 elmo14$V1 <- elmo14$V1 + 10.0 + log10(100 / ho)
 elmo14$V2 <- elmo14$V2 * (ho / 100)^3
 elmo14$V3 <- elmo14$V3 * (ho / 100)^3
@@ -538,7 +538,7 @@ text(0.9, 0.575 * max(info$counts), paste0("-", signif(do, 2), pos = 4), cex = 0
 
 tmp <- dev.off()
 #
-png(filename = paste0("/Users/sdriver/Drpbx/active/hmf/allcov", myoption, ".png"), width = 16.0, height = 16.0, units = "cm", res = 240)
+png(filename = paste0("./allcov", myoption, ".png"), width = 16.0, height = 16.0, units = "cm", res = 240)
 par(mar = c(3, 3.5, 0.25, 0.25), oma = c(0, 0, 0, 0))
 params <- cbind(mstar[!is.na(mstar)], log10(phistar[!is.na(mstar)]), alphastar[!is.na(mstar)], betastar[!is.na(mstar)])
 fitvals <- mymagtri(params,

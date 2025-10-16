@@ -173,8 +173,8 @@ z_max <- 0.1
 
 # ---- Comoving-volume function ----
 comoving_volume <- function(z) {
-  celestial::cosdist(z, h0 = h0, OmegaM = omega_m,
-                     OmegaL = omega_l, type = "CoVol")
+  celestial::cosdist(z, H0 = h0, OmegaM = omega_m,
+                     OmegaL = omega_l)$CoVol
 }
 
 # Volume between z_min and z_max, corrected for survey area
@@ -186,19 +186,19 @@ cat(sprintf("Survey comoving volume = %.3e Mpc³\n", volume_sdss))
 # ============================================================
 
 cat("Loading SDSS group and galaxy catalogues...\n")
-sdss_galaxies <- Rfits_read_table("sdssdr10table1.fits", ext = 2)$imDat
-sdss_groups   <- Rfits_read_table("sdssdr10table2.fits", ext = 2)$imDat
+sdss_galaxies <- Rfits_read_table("data/sdssdr10table1.fits", ext = 2)
+sdss_groups   <- Rfits_read_table("data/sdssdr10table2.fits", ext = 2)
 
 # ---- Rename columns for clarity ----
-names(sdss_groups)[names(sdss_groups) == "idcl"] <- "group_id"
-names(sdss_groups)[names(sdss_groups) == "nrich"] <- "n_rich"
-names(sdss_groups)[names(sdss_groups) == "mass"] <- "mass"
-names(sdss_groups)[names(sdss_groups) == "zcl"]  <- "z_cl"
+names(sdss_groups)[1] <- "group_id"
+names(sdss_groups)[2] <- "n_rich"
+names(sdss_groups)[15] <- "mass"
+names(sdss_groups)[10] <- "z_cl"
 
-names(sdss_galaxies)[names(sdss_galaxies) == "idcl"] <- "group_id"
-names(sdss_galaxies)[names(sdss_galaxies) == "rank"] <- "rank"
-names(sdss_galaxies)[names(sdss_galaxies) == "redshift"] <- "z"
-names(sdss_galaxies)[names(sdss_galaxies) == "absmag_r"] <- "abs_mag_r"
+names(sdss_galaxies)[4] <- "group_id"
+names(sdss_galaxies)[6] <- "rank"
+names(sdss_galaxies)[9] <- "z"
+names(sdss_galaxies)[31] <- "abs_mag_r"
 
 # ============================================================
 # 6.  Compute Detection Limits and Volumes
@@ -212,7 +212,7 @@ calc_dmax <- function(abs_mag) {
 }
 
 sdss_galaxies$dmax <- calc_dmax(sdss_galaxies$abs_mag_r)
-sdss_galaxies$zmax <- celestial::cosdist(sdss_galaxies$dmax, type = "dist2z")
+sdss_galaxies$zmax <- celestial::cosdist(sdss_galaxies$dmax)
 
 # Merge galaxy- and group-level info
 sdss <- merge(sdss_galaxies, sdss_groups, by = "group_id")
