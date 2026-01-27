@@ -59,14 +59,11 @@ fn read_galaxies(
     selected_df
 }
 
-// fn get_max_redshifts_for_groups(multiplicity: u32, galaxy_df: &DataFrame, group_df: &DataFrame) -> DataFrame {
-//     let mut zmax = Vec::with_capacity()
-// }
-
 fn main() {
     // Read in the group and galaxy data.
     let galaxy_file_name = "/Users/00115372/refactoring_simons_code/galaxies.parquet";
     let group_file_name = "/Users/00115372/refactoring_simons_code/groups.parquet";
+    let multiplicity = 4;
     let cosmo = Cosmology {
         h0: 70.,
         omega_m: 0.3,
@@ -98,6 +95,21 @@ fn main() {
 
     let galaxy_z_max = Series::new("zmax".into(), z_max_values);
     galaxies.with_column(galaxy_z_max).unwrap();
+    let result = galaxies
+        .clone()
+        .lazy()
+        .group_by([col("group_id")])
+        .agg([col("zmax")
+            .sort(SortOptions::default().with_order_descending(true))
+            .get(
+                when(col("zmax").len().gt(lit(multiplicity)))
+                    .then(lit(multiplicity - 1))
+                    .otherwise(col("zmax").len() - lit(1)),
+            )
+            .alias("group_zmax")])
+        .collect()
+        .unwrap();
+    println!("{:?}", result);
 
     //TODO: Determine the maximum redshift for each group.
     //TODO: Calculate the volumes for each group.
