@@ -50,6 +50,7 @@ fn read_galaxies(
     group_id_column: &str,
 ) -> DataFrame {
     let data_frame = read_parquet(file_name).expect("Can't parse the Galaxy data.");
+
     let mut selected_df = data_frame
         .select([redshift_column, apparent_mag_colummn, group_id_column])
         .unwrap();
@@ -57,6 +58,22 @@ fn read_galaxies(
         .set_column_names(vec!["redshift", "apparent_mag", "group_id"])
         .unwrap();
     selected_df
+}
+
+fn get_group_zmax(multiplicity: u32, galaxies: DataFrame) -> Result<DataFrame, PolarsError> {
+    galaxies
+        .clone()
+        .lazy()
+        .group_by([col("group_id")])
+        .agg([col("zmax")
+            .sort(SortOptions::default().with_order_descending(true))
+            .get(
+                when(col("zmax").len().gt(lit(multiplicity)))
+                    .then(lit(multiplicity - 1))
+                    .otherwise(col("zmax").len() - lit(1)),
+            )
+            .alias("group_zmax")])
+        .collect()
 }
 
 fn main() {
@@ -71,7 +88,7 @@ fn main() {
         omega_l: 0.7,
     };
     let apparent_mag_lim = 19.8;
-    let groups = read_groups(group_file_name, "GroupID", "Zfof", "Nfof", "MassAfunc");
+    let mut groups = read_groups(group_file_name, "GroupID", "Zfof", "Nfof", "MassAfunc");
     let mut galaxies = read_galaxies(galaxy_file_name, "Z", "Rpetro", "GroupID");
     let redshifts: Vec<f64> = galaxies
         .column("redshift")
@@ -95,21 +112,18 @@ fn main() {
 
     let galaxy_z_max = Series::new("zmax".into(), z_max_values);
     galaxies.with_column(galaxy_z_max).unwrap();
-    let result = galaxies
-        .clone()
+    let group_z_maxes = get_group_zmax(multiplicity, galaxies).unwrap();
+    groups = groups
         .lazy()
-        .group_by([col("group_id")])
-        .agg([col("zmax")
-            .sort(SortOptions::default().with_order_descending(true))
-            .get(
-                when(col("zmax").len().gt(lit(multiplicity)))
-                    .then(lit(multiplicity - 1))
-                    .otherwise(col("zmax").len() - lit(1)),
-            )
-            .alias("group_zmax")])
+        .join(
+            group_z_maxes.lazy(),
+            [col("group_id")],
+            [col("group_id")],
+            JoinArgs::new(JoinType::Left),
+        )
         .collect()
         .unwrap();
-    println!("{:?}", result);
+    println!("{:?}", groups)
 
     //TODO: Determine the maximum redshift for each group.
     //TODO: Calculate the volumes for each group.
