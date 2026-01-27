@@ -85,9 +85,10 @@ fn main() {
         .unwrap()
         .into_no_null_iter()
         .collect();
-    let z_max_values = redshifts.iter().zip(apparent_mags.iter()).map(|&z, &mag| {
-        calculate_max_redshift(z, mag, apparent_mag_lim, &cosmo)
-    })
+    let z_max_values = redshifts
+        .iter()
+        .zip(apparent_mags.iter())
+        .map(|(&z, &mag)| calculate_max_redshift(z, mag, apparent_mag_lim, &cosmo));
 
     //let galaxy_z_max = Series::new("zmax", calculate_max_redshift(, apparent_mag, apparent_mag_lim, cosmo))
 
