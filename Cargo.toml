@@ -1,0 +1,9 @@
+[package]
+name = "hmf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cosmoxide = "0.1.1"
+polars = {version = "0.46.0", features=["parquet", "csv",  "dtype-i16"]}
+tempfile = "3.24.0"
