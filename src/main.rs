@@ -28,16 +28,17 @@ fn read_parquet(file_name: &str) -> PolarsResult<DataFrame> {
 
 fn read_groups(
     file_name: &str,
+    group_id_column: &str,
     redshift_column: &str,
     multi_column: &str,
     mass_column: &str,
 ) -> DataFrame {
     let data_frame = read_parquet(file_name).expect("Can't parse Group parquet file");
     let mut selected_df = data_frame
-        .select([redshift_column, multi_column, mass_column])
+        .select([group_id_column, redshift_column, multi_column, mass_column])
         .expect("Column names not found");
     selected_df
-        .set_column_names(vec!["redshift", "multiplicity", "mass"])
+        .set_column_names(vec!["group_id", "redshift", "multiplicity", "mass"])
         .unwrap();
     selected_df
 }
@@ -58,6 +59,10 @@ fn read_galaxies(
     selected_df
 }
 
+// fn get_max_redshifts_for_groups(multiplicity: u32, galaxy_df: &DataFrame, group_df: &DataFrame) -> DataFrame {
+//     let mut zmax = Vec::with_capacity()
+// }
+
 fn main() {
     // Read in the group and galaxy data.
     let galaxy_file_name = "/Users/00115372/refactoring_simons_code/galaxies.parquet";
@@ -69,8 +74,8 @@ fn main() {
         omega_l: 0.7,
     };
     let apparent_mag_lim = 19.8;
-    let groups = read_groups(group_file_name, "Zfof", "Nfof", "MassAfunc");
-    let galaxies = read_galaxies(galaxy_file_name, "Z", "Rpetro", "GroupID");
+    let groups = read_groups(group_file_name, "GroupID", "Zfof", "Nfof", "MassAfunc");
+    let mut galaxies = read_galaxies(galaxy_file_name, "Z", "Rpetro", "GroupID");
     let redshifts: Vec<f64> = galaxies
         .column("redshift")
         .unwrap()
@@ -85,12 +90,14 @@ fn main() {
         .unwrap()
         .into_no_null_iter()
         .collect();
-    let z_max_values = redshifts
+    let z_max_values: Vec<f64> = redshifts
         .iter()
         .zip(apparent_mags.iter())
-        .map(|(&z, &mag)| calculate_max_redshift(z, mag, apparent_mag_lim, &cosmo));
+        .map(|(&z, &mag)| calculate_max_redshift(z, mag, apparent_mag_lim, &cosmo))
+        .collect();
 
-    //let galaxy_z_max = Series::new("zmax", calculate_max_redshift(, apparent_mag, apparent_mag_lim, cosmo))
+    let galaxy_z_max = Series::new("zmax".into(), z_max_values);
+    galaxies.with_column(galaxy_z_max).unwrap();
 
     //TODO: Determine the maximum redshift for each group.
     //TODO: Calculate the volumes for each group.
@@ -145,6 +152,7 @@ mod tests {
             "group_mass" => &[1e12, 2e12],
             "junk" => &[42, 43],
             "n_members" => &[3, 5],
+            "GroupID" => &[1001, 1002]
         )
         .unwrap();
 
@@ -156,21 +164,29 @@ mod tests {
         ParquetWriter::new(&mut f).finish(&mut df).unwrap();
 
         // Run function under test
-        let out = read_groups(path, "z_obs", "n_members", "group_mass");
+        let out = read_groups(path, "GroupID", "z_obs", "n_members", "group_mass");
 
         // Assert shape
-        assert_eq!(out.shape(), (2, 3));
+        assert_eq!(out.shape(), (2, 4));
 
         // Assert renamed columns
         assert_eq!(
             out.get_column_names(),
-            &["redshift", "multiplicity", "mass"]
+            &["group_id", "redshift", "multiplicity", "mass"]
         );
 
         // Assert values survived correctly
         assert_eq!(
             out.column("redshift").unwrap().f64().unwrap().get(0),
             Some(0.1)
+        );
+        assert_eq!(
+            out.column("mass").unwrap().f64().unwrap().get(0),
+            Some(1e12)
+        );
+        assert_eq!(
+            out.column("group_id").unwrap().i32().unwrap().get(0),
+            Some(1001)
         );
         assert_eq!(
             out.column("multiplicity").unwrap().i32().unwrap().get(1),
