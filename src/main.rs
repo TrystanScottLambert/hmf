@@ -2,6 +2,7 @@ use cosmoxide::Cosmology;
 use polars::prelude::*;
 use polars::{error::PolarsResult, frame::DataFrame, prelude::ParquetReader};
 use std::fs::File;
+use std::panic::panic_any;
 
 fn calculate_max_redshift(
     redshift: f64,
@@ -81,12 +82,15 @@ fn main() {
     let galaxy_file_name = "/Users/00115372/refactoring_simons_code/galaxies.parquet";
     let group_file_name = "/Users/00115372/refactoring_simons_code/groups.parquet";
     let multiplicity = 4;
+    let zmin = 0.015;
+    let fractional_area = 0.004361383875261386;
     let cosmo = Cosmology {
         h0: 70.,
         omega_m: 0.3,
         omega_k: 0.,
         omega_l: 0.7,
     };
+    let min_volume = cosmo.comoving_volume(zmin);
     let apparent_mag_lim = 19.8;
     let mut groups = read_groups(group_file_name, "GroupID", "Zfof", "Nfof", "MassAfunc");
     let mut galaxies = read_galaxies(galaxy_file_name, "Z", "Rpetro", "GroupID");
@@ -123,6 +127,23 @@ fn main() {
                                             // overlapping groups allowed.
         )
         .collect()
+        .unwrap();
+    let zmaxes = groups
+        .column("group_zmax")
+        .unwrap()
+        .as_series()
+        .unwrap()
+        .f64()
+        .unwrap();
+    let max_volumes: Vec<f64> = zmaxes
+        .into_iter()
+        .map(|x| match x {
+            Some(x) => fractional_area * (cosmo.comoving_volume(x) - min_volume),
+            None => panic!("This value is not correct!!!"),
+        })
+        .collect();
+    groups
+        .with_column(Series::new("vmax".into(), max_volumes))
         .unwrap();
 
     //TODO: Calculate the volumes for each group.
