@@ -2,7 +2,6 @@ use cosmoxide::Cosmology;
 use polars::prelude::*;
 use polars::{error::PolarsResult, frame::DataFrame, prelude::ParquetReader};
 use std::fs::File;
-use std::panic::panic_any;
 
 fn calculate_max_redshift(
     redshift: f64,
@@ -84,6 +83,7 @@ fn main() {
     let multiplicity = 4;
     let zmin = 0.015;
     let fractional_area = 0.004361383875261386;
+    let zlimit = 0.25;
     let cosmo = Cosmology {
         h0: 70.,
         omega_m: 0.3,
@@ -91,6 +91,11 @@ fn main() {
         omega_l: 0.7,
     };
     let min_volume = cosmo.comoving_volume(zmin);
+    let limiting_volume = fractional_area * cosmo.comoving_volume(zlimit);
+    let number_sightlines = 3.;
+    let volume_per_sightline = limiting_volume / number_sightlines;
+    let cos_var = cosmic_variance(volume_per_sightline, number_sightlines);
+
     let apparent_mag_lim = 19.8;
     let mut groups = read_groups(group_file_name, "GroupID", "Zfof", "Nfof", "MassAfunc");
     let mut galaxies = read_galaxies(galaxy_file_name, "Z", "Rpetro", "GroupID");
@@ -146,8 +151,6 @@ fn main() {
         .with_column(Series::new("vmax".into(), max_volumes))
         .unwrap();
 
-    //TODO: Calculate the volumes for each group.
-    //TODO: Work out the cosmic variance.
     //TODO: "Monte Carlo" for the eddington bias.
     //TODO: Apply eddington bias.
     //TODO: Forward model fit.
