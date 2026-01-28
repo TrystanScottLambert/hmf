@@ -112,20 +112,19 @@ fn main() {
 
     let galaxy_z_max = Series::new("zmax".into(), z_max_values);
     galaxies.with_column(galaxy_z_max).unwrap();
-    let group_z_maxes = get_group_zmax(multiplicity, galaxies).unwrap();
+    let group_z_maxes = get_group_zmax(multiplicity, galaxies.clone()).unwrap();
     groups = groups
         .lazy()
         .join(
             group_z_maxes.lazy(),
             [col("group_id")],
             [col("group_id")],
-            JoinArgs::new(JoinType::Left),
+            JoinArgs::new(JoinType::Inner), // Note the inner join here. Only
+                                            // overlapping groups allowed.
         )
         .collect()
         .unwrap();
-    println!("{:?}", groups)
 
-    //TODO: Determine the maximum redshift for each group.
     //TODO: Calculate the volumes for each group.
     //TODO: Work out the cosmic variance.
     //TODO: "Monte Carlo" for the eddington bias.
@@ -248,5 +247,35 @@ mod tests {
             out.column("apparent_mag").unwrap().f64().unwrap().get(0),
             Some(12.2)
         );
+    }
+    #[test]
+    fn test_get_group_zmax_basic() -> Result<(), PolarsError> {
+        let galaxies = df!(
+            "group_id" => &[1, 1, 1, 1, 2, 2, 3],
+            "zmax"     => &[0.50, 0.40, 0.30, 0.20, 0.60, 0.10, 0.25],
+        )?;
+
+        // multiplicity = 3
+        let result = get_group_zmax(3, galaxies)?;
+
+        // Sort for deterministic comparison
+        let result = result.sort(["group_id"], SortMultipleOptions::default())?;
+
+        let group_id = result.column("group_id")?.i32()?;
+        let group_zmax = result.column("group_zmax")?.f64()?;
+
+        // group 1: zmax = [0.50, 0.40, 0.30, 0.20] → 3rd largest = 0.30
+        assert_eq!(group_id.get(0), Some(1));
+        assert!((group_zmax.get(0).unwrap() - 0.30).abs() < 1e-12);
+
+        // group 2: zmax = [0.60, 0.10] → smaller than multiplicity → last = 0.10
+        assert_eq!(group_id.get(1), Some(2));
+        assert!((group_zmax.get(1).unwrap() - 0.10).abs() < 1e-12);
+
+        // group 3: zmax = [0.25] → single value
+        assert_eq!(group_id.get(2), Some(3));
+        assert!((group_zmax.get(2).unwrap() - 0.25).abs() < 1e-12);
+
+        Ok(())
     }
 }
