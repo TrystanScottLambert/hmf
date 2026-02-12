@@ -1,0 +1,54 @@
+model {
+
+  # --------------------
+  # (A) HMF / MRP priors
+  # --------------------
+  alpha ~ dnorm(-1.9, 1/0.3^2)
+  beta  ~ dnorm(1.0,  1/0.3^2)
+  xstar ~ dnorm(13.5, 1/0.5^2)
+  log_phi ~ dnorm(-3, 1/2^2)
+
+  phi <- exp(log_phi)
+
+  # --------------------
+  # (B) Scatter law
+  # --------------------
+  log_a ~ dnorm(-1, 1)
+  b     ~ dnorm(0.7, 0.5)
+
+  for (n in 3:nmax) {
+    sigma_rel[n] <- exp(log_a) * pow(n, -b)
+    tau_rel[n]   <- 1 / pow(sigma_rel[n], 2)
+  }
+
+  # --------------------
+  # (C) Group catalogue
+  # --------------------
+  for (i in 1:N) {
+
+    # Prior on true log-mass
+    x_true[i] ~ dunif(xmin, xmax)
+
+    # Measurement model
+    x_obs[i] ~ dnorm(x_true[i], tau_rel[mult[i]])
+
+    # Correct log MRP in log10 mass space
+    log_mrp[i] <-
+        log(log(10))
+      + log_phi
+      + log(beta)
+      + (alpha + 1) * log(10) * (x_true[i] - xstar)
+      - pow(10, beta * (x_true[i] - xstar))
+
+    # Poisson trick
+    zeros[i] ~ dpois(-log_mrp[i] + C)
+  }
+
+  # --------------------
+  # (D) Vuvuzela data
+  # --------------------
+  for (j in 1:Nvuv) {
+    vuv_dx[j] ~ dnorm(0, tau_rel[vuv_n[j]])
+  }
+}
+
