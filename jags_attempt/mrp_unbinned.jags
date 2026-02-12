@@ -1,0 +1,40 @@
+
+model {
+
+  mstar  ~ dnorm(14.4, 1/0.5^2)
+  log_phi ~ dnorm(-3, 1/2^2)
+  alpha  ~ dnorm(-1.8, 1/0.5^2)
+  beta   ~ dnorm(0.7, 1/0.3^2)
+
+  for (i in 1:N) {
+
+    log_intensity[i] <-
+        log(V)
+      + log(beta)
+      + log(log(10))
+      + log_phi
+      + (alpha+1)*(x[i] - mstar)
+      - pow(10, beta*(x[i] - mstar)) / log(10)
+
+    zeros[i] ~ dpois(-log_intensity[i] + C)
+  }
+
+  # integral term
+
+  for (k in 1:Ng) {
+
+    log_phi_grid[k] <-
+        log(beta)
+      + log(log(10))
+      + log_phi
+      + (alpha+1)*(xgrid[k] - mstar)
+      - pow(10, beta*(xgrid[k] - mstar)) / log(10)
+
+    phi_grid[k] <- exp(log_phi_grid[k])
+  }
+
+  integral <- V * sum(phi_grid[]) * dx
+
+  zeros_int ~ dpois(integral + C)
+}
+
