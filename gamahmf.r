@@ -254,7 +254,7 @@ phimrp=A/factor
 #
 # Read GAMA cats
 #
-g3cx=Rfits_read_table("/Users/sdriver/Drpbx/active/hmf/G3CFoFGroupv10.fits")
+g3cx=Rfits_read_table("data/G3CFoFGroupv10.fits")
 g3c=g3cx[Nfof > multi-1 & Zfof < zlimit & Zfof > zmin & MassAfunc > 1E1 & IterCenDec > -3.5,]
 g3c$MassAfunc=g3c$MassAfunc*100/ho
 g3c$MassA=g3c$MassA*100/ho
@@ -291,7 +291,7 @@ if(myoption=="MassA"){
 #
 # Determine Vmax values
 #
-gig=fread("/Users/sdriver/Drpbx/active/hmf/GAMAGalsInGroups.csv")
+gig=fread("data/GAMAGalsInGroups.csv")
 for (i in 1:length(g3c$GroupID)){
   if(g3c$Nfof[i]==2){
     g3c$zmax[i]=sort(gig[GroupID==g3c$GroupID[i],zmax_19p8],decreasing=TRUE)[2]
