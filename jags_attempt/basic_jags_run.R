@@ -52,7 +52,6 @@ g3c=g3cx[
   g3cx$Nfof > multi-1 &
   g3cx$Zfof < zlimit &
   g3cx$Zfof > zmin &
-  g3cx$MassAfunc > 1E13 &
   g3cx$IterCenDec > -3.5,
 ]
 
@@ -71,25 +70,35 @@ xmax = max(x_obs)
 model_string <- "
 model {
 
-  mstar  ~ dnorm(14.4, 1/0.5^2)
+  # Priors
+  mstar   ~ dnorm(14.4, 1/0.5^2)
   log_phi ~ dnorm(-3, 1/2^2)
-  alpha  ~ dnorm(-1.8, 1/0.5^2)
-  beta   ~ dnorm(0.7, 1/0.3^2)
+  alpha   ~ dnorm(-1.8, 1/0.5^2)
+  beta    ~ dnorm(0.7, 1/0.3^2) T(0,)
+
+  # -------------------------
+  # Log intensity per object
+  # -------------------------
 
   for (i in 1:N) {
 
-    log_intensity[i] <-
-        log(V)
-      + log(beta)
+    log_phi_i[i] <-
+        log(beta)
       + log(log(10))
       + log_phi
       + (alpha+1)*(x[i] - mstar)
-      - pow(10, beta*(x[i] - mstar)) / log(10)
+      - pow(10, beta*(x[i] - mstar))
 
-    zeros[i] ~ dpois(-log_intensity[i] + C)
+    log_intensity[i] <- log(V) + log_phi_i[i]
+
+    logL_i[i] <- log_intensity[i]
+
+    zeros[i] ~ dpois(C - logL_i[i])
   }
 
-  # integral term
+  # -------------------------
+  # Integral term
+  # -------------------------
 
   for (k in 1:Ng) {
 
@@ -98,16 +107,18 @@ model {
       + log(log(10))
       + log_phi
       + (alpha+1)*(xgrid[k] - mstar)
-      - pow(10, beta*(xgrid[k] - mstar)) / log(10)
+      - pow(10, beta*(xgrid[k] - mstar))
 
     phi_grid[k] <- exp(log_phi_grid[k])
   }
 
   integral <- V * sum(phi_grid[]) * dx
 
-  zeros_int ~ dpois(integral + C)
+  zeros_int ~ dpois(integral)
 }
 "
+
+
 
 writeLines(model_string, "mrp_unbinned.jags")
 
@@ -157,6 +168,44 @@ samples <- coda.samples(
 
 posterior <- as.matrix(samples)
 
+
+############################################################
+# 6b. MCMC Diagnostics
+############################################################
+
+# Summary statistics
+print(summary(samples))
+
+# Gelman-Rubin Rhat
+print(gelman.diag(samples))
+
+# Effective sample sizes
+print(effectiveSize(samples))
+
+# Trace + density plots
+CairoPDF("MRP_chain_diagnostics.pdf", width=10, height=8)
+plot(samples)
+dev.off()
+
+############################################################
+# 6c. Corner Plot
+############################################################
+
+library(GGally)
+
+post_df <- as.data.frame(posterior)
+
+CairoPDF("MRP_corner_plot.pdf", width=8, height=8)
+ggpairs(
+  post_df,
+  lower = list(continuous = "points"),
+  diag = list(continuous = "densityDiag"),
+  upper = list(continuous = "cor")
+)
+dev.off()
+
+
+
 ############################################################
 # 7. Plot MRP over empirical HMF
 ############################################################
@@ -175,7 +224,7 @@ mrp_curve <- function(mstar, log_phi, alpha, beta, x) {
   log(log(10)) +
   log_phi +
   (alpha+1)*(x - mstar) -
-  (10^(beta*(x - mstar))) / log(10)
+  (10^(beta*(x - mstar)))
 }
 
 xfit = seq(xmin, xmax, length.out=300)

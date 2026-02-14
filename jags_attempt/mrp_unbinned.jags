@@ -1,25 +1,35 @@
 
 model {
 
-  mstar  ~ dnorm(14.4, 1/0.5^2)
+  # Priors
+  mstar   ~ dnorm(14.4, 1/0.5^2)
   log_phi ~ dnorm(-3, 1/2^2)
-  alpha  ~ dnorm(-1.8, 1/0.5^2)
-  beta   ~ dnorm(0.7, 1/0.3^2)
+  alpha   ~ dnorm(-1.8, 1/0.5^2)
+  beta    ~ dnorm(0.7, 1/0.3^2) T(0,)
+
+  # -------------------------
+  # Log intensity per object
+  # -------------------------
 
   for (i in 1:N) {
 
-    log_intensity[i] <-
-        log(V)
-      + log(beta)
+    log_phi_i[i] <-
+        log(beta)
       + log(log(10))
       + log_phi
       + (alpha+1)*(x[i] - mstar)
-      - pow(10, beta*(x[i] - mstar)) / log(10)
+      - pow(10, beta*(x[i] - mstar))
 
-    zeros[i] ~ dpois(-log_intensity[i] + C)
+    log_intensity[i] <- log(V) + log_phi_i[i]
+
+    logL_i[i] <- log_intensity[i]
+
+    zeros[i] ~ dpois(C - logL_i[i])
   }
 
-  # integral term
+  # -------------------------
+  # Integral term
+  # -------------------------
 
   for (k in 1:Ng) {
 
@@ -28,13 +38,13 @@ model {
       + log(log(10))
       + log_phi
       + (alpha+1)*(xgrid[k] - mstar)
-      - pow(10, beta*(xgrid[k] - mstar)) / log(10)
+      - pow(10, beta*(xgrid[k] - mstar))
 
     phi_grid[k] <- exp(log_phi_grid[k])
   }
 
   integral <- V * sum(phi_grid[]) * dx
 
-  zeros_int ~ dpois(integral + C)
+  zeros_int ~ dpois(integral)
 }
 
