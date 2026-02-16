@@ -1,50 +1,40 @@
 
 model {
 
-  # Priors
   mstar   ~ dnorm(14.4, 1/0.5^2)
-  log_phi ~ dnorm(-3, 1/2^2)
+  log_phi ~ dnorm(-6,   1/2^2)
   alpha   ~ dnorm(-1.8, 1/0.5^2)
-  beta    ~ dnorm(0.7, 1/0.3^2) T(0,)
+  beta    ~ dnorm(0.7,  1/0.3^2) T(0,)
 
-  # -------------------------
-  # Log intensity per object
-  # -------------------------
-
+  # ----- Likelihood -----
   for (i in 1:N) {
 
-    log_phi_i[i] <-
-        log(beta)
-      + log(log(10))
-      + log_phi
-      + (alpha+1)*(x[i] - mstar)
-      - pow(10, beta*(x[i] - mstar))
+    phi[i] <-
+        beta * log(10)
+      * exp(log_phi)
+      * pow(10, (alpha + 1) * (x[i] - mstar))
+      * exp(- pow(10, beta * (x[i] - mstar)))
 
-    log_intensity[i] <- log(V) + log_phi_i[i]
-
-    logL_i[i] <- log_intensity[i]
-
-    zeros[i] ~ dpois(C - logL_i[i])
+    lambda[i] <- V * phi[i]
   }
 
-  # -------------------------
-  # Integral term
-  # -------------------------
-
+  # ----- Integral term -----
   for (k in 1:Ng) {
 
-    log_phi_grid[k] <-
-        log(beta)
-      + log(log(10))
-      + log_phi
-      + (alpha+1)*(xgrid[k] - mstar)
-      - pow(10, beta*(xgrid[k] - mstar))
+    phi_grid[k] <-
+        beta * log(10)
+      * exp(log_phi)
+      * pow(10, (alpha + 1) * (xgrid[k] - mstar))
+      * exp(- pow(10, beta * (xgrid[k] - mstar)))
 
-    phi_grid[k] <- exp(log_phi_grid[k])
+    lambda_grid[k] <- V * phi_grid[k]
   }
 
-  integral <- V * sum(phi_grid[]) * dx
+  Lambda <- sum(lambda_grid[]) * dx
 
-  zeros_int ~ dpois(integral)
+  # ----- Poisson point-process likelihood -----
+  logL <- sum(log(lambda[])) - Lambda
+
+  zeros ~ dpois(C - logL)
 }
 
