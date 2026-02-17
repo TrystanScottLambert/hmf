@@ -1,0 +1,17 @@
+
+model {
+  mstar ~ dnorm(13.5, 1)
+  log_phi ~ dnorm(-3.5, 0.5)
+  alpha ~ dnorm(-1.5, 1)
+  beta ~ dunif(0.2, 1.5)
+
+  for(i in 1:n_bins) {
+    phi[i] <- beta * log(10) * pow(10, log_phi) *
+              pow(10, (alpha + 1) * (x_bin[i] - mstar)) *
+              exp(-pow(10, beta * (x_bin[i] - mstar)))
+
+    lambda[i] <- phi[i] * V * bin_width
+    counts[i] ~ dpois(lambda[i])
+  }
+}
+

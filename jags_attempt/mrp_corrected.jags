@@ -1,0 +1,32 @@
+
+model {
+  # Priors - using precision = 1/variance
+  mstar   ~ dnorm(13.5, 1.0)     # precision = 1/1^2 = 1
+  log_phi ~ dnorm(-3.5, 0.444)   # precision = 1/1.5^2 = 0.444
+  alpha   ~ dnorm(-1.5, 1.5625)  # precision = 1/0.8^2 = 1.5625
+  beta    ~ dunif(0.2, 1.5)
+
+  # Transform log_phi to phi_star
+  phi_star <- pow(10, log_phi)
+
+  # Likelihood
+  for(i in 1:n_bins) {
+
+    # MRP function
+    # phi(x) = beta * ln(10) * phi_star * 10^((alpha+1)*(x-mstar)) * exp(-10^(beta*(x-mstar)))
+
+    log_mass_diff[i] <- x_bin[i] - mstar
+
+    power_term[i] <- pow(10, (alpha + 1) * log_mass_diff[i])
+    exp_term[i] <- exp(-pow(10, beta * log_mass_diff[i]))
+
+    phi[i] <- beta * 2.302585 * phi_star * power_term[i] * exp_term[i]
+
+    # Expected count in bin
+    lambda[i] <- phi[i] * V * bin_width
+
+    # Likelihood
+    counts[i] ~ dpois(lambda[i])
+  }
+}
+

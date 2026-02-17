@@ -1,0 +1,28 @@
+
+model {
+
+  # Priors
+  mstar   ~ dnorm(13.5, 1/1.0^2)
+  log_phi ~ dnorm(-3.5, 1/1.5^2)
+  alpha   ~ dnorm(-1.5, 1/0.8^2)
+  beta    ~ dunif(0.1, 2.0)  # Use uniform prior for beta
+
+  phi_star <- exp(log_phi * log(10))  # Convert to natural phi*
+
+  # For each observed bin, calculate expected count
+  for (i in 1:n_bins) {
+
+    # MRP function evaluated at bin center
+    phi_center[i] <-
+        beta * log(10) * phi_star *
+        pow(10, (alpha + 1) * (x_bin[i] - mstar)) *
+        exp(- pow(10, beta * (x_bin[i] - mstar)))
+
+    # Expected count in this bin = phi * Volume * bin_width
+    lambda[i] <- phi_center[i] * V * bin_width
+
+    # Likelihood: counts are Poisson distributed
+    counts[i] ~ dpois(lambda[i])
+  }
+}
+

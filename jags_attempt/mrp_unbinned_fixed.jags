@@ -1,0 +1,47 @@
+
+model {
+
+  # Priors
+  mstar   ~ dnorm(13.5, 1/1.0^2)
+  log_phi ~ dnorm(-3.5, 1.5^2)  # Note: precision = 1/variance
+  alpha   ~ dnorm(-1.5, 1/0.8^2)
+  beta    ~ dunif(0.2, 1.5)
+
+  phi_star <- exp(log_phi * log(10))
+
+  # Calculate likelihood for each observed group
+  for (i in 1:N) {
+
+    # MRP function at this mass
+    phi[i] <- beta * log(10) * phi_star *
+              pow(10, (alpha + 1) * (x[i] - mstar)) *
+              exp(- pow(10, beta * (x[i] - mstar)))
+
+    # Prevent numerical issues
+    phi_safe[i] <- max(phi[i], 1e-20)
+
+    # Rate for point process
+    lambda[i] <- V * phi_safe[i]
+  }
+
+  # Integral: expected total number of groups
+  for (k in 1:Ng) {
+    phi_grid[k] <- beta * log(10) * phi_star *
+                   pow(10, (alpha + 1) * (xgrid[k] - mstar)) *
+                   exp(- pow(10, beta * (xgrid[k] - mstar)))
+  }
+
+  Lambda <- sum(phi_grid[]) * dx * V
+
+  # Log-likelihood (Poisson point process)
+  # L = prod(lambda[i]) * exp(-Lambda)
+  # log(L) = sum(log(lambda[i])) - Lambda
+
+  logL <- sum(log(lambda[])) - Lambda
+
+  # Zeros trick: observe 0 with rate = C - logL
+  # Need C > logL for all parameter values
+  # We'll calculate C based on initial values
+  zeros ~ dpois(C - logL)
+}
+
