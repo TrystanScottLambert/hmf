@@ -1,0 +1,65 @@
+
+model {
+
+  ## ---- Priors ----
+  mstar   ~ dnorm(13.5, 1.0)        # 1/sigma^2 = 1/1^2
+  log_phi ~ dnorm(-3.5, 0.444)      # 1/sigma^2 = 1/1.5^2
+  alpha   ~ dnorm(-1.5, 1.5625)     # 1/sigma^2 = 1/0.8^2
+  beta    ~ dunif(0.2, 1.5)
+
+  ## ---- Log MRP function for each observed group ----
+  ## log[phi(x_i)] computed in log space for numerical stability
+  for(i in 1:N) {
+
+    # Exponent in the power-law term
+    powterm[i]  <- (alpha + 1) * (x[i] - mstar)
+
+    # Exponent in the exponential cutoff
+    expterm[i]  <- beta * (x[i] - mstar)
+
+    # log phi(x_i):
+    # log(beta) + log(log10_e * ln10) + log_phi*ln10
+    # + powterm*ln10 - 10^expterm
+    # Simplifying: log(beta*ln10) + log_phi*ln10 + powterm*ln10 - 10^expterm
+    # In log10 space throughout:
+    log_phi_i[i] <- log(beta) + log(2.302585) +
+                    log_phi * 2.302585 +
+                    powterm[i] * 2.302585 -
+                    pow(10, expterm[i])
+
+    # log lambda_i = log(V) + log_phi_i
+    log_lambda[i] <- log(V) + log_phi_i[i]
+  }
+
+  ## ---- Integral over survey volume ----
+  ## phi integrated over [xlo, xhi] * V = expected total N
+  for(k in 1:Ng) {
+
+    powterm_g[k]  <- (alpha + 1) * (xgrid[k] - mstar)
+    expterm_g[k]  <- beta * (xgrid[k] - mstar)
+
+    # phi(xgrid[k]) - need actual value not log for summation
+    phi_grid[k]   <- beta * 2.302585 *
+                     exp(log_phi * 2.302585) *
+                     exp(powterm_g[k] * 2.302585) *
+                     exp(-pow(10, expterm_g[k]))
+  }
+
+  # Total expected number of groups in survey
+  Lambda <- V * sum(phi_grid[]) * dx
+
+  ## ---- Poisson point process log-likelihood ----
+  ## log L = sum_i log(lambda_i) - Lambda
+  logL <- sum(log_lambda[]) - Lambda
+
+  ## ---- Zeros trick ----
+  ## Need C > logL always.
+  ## logL ≈ sum(log lambda_i) - Lambda
+  ## sum(log lambda_i) is around N * log(V * phi_typical)
+  ## Lambda ≈ N (by definition at MLE)
+  ## So logL ≈ N*log(V*phi_typical) - N
+  ## This is typically a large negative number ~ -1000 to -5000
+  ## So C = 50000 is safely above logL
+  zeros ~ dpois(C - logL)
+}
+
