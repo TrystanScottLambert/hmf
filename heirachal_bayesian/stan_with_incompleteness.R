@@ -177,18 +177,8 @@ model {
   log_phi ~ normal(-3.5, 1.5);
   alpha   ~ normal(-1.5, 0.8);
   
-  // Global integral: total expected number in survey
-  vector[Ng] phi_grid;
-  for(k in 1:Ng) {
-    real u = beta * (xgrid[k] - mstar);
-    phi_grid[k] = beta * log(10) * pow(10, log_phi)
-                  * pow(10, (alpha+1) * (xgrid[k] - mstar))
-                  * exp(-pow(10, u));
-  }
-  real Lambda = V * sum(phi_grid) * dx;
-  
-  // Poisson: probability of observing N groups given rate Lambda
-  target += -Lambda;
+  // NO global Lambda term!
+  // The truncation normalization per-group handles this
   
   // For each group: likelihood given detection
   for(i in 1:N) {
@@ -238,8 +228,8 @@ model {
     
     // Likelihood: p(observe this mass | detected above m_lim[i])
     // = phi_convolved(m_obs) / ∫[m_lim[i] to ∞] phi(m) dm
-    // Multiplied by V because it's a rate per volume
-    target += log(V) + log(phi_convolved) - log(phi_norm);
+    // The V factors cancel out in this ratio
+    target += log(phi_convolved) - log(phi_norm);
   }
 }
 "
