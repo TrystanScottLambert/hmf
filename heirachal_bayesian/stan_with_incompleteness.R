@@ -220,9 +220,26 @@ model {
     
     real phi_convolved = sum(integrand) * dx_i;
     
-    // Likelihood: p(observe this mass | detected)
-    // = V × phi_convolved(m_obs)
-    target += log(V) + log(phi_convolved);
+    // CRITICAL: Truncation normalization
+    // We need ∫[m_lim[i] to ∞] phi(m) dm
+    // This accounts for the fact that we could only detect groups above m_lim[i]
+    
+    real phi_norm = 0.0;
+    for(k in 1:Ng) {
+      if(xgrid[k] >= m_lim[i]) {
+        real u = beta * (xgrid[k] - mstar);
+        real phi_k = beta * log(10) * pow(10, log_phi)
+                     * pow(10, (alpha+1) * (xgrid[k] - mstar))
+                     * exp(-pow(10, u));
+        phi_norm += phi_k;
+      }
+    }
+    phi_norm *= dx;
+    
+    // Likelihood: p(observe this mass | detected above m_lim[i])
+    // = phi_convolved(m_obs) / ∫[m_lim[i] to ∞] phi(m) dm
+    // Multiplied by V because it's a rate per volume
+    target += log(V) + log(phi_convolved) - log(phi_norm);
   }
 }
 "
