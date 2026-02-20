@@ -177,8 +177,14 @@ model {
   log_phi ~ normal(-3.5, 1.5);
   alpha   ~ normal(-1.5, 0.8);
   
-  // NO global Lambda term!
-  // The truncation normalization per-group handles this
+  // Compute phi on the grid once (reuse for all groups)
+  vector[Ng] phi_grid;
+  for(k in 1:Ng) {
+    real u = beta * (xgrid[k] - mstar);
+    phi_grid[k] = beta * log(10) * pow(10, log_phi)
+                  * pow(10, (alpha+1) * (xgrid[k] - mstar))
+                  * exp(-pow(10, u));
+  }
   
   // For each group: likelihood given detection
   for(i in 1:N) {
@@ -210,25 +216,16 @@ model {
     
     real phi_convolved = sum(integrand) * dx_i;
     
-    // CRITICAL: Truncation normalization
-    // We need ∫[m_lim[i] to ∞] phi(m) dm
-    // This accounts for the fact that we could only detect groups above m_lim[i]
-    
+    // CRITICAL: Truncation normalization using pre-computed grid
     real phi_norm = 0.0;
     for(k in 1:Ng) {
       if(xgrid[k] >= m_lim[i]) {
-        real u = beta * (xgrid[k] - mstar);
-        real phi_k = beta * log(10) * pow(10, log_phi)
-                     * pow(10, (alpha+1) * (xgrid[k] - mstar))
-                     * exp(-pow(10, u));
-        phi_norm += phi_k;
+        phi_norm += phi_grid[k];
       }
     }
     phi_norm *= dx;
     
     // Likelihood: p(observe this mass | detected above m_lim[i])
-    // = phi_convolved(m_obs) / ∫[m_lim[i] to ∞] phi(m) dm
-    // The V factors cancel out in this ratio
     target += log(phi_convolved) - log(phi_norm);
   }
 }
@@ -254,25 +251,25 @@ cat("Compiling Stage 3 model (pure truncation)...\n")
 fit3 <- stan(
     model_code = stage3_truncated,
     data       = stan_data,
-    chains     = 2,
-    iter       = 1000,
-    warmup     = 500,
+    chains     = 4,
+    iter       = 2000,
+    warmup     = 1000,
     thin       = 1,
-    cores      = 2,
-    init       = lapply(1:2, function(i) list(
+    cores      = 4,
+    init       = lapply(1:4, function(i) list(
         mstar   = rnorm(1, 13.5, 0.2),
         log_phi = rnorm(1, -3.5, 0.2),
         alpha   = rnorm(1, -1.5, 0.1),
         beta    = runif(1, 0.4, 0.6)
     )),
-    control = list(adapt_delta = 0.9, max_treedepth = 10)
+    control = list(adapt_delta = 0.95, max_treedepth = 12)
 )
 
 cat("\n=== STAGE 3 RESULTS (pure truncation) ===\n")
 print(fit3, pars=c("mstar","log_phi","alpha","beta"))
 
 ############################################################
-# Plot
+# Extract posterior
 ############################################################
 
 posterior3 <- extract(fit3, pars=c("mstar","log_phi","alpha","beta"))
@@ -282,6 +279,11 @@ posterior_matrix <- cbind(
     alpha   = posterior3$alpha,
     beta    = posterior3$beta
 )
+
+# Check for parameter correlations
+cat("\n=== PARAMETER CORRELATIONS ===\n")
+post_cor <- cor(posterior_matrix)
+print(round(post_cor, 3))
 
 med <- apply(posterior_matrix, 2, median)
 q16 <- apply(posterior_matrix, 2, quantile, 0.16)
