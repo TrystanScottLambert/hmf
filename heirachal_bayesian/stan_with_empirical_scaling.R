@@ -91,82 +91,53 @@ g3c$zmax <- ifelse(g3c$zmax < g3c$Zfof, g3c$Zfof, g3c$zmax)
 g3c$zmax <- ifelse(g3c$zmax > zlimit, zlimit, g3c$zmax)
 
 ############################################################
-# Convert zmax to mass limit using EMPIRICAL RELATIONS
-# Use the actual M*-z and M_halo-M* relations from the data
+# Convert zmax to mass limit using FITTED EMPIRICAL RELATIONS
+# Uses the relations saved from fit_empirical_relations.R
 ############################################################
 
-cat("Deriving mass limits from empirical relations...\n")
+cat("Loading empirical relations from fit_empirical_relations.R...\n")
 
-# First, get the Nth member stellar mass for each group
-gig_subset <- gig[GroupID %in% g3c$GroupID]
-g3c$Mstar_Nth <- NA
-
-for (i in 1:nrow(g3c)) {
-    members <- gig[GroupID == g3c$GroupID[i]]
-    members <- members[order(members$StellarMass, decreasing=TRUE)]
-    
-    if(g3c$Nfof[i] == 2) {
-        g3c$Mstar_Nth[i] <- members$StellarMass[2]
-    } else if(g3c$Nfof[i] >= multi) {
-        g3c$Mstar_Nth[i] <- members$StellarMass[multi]
-    } else {
-        g3c$Mstar_Nth[i] <- members$StellarMass[g3c$Nfof[i]]
-    }
+# Load the fitted relations
+if(!file.exists("empirical_relations.rds")) {
+    stop("Please run fit_empirical_relations.R first to generate the relations!")
 }
 
-# Fit the M*-z envelope (lower boundary from SMZ plot)
-# Use only groups below the main sequence to find the limit
-mstar_z_data <- data.frame(
-    z = g3c$Zfof,
-    log_mstar = log10(g3c$Mstar_Nth),
-    log_mhalo = log10(g3c$MassAfunc)
-)
+relations <- readRDS("empirical_relations.rds")
 
-# Fit lower quantile (5th percentile) to find envelope
-z_grid <- seq(0.01, 0.25, by=0.01)
-mstar_lim <- rep(NA, length(z_grid))
+cat("\nUsing fitted relations:\n")
+cat("  M*(z) envelope: log M* = ", 
+    round(relations$mstar_z_intercept, 3), " + ",
+    round(relations$mstar_z_slope, 3), " × z\n", sep="")
+cat("  M_halo-M* relation: log M_halo = ",
+    round(relations$halo_mstar_intercept, 3), " + ",
+    round(relations$halo_mstar_slope, 3), " × log M*\n\n", sep="")
 
-for(i in 1:length(z_grid)) {
-    in_bin <- abs(mstar_z_data$z - z_grid[i]) < 0.02
-    if(sum(in_bin) > 10) {
-        mstar_lim[i] <- quantile(mstar_z_data$log_mstar[in_bin], 0.05, na.rm=TRUE)
-    }
-}
+# For each group, calculate M_lim using the empirical relations:
+# 1. At zmax, the Nth member would be at the detection limit
+# 2. M*_lim(zmax) from the envelope fit
+# 3. Convert M*_lim → M_halo_lim using the M_halo-M* fit
 
-# Fit a line to the envelope
-ok <- !is.na(mstar_lim)
-envelope_fit <- lm(mstar_lim[ok] ~ z_grid[ok])
+# Step 1: M* at detection limit at zmax
+g3c$log_Mstar_lim_at_zmax <- relations$mstar_z_intercept + 
+                              relations$mstar_z_slope * g3c$zmax
 
-cat("M* envelope: log M* = ", 
-    round(coef(envelope_fit)[1], 2), " + ",
-    round(coef(envelope_fit)[2], 2), " × z\n", sep="")
+# Step 2: Convert to halo mass limit
+g3c$log_mass_limit <- relations$halo_mstar_intercept + 
+                      relations$halo_mstar_slope * g3c$log_Mstar_lim_at_zmax
 
-# Now for each group at z_obs, find M*_lim at z_obs
-# But at zmax, it would be at the limit, so:
-g3c$log_Mstar_lim_at_zmax <- coef(envelope_fit)[1] + coef(envelope_fit)[2] * g3c$zmax
-
-# Convert M*_lim → M_halo_lim using the observed M_halo-M* relation
-# Fit this relation from the data
-mhalo_mstar_fit <- lm(log_mhalo ~ log_mstar, data=mstar_z_data)
-
-cat("M_halo-M* relation: log M_halo = ",
-    round(coef(mhalo_mstar_fit)[1], 2), " + ",
-    round(coef(mhalo_mstar_fit)[2], 2), " × log M*\n", sep="")
-
-# Apply this to get halo mass limit
-g3c$log_mass_limit <- coef(mhalo_mstar_fit)[1] + 
-                      coef(mhalo_mstar_fit)[2] * g3c$log_Mstar_lim_at_zmax
-
-# Sanity checks:
-# - Limit should be below observed mass
-# - Not too far below (at least detectable)
-g3c$log_mass_limit <- pmin(g3c$log_mass_limit, log10(g3c$MassAfunc) - 0.3)
+# Step 3: Sanity checks
+# - Limit must be below observed mass (can't detect above observed!)
+# - Limit should be reasonable (not too low, not too high)
+g3c$log_mass_limit <- pmin(g3c$log_mass_limit, log10(g3c$MassAfunc) - 0.2)
 g3c$log_mass_limit <- pmax(g3c$log_mass_limit, 10.0)
 
-cat("Mass limit range:", range(g3c$log_mass_limit, na.rm=TRUE), "\n")
-cat("Observed mass range:", range(log10(g3c$MassAfunc), na.rm=TRUE), "\n")
-cat("Median M_obs - M_lim:", 
-    median(log10(g3c$MassAfunc) - g3c$log_mass_limit, na.rm=TRUE), "dex\n\n")
+# Diagnostics
+cat("Mass limit statistics:\n")
+cat("  Range: ", round(range(g3c$log_mass_limit, na.rm=TRUE), 2), "\n")
+cat("  Median M_obs - M_lim: ", 
+    round(median(log10(g3c$MassAfunc) - g3c$log_mass_limit, na.rm=TRUE), 2), " dex\n")
+cat("  Mean M_obs - M_lim: ",
+    round(mean(log10(g3c$MassAfunc) - g3c$log_mass_limit, na.rm=TRUE), 2), " dex\n\n")
 
 ############################################################
 # Prepare data
