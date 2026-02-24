@@ -180,14 +180,15 @@ model {
                   * exp(-pow(10, u));
   }
   
-  // Global normalization: total expected number in survey
-  // Lambda = V_survey × ∫ phi(m) dm
-  real Lambda = V_survey * sum(phi_grid) * dx;
-  target += -Lambda;  // Poisson: exp(-Lambda)
+  // Global normalization with Vmax:
+  // Lambda = Σᵢ Vmax[i] × ∫ phi(m) dm
+  // This is the total expected number across all Vmax volumes
+  real phi_integral = sum(phi_grid) * dx;
+  real Lambda = sum(vmax) * phi_integral;
+  target += -Lambda;
   
-  // For each group: contribute based on Vmax weighting
-  // This is the key insight: groups with small Vmax (near detection limit)
-  // get upweighted, which corrects for incompleteness
+  // For each group: just the probability of observing this mass
+  // NO vmax weighting here - it's already in Lambda!
   for(i in 1:N) {
     
     // Convolve MRP with measurement error
@@ -217,11 +218,9 @@ model {
     
     real phi_convolved = sum(integrand) * dx_i;
     
-    // Vmax-weighted contribution
-    // The (1/Vmax) weighting corrects for incompleteness:
-    // - Small Vmax (near limit) → large weight → upweight group
-    // - Large Vmax (easily detected) → small weight → downweight group
-    target += log(vmax[i]) + log(phi_convolved);
+    // Contribution: just log(phi) - NO Vmax weighting here!
+    // The Vmax is already accounted for in Lambda
+    target += log(phi_convolved);
   }
 }
 "
