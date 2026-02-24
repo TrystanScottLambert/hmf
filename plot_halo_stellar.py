@@ -59,3 +59,6 @@ if __name__ == "__main__":
     plt.ylabel(r"$\log M_{*}$", size=14)
     plt.savefig("SMZ_relation.png")
     plt.show()
+
+    plt.scatter(galaxy_redshift[cut], group_masses[cut])
+    plt.show(
