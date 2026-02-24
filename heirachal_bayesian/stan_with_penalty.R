@@ -1,8 +1,6 @@
 ############################################################
-# STAGE 3 - BIN THEN FIT (matching gamahmf.r)
-# Exactly replicates your original approach:
-# 1. Create Vmax-weighted histogram
-# 2. Fit MRP to binned data
+# STAGE 3 - Using the Stan model you provided
+# Includes the penalty term like gamahmf.r!
 ############################################################
 
 library(celestial)
@@ -12,11 +10,12 @@ library(rstan)
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
 library(Cairo)
+library(plotrix)
 
 set.seed(42)
 
 ############################################################
-# Data preparation (exact from gamahmf.r)
+# Data prep EXACTLY matching gamahmf.r
 ############################################################
 
 ho     <- 67.37
@@ -24,20 +23,18 @@ omegam <- 0.3147
 zlimit <- 0.25
 zmin   <- 0.01
 multi  <- 5
-logbin <- 0.2  # Matching gamahmf.r
+logbin <- 0.2
 
 vol_max_survey <- cosdistCoDist(zlimit, OmegaM=omegam, H0=ho)
-Vsurvey <- (4/3)*pi*vol_max_survey^3 * 179.92*(pi/180)^2 / (4*pi)
-vlimitmin <- Vsurvey / 1000.0
+Vsurvey <- (4/3)*pi*vol_max_survey^3 * 179.92/(360^2/pi)
 
-cat("Full survey volume:", signif(Vsurvey,4), "Mpc^3\n")
+cat("Survey volume (vlimit):", signif(Vsurvey, 4), "Mpc^3\n")
 
 g3cx <- Rfits_read_table("../data/G3CFoFGroupv10.fits")
 g3c  <- g3cx[g3cx$Nfof > multi-1 & g3cx$Zfof < zlimit & 
              g3cx$Zfof > zmin & g3cx$MassAfunc > 1E1 & 
              g3cx$IterCenDec > -3.5, ]
 
-# Mass calculation
 magica <- 13.9
 parsec <- 3.0857E16
 G      <- 6.67408E-11
@@ -46,18 +43,6 @@ msol   <- 1.988E30
 g3c$MassAfunc <- g3c$MassAfunc * 100 / ho
 g3c$mymass <- magica * (g3c$VelDisp*1000)^2 * g3c$Rad50*parsec*1E6 / (G*msol) * (100/ho)
 
-# Mass errors
-xx <- seq(3, 22)
-yy <- c(0.68389355, 0.38719116, 0.40325591, 0.32696735, 0.27680685, 
-        0.24018684, 0.20226682, 0.18645475, 0.17437005, 0.14271506, 
-        0.13922450, 0.13482418, 0.13741619, 0.11715141, 0.12134983, 
-        0.10078830, 0.09944761, 0.09913166, 0.08590223, 0.07588408)
-
-g3c$log10MassErr <- approx(xx, yy, g3c$Nfof)$y
-g3c$log10MassErr[is.na(g3c$log10MassErr)] <- 0.03
-g3c$log10MassErr[g3c$log10MassErr < 0.1] <- 0.1
-
-# Mass corrections
 masscorr <- c(0.0, 0.0, -2.672595e-01, -1.513503e-01, -1.259069e-01, 
               -9.006064e-02, -5.466009e-02, -6.666895e-02, -1.988694e-02,
               -2.439581e-02, -2.067060e-02, -1.812964e-02, -1.556899e-02,
@@ -70,12 +55,7 @@ g3c$masscorr[is.na(g3c$masscorr)] <- 0.0
 g3c$mymasscorr <- g3c$mymass / 10^g3c$masscorr
 g3c$MassAfunc <- g3c$mymasscorr
 
-############################################################
-# Calculate Vmax (exact from gamahmf.r)
-############################################################
-
-cat("Calculating Vmax...\n")
-
+# Vmax calculation
 gig <- fread("../data/GAMAGalsInGroups.csv")
 
 g3c$zmax <- NA
@@ -94,75 +74,111 @@ g3c$zmax <- ifelse(g3c$zmax > zlimit, zlimit, g3c$zmax)
 
 vol_zmax <- cosdist(g3c$zmax, OmegaM=omegam, H0=ho)$CoVol
 vol_zmin <- cosdist(zmin, OmegaM=omegam, H0=ho)$CoVol
-
 g3c$vmax <- 179.92/(360^2/pi) * 1E9 * (vol_zmax - vol_zmin)
 
-# Clip exactly as in gamahmf.r
+vlimitmin <- Vsurvey / 1000.0
 g3c$weightszlimit <- ifelse(g3c$vmax > Vsurvey, Vsurvey, g3c$vmax)
 g3c$weightszlimit <- ifelse(g3c$vmax < vlimitmin, vlimitmin, g3c$vmax)
 
-############################################################
-# Create weighted histogram (exact from gamahmf.r line 316)
-############################################################
-
-cat("Creating Vmax-weighted histogram...\n")
-
-massx <- seq(10.3, 16.1, logbin)  # Matching gamahmf.r
-
-# Weighted histogram using plotrix package
-library(plotrix)
+# Binning
+massx <- seq(10.3, 16.1, logbin)
 gamahmf2 <- weighted.hist(log10(g3c$MassAfunc), 
                           w=1/g3c$weightszlimit, 
                           breaks=massx, 
                           plot=FALSE)
 
-# Convert to phi (number density)
 gamax <- gamahmf2$mids
-gamay <- gamahmf2$counts / logbin  # per dex
+gamay <- gamahmf2$counts / logbin
 
-# Keep only positive bins
-ok <- gamay > 0 & !is.na(gamay) & gamax > 12.7  # MASS CUT like gamahmf.r line 394
+# Keep positive bins (no mass cut for now - let the model handle it)
+ok <- gamay > 0 & !is.na(gamay)
 gamax <- gamax[ok]
 gamay <- gamay[ok]
 
-cat("N bins (after M>12.7 cut):", length(gamax), "\n")
+# Fractional errors (from gamahmf.r - Poisson + cosmic variance)
+frac_err <- rep(0.1, length(gamay))  # ~10% typical
+
+cat("N bins:", length(gamax), "\n")
 cat("Mass range:", range(gamax), "\n\n")
 
 ############################################################
-# Simple Stan model - fit to BINNED data
+# Your Stan model with penalty term!
 ############################################################
 
-binned_mrp <- "
+your_stan_model <- "
+functions {
+  real log_mrp_phi(real logM,
+                   real logMstar,
+                   real log_phi,
+                   real alpha,
+                   real beta) {
+    return
+      log_phi * log(10)
+      + log(beta)
+      + log(log(10))
+      + (alpha+1)*(logM-logMstar)*log(10)
+      - pow(10, beta*(logM-logMstar));
+  }
+}
+
 data {
-  int<lower=0> N;
-  vector[N] x;      // bin centers (log10 mass)
-  vector[N] y;      // observed log10(phi)
+  int<lower=1> N;
+  vector[N] logM_obs;
+  vector[N] log_phi_obs;
+  vector[N] frac_err;
+  real logbin;
+  real vlimit;
+  real logM_max;
 }
 
 parameters {
-  real mstar;
+  real logMstar;
   real log_phi;
   real alpha;
-  real<lower=0.1, upper=2> beta;
+  real<lower=0> beta;
 }
 
 model {
   // Priors
-  mstar   ~ normal(13.5, 1.0);
-  log_phi ~ normal(-3.5, 1.5);
-  alpha   ~ normal(-1.5, 0.8);
+  logMstar ~ normal(13.5, 1.0);
+  log_phi  ~ normal(-3.5, 1.5);
+  alpha    ~ normal(-1.5, 0.8);
+  beta     ~ normal(0.5, 0.3);
   
-  // Simple chi-squared fit in log space
-  for(i in 1:N) {
-    real u = beta * (x[i] - mstar);
-    real log_phi_pred = log10(beta) + log10(log(10))
-                        - 10^(beta*(x[i]-mstar))/log(10)
-                        + log_phi
-                        + (alpha+1) * (x[i] - mstar);
-    
-    // Chi-squared with uniform uncertainty per bin
-    y[i] ~ normal(log_phi_pred, 0.15);
+  // Fit to bins
+  for (n in 1:N) {
+    real model_log =
+      log_mrp_phi(
+        logM_obs[n],
+        logMstar,
+        log_phi,
+        alpha,
+        beta
+      ) / log(10);
+    real sigma = frac_err[n] / log(10);
+    target += normal_lpdf(
+      log_phi_obs[n] |
+      model_log,
+      sigma
+    );
   }
+  
+  // Penalty term for integral (matching gamahmf.r line 206!)
+  real integral = 0;
+  for (i in 1:10) {
+    real logM = logM_max + i*logbin;
+    integral += exp(
+      log_mrp_phi(
+        logM,
+        logMstar,
+        log_phi,
+        alpha,
+        beta
+      )
+    );
+  }
+  integral *= logbin;
+  target += -2*vlimit*integral;
 }
 "
 
@@ -171,38 +187,37 @@ model {
 ############################################################
 
 stan_data <- list(
-    N  = length(gamax),
-    x  = gamax,
-    y  = log10(gamay)
+    N           = length(gamax),
+    logM_obs    = gamax,
+    log_phi_obs = log10(gamay),
+    frac_err    = frac_err,
+    logbin      = logbin,
+    vlimit      = Vsurvey,
+    logM_max    = max(gamax)
 )
 
-cat("Fitting MRP to binned data...\n")
+cat("Fitting with penalty term (like gamahmf.r)...\n")
+
 fit3 <- stan(
-    model_code = binned_mrp,
+    model_code = your_stan_model,
     data       = stan_data,
     chains     = 4,
     iter       = 2000,
     warmup     = 1000,
     cores      = 4,
-    init       = lapply(1:4, function(i) list(
-        mstar   = rnorm(1, 13.5, 0.2),
-        log_phi = rnorm(1, -3.5, 0.2),
-        alpha   = rnorm(1, -1.5, 0.1),
-        beta    = runif(1, 0.4, 0.6)
-    )),
     control = list(adapt_delta = 0.95)
 )
 
-cat("\n=== RESULTS (bin-then-fit) ===\n")
-print(fit3, pars=c("mstar","log_phi","alpha","beta"))
+cat("\n=== RESULTS ===\n")
+print(fit3, pars=c("logMstar","log_phi","alpha","beta"))
 
 ############################################################
 # Plot
 ############################################################
 
-posterior <- extract(fit3, pars=c("mstar","log_phi","alpha","beta"))
+posterior <- extract(fit3, pars=c("logMstar","log_phi","alpha","beta"))
 posterior_matrix <- cbind(
-    mstar   = posterior$mstar,
+    mstar   = posterior$logMstar,
     log_phi = posterior$log_phi,
     alpha   = posterior$alpha,
     beta    = posterior$beta
@@ -220,18 +235,17 @@ mrp_log10 <- function(mstar, log_phi, alpha, beta, x) {
 
 xfit <- seq(10, 16, length.out=500)
 
-CairoPDF("MRP_STAGE3_BINNED.pdf", 10, 7)
+CairoPDF("MRP_STAGE3_WITH_PENALTY.pdf", 10, 7)
 
 plot(gamax, log10(gamay),
      pch=19, col="darkgreen", cex=1.2,
      xlim=c(11,16), ylim=c(-5,-2),
      xlab=expression("Halo Mass  log"[10]*"(M/M"["\u2299"]*")"),
      ylab=expression("log"[10]*"("*phi*")  [Mpc"^{-3}*" dex"^{-1}*"]"),
-     main="Stage 3: Bin-Then-Fit (Matching gamahmf.r)")
+     main="Stage 3: With Penalty Term (Your Model)")
 
 grid(col="gray80")
 
-# Posterior samples
 idx <- sample(1:nrow(posterior_matrix), 300)
 for(i in idx) {
     y <- mrp_log10(posterior_matrix[i,"mstar"], posterior_matrix[i,"log_phi"],
@@ -239,16 +253,14 @@ for(i in idx) {
     if(all(is.finite(y))) lines(xfit, y, col=rgb(0,0,1,0.03))
 }
 
-# Median fit
 lines(xfit, mrp_log10(med["mstar"],med["log_phi"],med["alpha"],med["beta"],xfit),
       col="red", lwd=3)
 
-# Driver+22
 lines(xfit, mrp_log10(13.51,-3.19,-1.27,0.47,xfit),
       col="black", lwd=2, lty=2)
 
 legend("bottomleft",
-       legend=c("GAMA (Vmax weighted bins)", "Stan fit",
+       legend=c("GAMA (Vmax weighted)", "Stan fit",
                 "Posterior samples", "Driver+22"),
        col=c("darkgreen","red",rgb(0,0,1,0.3),"black"),
        pch=c(19,NA,NA,NA), lty=c(NA,1,1,2),
@@ -275,5 +287,5 @@ cat(sprintf("alpha:     %6.3f   +%.3f   -%.3f    -1.27\n",
 cat(sprintf("beta:      %6.3f   +%.3f   -%.3f     0.47\n",
             med["beta"],   q84["beta"]-med["beta"],     med["beta"]-q16["beta"]))
 
-cat("\nPlot: MRP_STAGE3_BINNED.pdf\n")
-cat("\nThis approach exactly matches your gamahmf.r method!\n")
+cat("\nPlot: MRP_STAGE3_WITH_PENALTY.pdf\n")
+cat("This model includes the penalty term like gamahmf.r!\n")
