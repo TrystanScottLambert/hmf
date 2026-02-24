@@ -81,12 +81,17 @@ galaxy_masses <- df_members$logmstar
 galaxy_redshift <- df_members$Z
 
 # Filter valid data (matching your Python 'cut')
-cut <- galaxy_masses > 0 & is.finite(galaxy_masses) & is.finite(group_masses)
+# CRITICAL: Also filter to survey redshift range (z < 0.25)
+cut <- galaxy_masses > 0 & 
+       is.finite(galaxy_masses) & 
+       is.finite(group_masses) &
+       galaxy_redshift < 0.25 & galaxy_redshift > 0.01  # Survey range
+
 group_masses <- group_masses[cut]
 galaxy_masses <- galaxy_masses[cut]
 galaxy_redshift <- galaxy_redshift[cut]
 
-cat("Valid data points:", length(group_masses), "\n")
+cat("Valid data points (within survey z range):", length(group_masses), "\n")
 cat("M* range:", round(range(galaxy_masses), 2), "\n")
 cat("M_halo range:", round(range(group_masses), 2), "\n")
 cat("z range:", round(range(galaxy_redshift), 3), "\n\n")

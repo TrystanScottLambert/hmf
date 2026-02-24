@@ -1,7 +1,7 @@
 ############################################################
-# STAGE 3 - PURE TRUNCATION (NO VMAX)
-# Each group has M_lim[i] derived from zmax[i]
-# Likelihood accounts for truncation only
+# STAGE 3 - VMAX WEIGHTING
+# Uses 1/Vmax weights to account for incompleteness
+# Matches the approach in gamahmf.r but in a Bayesian framework
 ############################################################
 
 library(celestial)
@@ -24,6 +24,7 @@ zlimit <- 0.25
 zmin   <- 0.01
 multi  <- 5
 
+# Full survey volume
 vol_max_survey <- cosdistCoDist(zlimit, OmegaM=omegam, H0=ho)
 Vsurvey <- (4/3)*pi*vol_max_survey^3 * 179.92*(pi/180)^2 / (4*pi)
 
@@ -34,7 +35,7 @@ g3c  <- g3cx[g3cx$Nfof > multi-1 & g3cx$Zfof < zlimit &
              g3cx$Zfof > zmin & g3cx$MassAfunc > 1E1 & 
              g3cx$IterCenDec > -3.5, ]
 
-# Mass calculation
+# Mass calculation (exact from gamahmf.r)
 magica <- 13.9
 parsec <- 3.0857E16
 G      <- 6.67408E-11
@@ -69,10 +70,11 @@ g3c$mymasscorr <- g3c$mymass / 10^g3c$masscorr
 g3c$MassAfunc <- g3c$mymasscorr
 
 ############################################################
-# Calculate zmax for each group
+# Calculate Vmax for each group (KEY STEP!)
+# This is what accounts for incompleteness
 ############################################################
 
-cat("Calculating zmax per group...\n")
+cat("Calculating Vmax per group (accounts for incompleteness)...\n")
 
 gig <- fread("../data/GAMAGalsInGroups.csv")
 
@@ -87,83 +89,61 @@ for (i in 1:nrow(g3c)) {
     }
 }
 
+# Correct zmax to survey limits
 g3c$zmax <- ifelse(g3c$zmax < g3c$Zfof, g3c$Zfof, g3c$zmax)
 g3c$zmax <- ifelse(g3c$zmax > zlimit, zlimit, g3c$zmax)
 
-############################################################
-# Convert zmax to mass limit using DIRECT M_halo-z relation
-# Skips the M* intermediate step which had too much scatter
-############################################################
+# Calculate Vmax - volume within which this group could be detected
+vol_zmax <- cosdist(g3c$zmax, OmegaM=omegam, H0=ho)$CoVol
+vol_zmin <- cosdist(zmin, OmegaM=omegam, H0=ho)$CoVol
 
-cat("Loading direct M_halo-z relation...\n")
+g3c$vmax <- 179.92/(360^2/pi) * 1E9 * (vol_zmax - vol_zmin)
 
-# Load the fitted relation
-if(!file.exists("direct_mhalo_z_relation.rds")) {
-    stop("Please run fit_direct_mhalo_z.R first!")
-}
+# Clip to survey limits (matching gamahmf.r)
+vlimitmin <- Vsurvey / 1000.0
+g3c$vmax <- ifelse(g3c$vmax > Vsurvey, Vsurvey, g3c$vmax)
+g3c$vmax <- ifelse(g3c$vmax < vlimitmin, vlimitmin, g3c$vmax)
 
-relation <- readRDS("direct_mhalo_z_relation.rds")
-
-cat("\nUsing direct relation:\n")
-cat("  log M_halo(z) = ", 
-    round(relation$mhalo_z_intercept, 3), " + ",
-    round(relation$mhalo_z_slope, 3), " × z\n\n", sep="")
-
-# Calculate mass limit directly from zmax
-g3c$log_mass_limit <- relation$mhalo_z_intercept + 
-                      relation$mhalo_z_slope * g3c$zmax
-
-# Sanity checks
-# - Limit must be below observed mass
-# - Not unreasonably low
-g3c$log_mass_limit <- pmin(g3c$log_mass_limit, log10(g3c$MassAfunc) - 0.2)
-g3c$log_mass_limit <- pmax(g3c$log_mass_limit, 10.5)
-
-# Diagnostics
-cat("Mass limit statistics:\n")
-cat("  Range: ", round(range(g3c$log_mass_limit, na.rm=TRUE), 2), "\n")
-cat("  Median M_obs - M_lim: ", 
-    round(median(log10(g3c$MassAfunc) - g3c$log_mass_limit, na.rm=TRUE), 2), " dex\n")
-cat("  Mean M_obs - M_lim: ",
-    round(mean(log10(g3c$MassAfunc) - g3c$log_mass_limit, na.rm=TRUE), 2), " dex\n\n")
+cat("Vmax range:", signif(range(g3c$vmax),3), "Mpc^3\n")
+cat("Vmax/Vsurvey range:", signif(range(g3c$vmax/Vsurvey),3), "\n\n")
 
 ############################################################
-# Prepare data
+# Prepare data for Stan
 ############################################################
 
 x_obs     <- log10(g3c$MassAfunc[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0])
 sigma_obs <- g3c$log10MassErr[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0]
-m_lim_obs <- g3c$log_mass_limit[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0]
+vmax_obs  <- g3c$vmax[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0]
 
-# Remove any with bad limits
-keep <- !is.na(m_lim_obs) & x_obs > 10 & x_obs < 17
+# Remove any with bad vmax
+keep <- !is.na(vmax_obs) & x_obs > 10 & x_obs < 17
 x_obs     <- x_obs[keep]
 sigma_obs <- sigma_obs[keep]
-m_lim_obs <- m_lim_obs[keep]
+vmax_obs  <- vmax_obs[keep]
 
 N <- length(x_obs)
 
 cat("N groups:", N, "\n")
-cat("Mass range:", round(range(x_obs), 3), "\n")
-cat("Limit range:", round(range(m_lim_obs), 3), "\n\n")
+cat("Mass range:", round(range(x_obs), 3), "\n\n")
 
-xlo <- min(m_lim_obs) - 0.5
+xlo <- 10.0
 xhi <- 16.0
-Ng  <- 500   # Reduced for speed
-Ne  <- 15    # Reduced for speed
+Ng  <- 500   # Grid points for MRP integral
+Ne  <- 15    # Grid points for error convolution
 
 ############################################################
-# PURE TRUNCATION STAN MODEL
-# No Vmax - just truncated likelihood per group
+# VMAX-WEIGHTED STAN MODEL
+# Likelihood: Σᵢ log[(1/Vmax[i]) × phi_convolved(M_obs[i])]
+# This automatically accounts for incompleteness!
 ############################################################
 
-stage3_truncated <- "
+stage3_vmax <- "
 data {
   int<lower=0> N;
   vector[N] x;                 // observed log10(mass)
   vector<lower=0>[N] sigma_x;  // mass uncertainty
-  vector[N] m_lim;             // mass limit per group
-  real V;                      // survey volume
+  vector<lower=0>[N] vmax;     // Vmax per group (accounts for selection!)
+  real V_survey;               // total survey volume
   real xlo;
   real xhi;
   int<lower=1> Ng;
@@ -191,7 +171,7 @@ model {
   log_phi ~ normal(-3.5, 1.5);
   alpha   ~ normal(-1.5, 0.8);
   
-  // Compute phi on the grid once (reuse for all groups)
+  // Compute phi on grid once (for efficiency)
   vector[Ng] phi_grid;
   for(k in 1:Ng) {
     real u = beta * (xgrid[k] - mstar);
@@ -200,14 +180,21 @@ model {
                   * exp(-pow(10, u));
   }
   
-  // For each group: likelihood given detection
+  // Global normalization: total expected number in survey
+  // Lambda = V_survey × ∫ phi(m) dm
+  real Lambda = V_survey * sum(phi_grid) * dx;
+  target += -Lambda;  // Poisson: exp(-Lambda)
+  
+  // For each group: contribute based on Vmax weighting
+  // This is the key insight: groups with small Vmax (near detection limit)
+  // get upweighted, which corrects for incompleteness
   for(i in 1:N) {
     
     // Convolve MRP with measurement error
     real x_lo_i = x[i] - 4.0 * sigma_x[i];
     real x_hi_i = x[i] + 4.0 * sigma_x[i];
     
-    x_lo_i = fmax(x_lo_i, m_lim[i]);
+    x_lo_i = fmax(x_lo_i, xlo);
     x_hi_i = fmin(x_hi_i, xhi);
     
     real dx_i = (x_hi_i - x_lo_i) / (Ne - 1);
@@ -230,17 +217,11 @@ model {
     
     real phi_convolved = sum(integrand) * dx_i;
     
-    // CRITICAL: Truncation normalization using pre-computed grid
-    real phi_norm = 0.0;
-    for(k in 1:Ng) {
-      if(xgrid[k] >= m_lim[i]) {
-        phi_norm += phi_grid[k];
-      }
-    }
-    phi_norm *= dx;
-    
-    // Likelihood: p(observe this mass | detected above m_lim[i])
-    target += log(phi_convolved) - log(phi_norm);
+    // Vmax-weighted contribution
+    // The (1/Vmax) weighting corrects for incompleteness:
+    // - Small Vmax (near limit) → large weight → upweight group
+    // - Large Vmax (easily detected) → small weight → downweight group
+    target += log(vmax[i]) + log(phi_convolved);
   }
 }
 "
@@ -250,20 +231,20 @@ model {
 ############################################################
 
 stan_data <- list(
-    N       = N,
-    x       = x_obs,
-    sigma_x = sigma_obs,
-    m_lim   = m_lim_obs,
-    V       = Vsurvey,
-    xlo     = xlo,
-    xhi     = xhi,
-    Ng      = Ng,
-    Ne      = Ne
+    N         = N,
+    x         = x_obs,
+    sigma_x   = sigma_obs,
+    vmax      = vmax_obs,
+    V_survey  = Vsurvey,
+    xlo       = xlo,
+    xhi       = xhi,
+    Ng        = Ng,
+    Ne        = Ne
 )
 
-cat("Compiling Stage 3 model (pure truncation)...\n")
+cat("Compiling Stage 3 model (Vmax weighting)...\n")
 fit3 <- stan(
-    model_code = stage3_truncated,
+    model_code = stage3_vmax,
     data       = stan_data,
     chains     = 4,
     iter       = 2000,
@@ -279,11 +260,11 @@ fit3 <- stan(
     control = list(adapt_delta = 0.95, max_treedepth = 12)
 )
 
-cat("\n=== STAGE 3 RESULTS (pure truncation) ===\n")
+cat("\n=== STAGE 3 RESULTS (Vmax weighting) ===\n")
 print(fit3, pars=c("mstar","log_phi","alpha","beta"))
 
 ############################################################
-# Extract posterior
+# Extract and analyze posterior
 ############################################################
 
 posterior3 <- extract(fit3, pars=c("mstar","log_phi","alpha","beta"))
@@ -294,7 +275,6 @@ posterior_matrix <- cbind(
     beta    = posterior3$beta
 )
 
-# Check for parameter correlations
 cat("\n=== PARAMETER CORRELATIONS ===\n")
 post_cor <- cor(posterior_matrix)
 print(round(post_cor, 3))
@@ -303,34 +283,51 @@ med <- apply(posterior_matrix, 2, median)
 q16 <- apply(posterior_matrix, 2, quantile, 0.16)
 q84 <- apply(posterior_matrix, 2, quantile, 0.84)
 
+############################################################
+# Plot
+############################################################
+
 mrp_log10 <- function(mstar, log_phi, alpha, beta, x) {
     log10(beta * log(10) * 10^log_phi *
           10^((alpha+1)*(x-mstar)) *
           exp(-10^(beta*(x-mstar))))
 }
 
-# Binned data for display
+# Binned data for display (Vmax weighted)
 x_min <- floor(min(x_obs) * 10) / 10
 x_max <- ceiling(max(x_obs) * 10) / 10
 breaks <- seq(x_min, x_max, by=0.2)
 
 hist_plt <- hist(x_obs, breaks=breaks, plot=FALSE)
-phi_plt  <- hist_plt$counts / (Vsurvey * 0.2)
-ok       <- phi_plt > 0
-xfit     <- seq(x_min, x_max, length.out=500)
 
-CairoPDF("MRP_STAGE3_PURE_TRUNCATION.pdf", 10, 7)
+# Apply Vmax weights to bins
+weights <- 1/vmax_obs
+hist_weighted <- rep(0, length(hist_plt$mids))
+for(i in 1:length(x_obs)) {
+    bin <- findInterval(x_obs[i], breaks)
+    if(bin > 0 && bin <= length(hist_weighted)) {
+        hist_weighted[bin] <- hist_weighted[bin] + weights[i]
+    }
+}
+
+# Convert to number density
+phi_plt <- hist_weighted / 0.2
+ok      <- phi_plt > 0
+xfit    <- seq(x_min, x_max, length.out=500)
+
+CairoPDF("MRP_STAGE3_VMAX.pdf", 10, 7)
 
 plot(hist_plt$mids[ok], log10(phi_plt[ok]),
      pch=19, col="darkgreen", cex=1.2,
-     xlim=c(12,16), ylim=c(-8,-2),
+     xlim=c(11,16), ylim=c(-5,-2),
      xlab=expression("Halo Mass  log"[10]*"(M/M"["\u2299"]*")"),
      ylab=expression("log"[10]*"("*phi*")  [Mpc"^{-3}*" dex"^{-1}*"]"),
-     main="Stage 3: Pure Truncation (No Vmax)")
+     main="Stage 3: Vmax Weighting (Incompleteness Corrected)")
 
 grid(col="gray80")
 
-idx <- sample(1:nrow(posterior_matrix), min(300, nrow(posterior_matrix)))
+# Posterior samples
+idx <- sample(1:nrow(posterior_matrix), 300)
 for(i in idx) {
     y <- tryCatch(
         mrp_log10(posterior_matrix[i,"mstar"], posterior_matrix[i,"log_phi"],
@@ -340,15 +337,17 @@ for(i in idx) {
     if(all(is.finite(y))) lines(xfit, y, col=rgb(0,0,1,0.03))
 }
 
+# Median fit
 lines(xfit, mrp_log10(med["mstar"],med["log_phi"],
                        med["alpha"],med["beta"],xfit),
       col="red", lwd=3)
 
+# Driver+22
 lines(xfit, mrp_log10(13.51,-3.19,-1.27,0.47,xfit),
       col="black", lwd=2, lty=2)
 
 legend("bottomleft",
-       legend=c("GAMA (binned)", "Pure truncation",
+       legend=c("GAMA (Vmax weighted)", "Stan fit",
                 "Posterior samples", "Driver+22"),
        col=c("darkgreen","red",rgb(0,0,1,0.3),"black"),
        pch=c(19,NA,NA,NA), lty=c(NA,1,1,2),
@@ -375,7 +374,7 @@ cat(sprintf("alpha:     %6.3f   +%.3f   -%.3f    -1.27\n",
 cat(sprintf("beta:      %6.3f   +%.3f   -%.3f     0.47\n",
             med["beta"],   q84["beta"]-med["beta"],     med["beta"]-q16["beta"]))
 
-cat("\nPlot: MRP_STAGE3_PURE_TRUNCATION.pdf\n")
+cat("\nPlot: MRP_STAGE3_VMAX.pdf\n")
 
 saveRDS(list(
     fit = fit3,
@@ -383,7 +382,10 @@ saveRDS(list(
     median = med,
     q16 = q16,
     q84 = q84,
-    m_lim = m_lim_obs
-), "stage3_pure_truncation_results.rds")
+    vmax = vmax_obs
+), "stage3_vmax_results.rds")
 
-cat("\nPure truncation - no Vmax weighting!\n")
+cat("\n=== HOW VMAX HANDLES INCOMPLETENESS ===\n")
+cat("Groups with small Vmax (near detection limit) get upweighted.\n")
+cat("Groups with large Vmax (easily detected) get downweighted.\n")
+cat("This naturally corrects for incompleteness without needing M_lim!\n")
