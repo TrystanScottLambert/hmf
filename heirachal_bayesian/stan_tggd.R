@@ -90,14 +90,56 @@ for (i in 1:nrow(g3c)) {
 g3c$zmax <- ifelse(g3c$zmax < g3c$Zfof, g3c$Zfof, g3c$zmax)
 g3c$zmax <- ifelse(g3c$zmax > zlimit, zlimit, g3c$zmax)
 
-# Use a simple empirical M_lim from z relationship
-# Groups at higher z have higher mass limits
-# This is a simple approximation - adjust if needed
-g3c$log_mass_limit <- 11.0 + 1.5 * (g3c$Zfof / 0.25)
+# Use the direct M_halo-z envelope relation we fitted earlier
+# If the file doesn't exist, fit it now
+if(file.exists("direct_mhalo_z_relation.rds")) {
+    relation <- readRDS("direct_mhalo_z_relation.rds")
+} else {
+    # Quick fit from the data
+    z_bins <- seq(0.01, 0.25, by=0.02)
+    z_centers <- (z_bins[-1] + z_bins[-length(z_bins)]) / 2
+    mhalo_envelope <- rep(NA, length(z_centers))
+    
+    for(j in 1:length(z_centers)) {
+        in_bin <- g3c$Zfof >= z_bins[j] & g3c$Zfof < z_bins[j+1]
+        if(sum(in_bin) > 10) {
+            mhalo_envelope[j] <- quantile(log10(g3c$MassAfunc[in_bin]), 0.05, na.rm=TRUE)
+        }
+    }
+    
+    ok_bins <- !is.na(mhalo_envelope)
+    fit_envelope <- lm(mhalo_envelope[ok_bins] ~ z_centers[ok_bins])
+    
+    relation <- list(
+        mhalo_z_intercept = coef(fit_envelope)[1],
+        mhalo_z_slope = coef(fit_envelope)[2]
+    )
+}
 
-# Ensure limit is below observed mass
-g3c$log_mass_limit <- pmin(g3c$log_mass_limit, log10(g3c$MassAfunc) - 0.3)
+cat("Using M_halo-z envelope: log M_halo(z) =", 
+    round(relation$mhalo_z_intercept, 2), "+",
+    round(relation$mhalo_z_slope, 2), "× z\n")
+
+# Calculate mass limit directly from zmax
+# Logic: at z=zmax, this group is at the detection boundary
+# So M_lim(zmax) from the envelope tells us the minimum detectable mass
+g3c$log_mass_limit <- relation$mhalo_z_intercept + 
+                      relation$mhalo_z_slope * g3c$zmax
+
+# Ensure limit is below observed mass and sensible
+g3c$log_mass_limit <- pmin(g3c$log_mass_limit, log10(g3c$MassAfunc) - 0.2)
 g3c$log_mass_limit <- pmax(g3c$log_mass_limit, 10.5)
+
+# Diagnostics
+cat("\n=== MASS LIMIT DIAGNOSTICS ===\n")
+cat("z_obs range:", round(range(g3c$Zfof), 3), "\n")
+cat("zmax range:", round(range(g3c$zmax), 3), "\n")
+cat("M_obs range:", round(range(log10(g3c$MassAfunc)), 2), "\n")
+cat("M_lim range:", round(range(g3c$log_mass_limit), 2), "\n")
+cat("M_obs - M_lim range:", round(range(log10(g3c$MassAfunc) - g3c$log_mass_limit), 2), "\n")
+cat("Median M_obs - M_lim:", round(median(log10(g3c$MassAfunc) - g3c$log_mass_limit), 2), "dex\n")
+cat("Groups within 0.5 dex of limit:", 
+    sum((log10(g3c$MassAfunc) - g3c$log_mass_limit) < 0.5), "/", nrow(g3c), "\n\n")
 
 cat("Mass limit range:", round(range(g3c$log_mass_limit), 2), "\n")
 cat("Median M_obs - M_lim:", 
@@ -132,17 +174,6 @@ Ne  <- 15
 ############################################################
 
 tggd_stan <- "
-functions {
-  // Upper incomplete gamma function
-  // This is the key to proper truncation!
-  real gamma_inc_upper(real a, real x) {
-    // In Stan, we use gamma_q which is the regularized version
-    // gamma_q(a,x) = Γ(a,x) / Γ(a)
-    // So: Γ(a,x) = gamma_q(a,x) * tgamma(a)
-    return gamma_q(a, x) * tgamma(a);
-  }
-}
-
 data {
   int<lower=0> N;
   vector[N] x;                 // observed log10(mass)
@@ -163,26 +194,28 @@ transformed data {
 }
 
 parameters {
-  real mstar;                  // s in TGGD notation
+  real mstar;
   real log_phi;
-  real<lower=-0.99> alpha;
-  real<lower=0.1, upper=2> beta;  // b in TGGD notation
+  real alpha;
+  real<lower=0.1, upper=2> beta;
 }
 
 model {
   // Priors
   mstar   ~ normal(13.5, 1.0);
   log_phi ~ normal(-3.5, 1.5);
-  alpha ~ normal(-0.9, 0.3);
+  alpha   ~ normal(-1.5, 0.8);
   
-  // For each group: TGGD likelihood with per-group truncation
+  // Simplified approach: use numerical truncation normalization
+  // Avoid incomplete gamma which fails for alpha < 0
+  
   for(i in 1:N) {
     
-    // Convolve truncated MRP with measurement error
+    // Convolve MRP with measurement error
     real x_lo_i = x[i] - 4.0 * sigma_x[i];
     real x_hi_i = x[i] + 4.0 * sigma_x[i];
     
-    x_lo_i = fmax(x_lo_i, m_lim[i]);  // Can't be below detection limit
+    x_lo_i = fmax(x_lo_i, m_lim[i]);
     x_hi_i = fmin(x_hi_i, xhi);
     
     real dx_i = (x_hi_i - x_lo_i) / (Ne - 1);
@@ -193,22 +226,12 @@ model {
     for(e in 1:Ne) {
       real x_true = x_lo_i + (e-1) * dx_i;
       
-      // TGGD density (equation from page 7 of tggd.pdf)
-      // Numerator: ln(10) * beta * 10^((alpha+1)(x-mstar)) * exp(-10^(beta(x-mstar)))
+      // MRP density (no truncation correction in numerator)
       real u = beta * (x_true - mstar);
-      real phi_numerator = log(10) * beta * pow(10, log_phi)
-                          * pow(10, (alpha+1) * (x_true - mstar))
-                          * exp(-pow(10, u));
+      real phi_true = beta * log(10) * pow(10, log_phi)
+                      * pow(10, (alpha+1) * (x_true - mstar))
+                      * exp(-pow(10, u));
       
-      // Denominator: mstar * Γ((alpha+1)/beta, 10^(beta*(m_lim-mstar)))
-      real gamma_arg = pow(10, beta * (m_lim[i] - mstar));
-      real gamma_a = (alpha + 1) / beta;
-      real phi_denominator = pow(10, mstar) * gamma_inc_upper(gamma_a, gamma_arg);
-      
-      // TGGD density
-      real phi_true = phi_numerator / phi_denominator;
-      
-      // Convolve with Gaussian error
       real z = (x[i] - x_true) / sigma_x[i];
       real gauss = exp(-0.5 * z * z) / (sigma_x[i] * sqrt_2pi);
       
@@ -217,32 +240,22 @@ model {
     
     real phi_convolved = sum(integrand) * dx_i;
     
-    // Likelihood
-    target += log(V) + log(phi_convolved);
-  }
-  
-  // Global Poisson normalization using truncated integral
-  // This is tricky - for now we'll use a simple approximation
-  real Lambda = 0;
-  for(k in 1:Ng) {
-    // Average truncation across all groups (approximate)
-    real avg_m_lim = mean(m_lim);
-    
-    if(xgrid[k] >= avg_m_lim) {
-      real u = beta * (xgrid[k] - mstar);
-      real gamma_arg = pow(10, beta * (avg_m_lim - mstar));
-      real gamma_a = (alpha + 1) / beta;
-      
-      real phi_num = log(10) * beta * pow(10, log_phi)
-                    * pow(10, (alpha+1) * (xgrid[k] - mstar))
-                    * exp(-pow(10, u));
-      real phi_denom = pow(10, mstar) * gamma_inc_upper(gamma_a, gamma_arg);
-      
-      Lambda += (phi_num / phi_denom) * dx;
+    // Truncation normalization: ∫[m_lim to ∞] phi(m) dm
+    real phi_norm = 0.0;
+    for(k in 1:Ng) {
+      if(xgrid[k] >= m_lim[i]) {
+        real u = beta * (xgrid[k] - mstar);
+        real phi_k = beta * log(10) * pow(10, log_phi)
+                     * pow(10, (alpha+1) * (xgrid[k] - mstar))
+                     * exp(-pow(10, u));
+        phi_norm += phi_k;
+      }
     }
+    phi_norm *= dx;
+    
+    // Likelihood with truncation
+    target += log(phi_convolved) - log(phi_norm);
   }
-  Lambda *= V;
-  target += -Lambda;
 }
 "
 
@@ -270,12 +283,12 @@ fit3 <- stan(
     iter       = 2000,
     warmup     = 1000,
     cores      = 4,
-  init = lapply(1:4, function(i) list(
-      mstar   = rnorm(1, 13.5, 0.1),
-      log_phi = rnorm(1, -3.5, 0.1),
-      alpha   = runif(1, -0.95, -0.7),
-      beta    = runif(1, 0.4, 0.6)
-  )),
+    init       = lapply(1:4, function(i) list(
+        mstar   = rnorm(1, 13.5, 0.2),
+        log_phi = rnorm(1, -3.5, 0.2),
+        alpha   = rnorm(1, -1.5, 0.1),
+        beta    = runif(1, 0.4, 0.6)
+    )),
     control = list(adapt_delta = 0.95, max_treedepth = 12)
 )
 
