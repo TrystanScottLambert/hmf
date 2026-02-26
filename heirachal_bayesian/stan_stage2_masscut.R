@@ -82,14 +82,50 @@ g3c$MassAfunc <- g3c$mymasscorr
 # Fix bad group (gamahmf.r line 310)
 g3c$MassAfunc[g3c$GroupID == 100622] <- 1E9
 
+############################################################
+# Calculate Vmax BEFORE preparing unbinned data
+############################################################
+
+gig <- fread("../data/GAMAGalsInGroups.csv")
+
+g3c$zmax <- NA
+for (i in 1:nrow(g3c)) {
+    if(g3c$Nfof[i] == 2) {
+        g3c$zmax[i] <- sort(gig[GroupID==g3c$GroupID[i], zmax_19p8], 
+                           decreasing=TRUE)[2]
+    } else {
+        g3c$zmax[i] <- sort(gig[GroupID==g3c$GroupID[i], zmax_19p8], 
+                           decreasing=TRUE)[multi]
+    }
+}
+
+g3c$zmax <- ifelse(g3c$zmax < g3c$Zfof, g3c$Zfof, g3c$zmax)
+g3c$zmax <- ifelse(g3c$zmax > zlimit, zlimit, g3c$zmax)
+
+vol_zmax <- cosdist(g3c$zmax, OmegaM=omegam, H0=ho)$CoVol
+vol_zmin <- cosdist(zmin, OmegaM=omegam, H0=ho)$CoVol
+g3c$vmax <- 179.92/(360^2/pi) * 1E9 * (vol_zmax - vol_zmin)
+
+vlimitmin <- Vsurvey / 1000.0
+g3c$weightszlimit <- ifelse(g3c$vmax > Vsurvey, Vsurvey, g3c$vmax)
+g3c$weightszlimit <- ifelse(g3c$vmax < vlimitmin, vlimitmin, g3c$vmax)
+
+cat("Vmax range:", signif(range(g3c$weightszlimit), 3), "Mpc^3\n\n")
+
+############################################################
+# Prepare unbinned data WITH Vmax
+############################################################
+
 # Final masses with mass cut
 x_obs <- log10(g3c$MassAfunc[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0])
 sigma_obs <- g3c$log10MassErr[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0]
+vmax_obs <- g3c$weightszlimit[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0]
 
 # Apply mass cut to remove incomplete sample
 keep <- x_obs > mass_limit
 x_obs <- x_obs[keep]
 sigma_obs <- sigma_obs[keep]
+vmax_obs <- vmax_obs[keep]
 
 N <- length(x_obs)
 
@@ -109,23 +145,24 @@ Ne  <- 10    # Reduced for testing
 
 stage2_stan <- "
 data {
-  int<lower=0> N;           // number of groups
-  vector[N] x;              // observed log10(mass)
-  vector<lower=0>[N] sigma_x;  // mass uncertainty per group
-  real V;                   // survey volume
-  real xlo;                 // lower mass limit
-  real xhi;                 // upper mass limit
-  int<lower=1> Ng;          // integration grid for MRP
-  int<lower=1> Ne;          // integration grid for errors
+  int<lower=0> N;
+  vector[N] x;
+  vector<lower=0>[N] sigma_x;
+  vector<lower=0>[N] vmax;  // Vmax per group
+  real xlo;
+  real xhi;
+  int<lower=1> Ng;
+  int<lower=1> Ne;
 }
 
 transformed data {
-  // Fixed grid for MRP integral
   vector[Ng] xgrid;
   real dx;
   dx = (xhi - xlo) / (Ng - 1);
   for(k in 1:Ng)
     xgrid[k] = xlo + (k-1) * dx;
+  
+  real total_vmax = sum(vmax);  // Total survey volume represented
 }
 
 parameters {
@@ -136,70 +173,45 @@ parameters {
 }
 
 model {
-  // Priors
   mstar   ~ normal(13.5, 1.0);
   log_phi ~ normal(-3.5, 1.5);
   alpha   ~ normal(-1.5, 0.8);
 
-  // ---- MRP integral: Lambda = V * integral[phi(m) dm] ----
+  // Global normalization with total Vmax
   {
     vector[Ng] phi_grid;
-    real Lambda;
-    
     for(k in 1:Ng) {
       real u = beta * (xgrid[k] - mstar);
       phi_grid[k] = beta * log(10) * pow(10, log_phi)
                     * pow(10, (alpha+1) * (xgrid[k] - mstar))
                     * exp(-pow(10, u));
     }
-    
-    Lambda = V * sum(phi_grid) * dx;
+    real Lambda = total_vmax * sum(phi_grid) * dx;
     target += -Lambda;
   }
 
-  // ---- Likelihood with error convolution ----
-  // For each observed group, we need:
-  //   p(x_obs | theta) = integral[ phi(x_true) * N(x_obs | x_true, sigma) dx_true ]
-  //
-  // This accounts for the fact that the TRUE mass distribution
-  // follows the MRP, but we observe it with Gaussian errors
-
+  // Per-group likelihood (NO Vmax here, it's in Lambda)
   for(i in 1:N) {
-    // Integration range: x_obs ± 4*sigma
-    real x_lo_i = x[i] - 4.0 * sigma_x[i];
-    real x_hi_i = x[i] + 4.0 * sigma_x[i];
-    
-    // Ensure we stay within physical bounds
-    x_lo_i = fmax(x_lo_i, xlo);
-    x_hi_i = fmin(x_hi_i, xhi);
-    
+    real x_lo_i = fmax(x[i] - 4.0 * sigma_x[i], xlo);
+    real x_hi_i = fmin(x[i] + 4.0 * sigma_x[i], xhi);
     real dx_i = (x_hi_i - x_lo_i) / (Ne - 1);
     
-    // Numerical integration over possible true masses
     vector[Ne] integrand;
     real sqrt_2pi = sqrt(2.0 * pi());
     
     for(e in 1:Ne) {
       real x_true = x_lo_i + (e-1) * dx_i;
-      
-      // MRP at this true mass
       real u = beta * (x_true - mstar);
       real phi_true = beta * log(10) * pow(10, log_phi)
                       * pow(10, (alpha+1) * (x_true - mstar))
                       * exp(-pow(10, u));
-      
-      // Gaussian likelihood of observing x[i] given true mass x_true
       real z = (x[i] - x_true) / sigma_x[i];
       real gauss = exp(-0.5 * z * z) / (sigma_x[i] * sqrt_2pi);
-      
       integrand[e] = phi_true * gauss;
     }
     
-    // Expected rate for observing this group
-    real p_obs_i = V * sum(integrand) * dx_i;
-    
-    // Add to log-likelihood
-    target += log(p_obs_i);
+    real phi_convolved = sum(integrand) * dx_i;
+    target += log(phi_convolved);
   }
 }
 "
@@ -212,7 +224,7 @@ stan_data <- list(
     N       = N,
     x       = x_obs,
     sigma_x = sigma_obs,
-    V       = Vsurvey,
+    vmax    = vmax_obs,
     xlo     = xlo,
     xhi     = xhi,
     Ng      = Ng,
@@ -262,21 +274,32 @@ mrp_log10 <- function(mstar, log_phi, alpha, beta, x) {
           exp(-10^(beta*(x-mstar))))
 }
 
-# Binned data for display
-breaks   <- seq(12.5, 16.2, by=0.2)
-hist_plt <- hist(x_obs, breaks=breaks, plot=FALSE)
-phi_plt  <- hist_plt$counts / (Vsurvey * 0.2)
-ok       <- phi_plt > 0
-xfit     <- seq(12, 16, length.out=500)
+############################################################
+# Plotting with Vmax-weighted bins for comparison
+############################################################
+
+library(plotrix)
+logbin <- 0.2
+massx <- seq(10.3, 16.1, logbin)
+gamahmf2 <- weighted.hist(log10(g3c$MassAfunc), 
+                          w=1/g3c$weightszlimit, 
+                          breaks=massx, 
+                          plot=FALSE)
+
+gamax <- gamahmf2$mids
+gamay <- gamahmf2$counts / logbin
+
+ok <- gamay > 0 & gamax > mass_limit
+xfit <- seq(12, 16, length.out=500)
 
 CairoPDF("MRP_STAGE3_FINAL.pdf", 10, 7)
 
-plot(hist_plt$mids[ok], log10(phi_plt[ok]),
+plot(gamax[ok], log10(gamay[ok]),
      pch=19, col="darkgreen", cex=1.2,
      xlim=c(12,16), ylim=c(-5,-2),
      xlab=expression("Halo Mass  log"[10]*"(M/M"["\u2299"]*")"),
      ylab=expression("log"[10]*"("*phi*")  [Mpc"^{-3}*" dex"^{-1}*"]"),
-     main="Stage 3: Mass Errors + M>12.7 (Complete Sample)")
+     main="Stage 3: Unbinned + Mass Errors + Vmax")
 
 grid(col="gray80")
 

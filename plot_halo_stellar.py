@@ -22,7 +22,7 @@ def read_groups(group_file: str, n_members: int) -> pl.DataFrame:
 if __name__ == "__main__":
     GROUP_FILE = "data/G3CFoFGroupv10.fits"
     GALAXY_FILE = "data/GAMAGalsInGroups.csv"
-    N_CUT = 3
+    N_CUT = 5
 
     df_groups = read_groups(GROUP_FILE, N_CUT)
     df_galaxies = read_galaxies(GALAXY_FILE)
@@ -61,4 +61,4 @@ if __name__ == "__main__":
     plt.show()
 
     plt.scatter(galaxy_redshift[cut], group_masses[cut])
-    plt.show(
+    plt.show()
