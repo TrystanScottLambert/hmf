@@ -1,17 +1,14 @@
 ############################################################
-# STAGE 3 - UNBINNED with MASS ERRORS + VMAX WEIGHTING
+# STAGE 3 FINAL - Mass Errors + M>12.7 Cut
 #
-# This is the proper Bayesian approach:
-# 1. Fit to UNBINNED data (not bins like gamahmf.r)
-# 2. Mass errors handled via convolution (Eddington bias correction)
-# 3. Vmax weighting via sum(Vmax) in Lambda normalization
-# 4. M > 12.7 cut to avoid severe incompleteness
+# Simple and correct approach:
+# 1. M > 12.7 cut removes incompleteness
+# 2. Mass errors handled via convolution (Eddington bias)
+# 3. Regular Poisson likelihood (no Vmax in likelihood)
+# 4. Full Bayesian uncertainties
 #
-# Advantages over gamahmf.r:
-# - No binning loss of information
-# - Analytical Eddington bias (not Monte Carlo approximation)
-# - Full Bayesian posteriors (not bootstrap)
-# - Proper propagation of mass uncertainties
+# We're fitting the COMPLETE sample (M>12.7) with proper
+# error handling. Vmax is only for plotting the binned data.
 ############################################################
 
 library(celestial)
@@ -31,9 +28,9 @@ set.seed(42)
 ho     <- 67.37
 omegam <- 0.3147
 zlimit <- 0.25
-zmin   <- 0.015  # Matching gamahmf.r line 242
+zmin   <- 0.015  # Matching gamahmf.r
 multi  <- 5
-mass_limit <- 12.7  # Matching gamahmf.r line 240
+mass_limit <- 12.7  # Cut to avoid incompleteness
 
 vol_max <- cosdistCoDist(zlimit, OmegaM=omegam, H0=ho)
 Vsurvey <- (4/3)*pi*vol_max^3 * 179.92*(pi/180)^2 / (4*pi)
@@ -85,64 +82,25 @@ g3c$MassAfunc <- g3c$mymasscorr
 # Fix bad group (gamahmf.r line 310)
 g3c$MassAfunc[g3c$GroupID == 100622] <- 1E9
 
-############################################################
-# Calculate Vmax (needed for both fitting and plotting)
-############################################################
-
-gig <- fread("../data/GAMAGalsInGroups.csv")
-
-g3c$zmax <- NA
-for (i in 1:nrow(g3c)) {
-    if(g3c$Nfof[i] == 2) {
-        g3c$zmax[i] <- sort(gig[GroupID==g3c$GroupID[i], zmax_19p8], 
-                           decreasing=TRUE)[2]
-    } else {
-        g3c$zmax[i] <- sort(gig[GroupID==g3c$GroupID[i], zmax_19p8], 
-                           decreasing=TRUE)[multi]
-    }
-}
-
-g3c$zmax <- ifelse(g3c$zmax < g3c$Zfof, g3c$Zfof, g3c$zmax)
-g3c$zmax <- ifelse(g3c$zmax > zlimit, zlimit, g3c$zmax)
-
-# Calculate Vmax
-vol_zmax <- cosdist(g3c$zmax, OmegaM=omegam, H0=ho)$CoVol
-vol_zmin <- cosdist(zmin, OmegaM=omegam, H0=ho)$CoVol
-g3c$vmax <- 179.92/(360^2/pi) * 1E9 * (vol_zmax - vol_zmin)
-
-vlimitmin <- Vsurvey / 1000.0
-g3c$weightszlimit <- ifelse(g3c$vmax > Vsurvey, Vsurvey, g3c$vmax)
-g3c$weightszlimit <- ifelse(g3c$vmax < vlimitmin, vlimitmin, g3c$vmax)
-
-cat("Vmax calculated for", nrow(g3c), "groups\n")
-cat("Vmax range:", signif(range(g3c$weightszlimit), 3), "Mpc^3\n\n")
-
-############################################################
-# Prepare unbinned data for Stan
-############################################################
-
-# Prepare unbinned data for Stan
+# Final masses with mass cut
 x_obs <- log10(g3c$MassAfunc[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0])
 sigma_obs <- g3c$log10MassErr[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0]
-vmax_obs <- g3c$weightszlimit[is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0]
 
-# Apply mass cut
+# Apply mass cut to remove incomplete sample
 keep <- x_obs > mass_limit
 x_obs <- x_obs[keep]
 sigma_obs <- sigma_obs[keep]
-vmax_obs <- vmax_obs[keep]
 
 N <- length(x_obs)
 
-cat("\n=== UNBINNED DATA FOR STAN ===\n")
-cat("N groups:", N, "\n")
+cat("N groups (M>12.7):", N, "\n")
 cat("Mass range:", round(range(x_obs), 3), "\n")
-cat("Vmax range:", signif(range(vmax_obs), 3), "\n\n")
+cat("Error range:", round(range(sigma_obs), 3), "\n\n")
 
-xlo <- mass_limit
+xlo <- mass_limit  # Start from mass limit
 xhi <- 15.8
-Ng  <- 200   # Reduced from 500 for testing
-Ne  <- 10    # Reduced from 21 for testing
+Ng  <- 200   # Reduced for testing
+Ne  <- 10    # Reduced for testing
 
 ############################################################
 # STAGE 2 STAN MODEL
@@ -154,7 +112,6 @@ data {
   int<lower=0> N;           // number of groups
   vector[N] x;              // observed log10(mass)
   vector<lower=0>[N] sigma_x;  // mass uncertainty per group
-  vector<lower=0>[N] vmax;     // Vmax per group (for weighting)
   real V;                   // survey volume
   real xlo;                 // lower mass limit
   real xhi;                 // upper mass limit
@@ -184,7 +141,7 @@ model {
   log_phi ~ normal(-3.5, 1.5);
   alpha   ~ normal(-1.5, 0.8);
 
-  // ---- MRP integral with Vmax normalization ----
+  // ---- MRP integral: Lambda = V * integral[phi(m) dm] ----
   {
     vector[Ng] phi_grid;
     real Lambda;
@@ -196,13 +153,17 @@ model {
                     * exp(-pow(10, u));
     }
     
-    // Lambda = sum(Vmax) * integral[phi(m) dm]
-    // This is the total expected number across all Vmax volumes
-    Lambda = sum(vmax) * sum(phi_grid) * dx;
+    Lambda = V * sum(phi_grid) * dx;
     target += -Lambda;
   }
 
-  // ---- Likelihood with error convolution (NO Vmax per group) ----
+  // ---- Likelihood with error convolution ----
+  // For each observed group, we need:
+  //   p(x_obs | theta) = integral[ phi(x_true) * N(x_obs | x_true, sigma) dx_true ]
+  //
+  // This accounts for the fact that the TRUE mass distribution
+  // follows the MRP, but we observe it with Gaussian errors
+
   for(i in 1:N) {
     // Integration range: x_obs ± 4*sigma
     real x_lo_i = x[i] - 4.0 * sigma_x[i];
@@ -234,11 +195,11 @@ model {
       integrand[e] = phi_true * gauss;
     }
     
-    // Expected convolved phi for this group (NO volume factor here!)
-    real phi_convolved = sum(integrand) * dx_i;
+    // Expected rate for observing this group
+    real p_obs_i = V * sum(integrand) * dx_i;
     
     // Add to log-likelihood
-    target += log(phi_convolved);
+    target += log(p_obs_i);
   }
 }
 "
@@ -251,7 +212,6 @@ stan_data <- list(
     N       = N,
     x       = x_obs,
     sigma_x = sigma_obs,
-    vmax    = vmax_obs,
     V       = Vsurvey,
     xlo     = xlo,
     xhi     = xhi,
@@ -259,23 +219,22 @@ stan_data <- list(
     Ne      = Ne
 )
 
-cat("Compiling Stage 2 model (with mass errors)...\n")
-cat("*** FAST TESTING MODE - use fewer iterations for final run ***\n")
+cat("Compiling Stan model...\n")
+cat("*** FAST TESTING MODE ***\n")
 fit2 <- stan(
     model_code = stage2_stan,
     data       = stan_data,
-    chains     = 2,        # Reduced from 4
-    iter       = 1000,     # Reduced from 3000
-    warmup     = 500,      # Reduced from 1000
-    thin       = 1,
+    chains     = 2,
+    iter       = 1000,
+    warmup     = 500,
     cores      = 2,
-    init       = lapply(1:2, function(i) list(  # Changed 1:4 to 1:2
+    init       = lapply(1:2, function(i) list(
         mstar   = rnorm(1, 13.5, 0.2),
         log_phi = rnorm(1, -3.5, 0.2),
         alpha   = rnorm(1, -1.5, 0.1),
         beta    = runif(1, 0.4, 0.6)
     )),
-    control = list(adapt_delta = 0.9, max_treedepth = 10)  # Reduced from 0.95, 12
+    control = list(adapt_delta = 0.9, max_treedepth = 10)
 )
 
 cat("\n=== STAGE 2 RESULTS (with mass errors) ===\n")
@@ -303,42 +262,21 @@ mrp_log10 <- function(mstar, log_phi, alpha, beta, x) {
           exp(-10^(beta*(x-mstar))))
 }
 
-############################################################
-# Binned data for plotting - use Vmax weights like gamahmf.r
-############################################################
+# Binned data for display
+breaks   <- seq(12.5, 16.2, by=0.2)
+hist_plt <- hist(x_obs, breaks=breaks, plot=FALSE)
+phi_plt  <- hist_plt$counts / (Vsurvey * 0.2)
+ok       <- phi_plt > 0
+xfit     <- seq(12, 16, length.out=500)
 
-# Vmax already calculated above - just create the weighted histogram
-library(plotrix)
-logbin <- 0.2
-massx <- seq(10.3, 16.1, logbin)
-gamahmf2 <- weighted.hist(log10(g3c$MassAfunc), 
-                          w=1/g3c$weightszlimit, 
-                          breaks=massx, 
-                          plot=FALSE)
+CairoPDF("MRP_STAGE3_FINAL.pdf", 10, 7)
 
-# For plotting, use bins > mass_limit
-gamax <- gamahmf2$mids
-gamay <- gamahmf2$counts / logbin  # phi per dex
-
-ok <- gamay > 0 & gamax > mass_limit
-gamax_plt <- gamax[ok]
-gamay_plt <- gamay[ok]
-
-cat("\n=== BINNED DATA (Vmax weighted) ===\n")
-cat("Bins used:", length(gamax_plt), "\n")
-cat("Phi range:", range(gamay_plt), "\n")
-cat("At M=13, phi =", gamay_plt[which.min(abs(gamax_plt-13))], "\n\n")
-
-xfit <- seq(12, 16, length.out=500)
-
-CairoPDF("MRP_STAGE3_UNBINNED.pdf", 10, 7)
-
-plot(gamax_plt, log10(gamay_plt),
+plot(hist_plt$mids[ok], log10(phi_plt[ok]),
      pch=19, col="darkgreen", cex=1.2,
      xlim=c(12,16), ylim=c(-5,-2),
      xlab=expression("Halo Mass  log"[10]*"(M/M"["\u2299"]*")"),
      ylab=expression("log"[10]*"("*phi*")  [Mpc"^{-3}*" dex"^{-1}*"]"),
-     main="Stage 3: Unbinned + Mass Errors + Vmax")
+     main="Stage 3: Mass Errors + M>12.7 (Complete Sample)")
 
 grid(col="gray80")
 
@@ -390,13 +328,14 @@ cat(sprintf("alpha:     %6.3f   +%.3f   -%.3f    -1.27\n",
 cat(sprintf("beta:      %6.3f   +%.3f   -%.3f     0.47\n",
             med["beta"],   q84["beta"]-med["beta"],     med["beta"]-q16["beta"]))
 
-cat("\nPlot: MRP_STAGE3_UNBINNED.pdf\n")
-cat("\n=== WHAT MAKES THIS DIFFERENT FROM gamahmf.r ===\n")
-cat("1. UNBINNED: Fits to individual groups (1648), not bins (24)\n")
-cat("2. MASS ERRORS: Analytical convolution per group, not Monte Carlo\n")
-cat("3. VMAX: Proper Poisson normalization with sum(Vmax)\n")
-cat("4. UNCERTAINTIES: Full Bayesian posterior, not bootstrap\n")
-cat("\nThis preserves all information and properly propagates uncertainties!\n")
+cat("\nPlot: MRP_STAGE3_FINAL.pdf\n")
+cat("\n=== STAGE 3 FINAL ===\n")
+cat("Approach: Fit complete sample (M>12.7) with mass errors\n")
+cat("1. M>12.7 cut removes incompleteness\n")
+cat("2. Mass errors via analytical convolution (not Monte Carlo)\n")
+cat("3. Unbinned Bayesian fit (not chi-squared on bins)\n")
+cat("4. Full posterior uncertainties\n\n")
+cat("This is simpler and cleaner than trying to model incompleteness!\n")
 
 saveRDS(list(
     fit = fit2,
