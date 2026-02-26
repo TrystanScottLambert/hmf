@@ -1,34 +1,33 @@
 ############################################################
-# STAGE 3 FINAL - Simple M>12.7 cut, no truncation
-# Just like gamahmf.r - keep it simple!
+# STAGE 3 FINAL - Exactly matching gamahmf.r
+# Fit to Vmax-weighted bins using chi-squared
+# No Poisson point process - just fit the bins!
 ############################################################
 
 library(celestial)
 library(Rfits)
 library(data.table)
 library(rstan)
+library(plotrix)
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
 library(Cairo)
-library(plotrix)
 
 set.seed(42)
 
 ############################################################
-# Data prep - EXACT from gamahmf.r
+# Data preparation - EXACT from gamahmf.r
 ############################################################
 
 ho     <- 67.37
 omegam <- 0.3147
 zlimit <- 0.25
-zmin   <- 0.015  # Matching gamahmf.r line 242
+zmin   <- 0.015
 multi  <- 5
-logbin <- 0.2
-mlimit <- 12.7  # Matching gamahmf.r line 240
+mass_limit <- 12.7
 
 vol_max_survey <- cosdistCoDist(zlimit, OmegaM=omegam, H0=ho)
 Vsurvey <- (4/3)*pi*vol_max_survey^3 * 179.92*(pi/180)^2 / (4*pi)
-vlimitmin <- Vsurvey / 1000.0
 
 cat("Survey volume:", signif(Vsurvey,4), "Mpc^3\n")
 
@@ -37,7 +36,6 @@ g3c  <- g3cx[g3cx$Nfof > multi-1 & g3cx$Zfof < zlimit &
              g3cx$Zfof > zmin & g3cx$MassAfunc > 1E1 & 
              g3cx$IterCenDec > -3.5, ]
 
-# Mass calculation
 magica <- 13.9
 parsec <- 3.0857E16
 G      <- 6.67408E-11
@@ -45,6 +43,16 @@ msol   <- 1.988E30
 
 g3c$MassAfunc <- g3c$MassAfunc * 100 / ho
 g3c$mymass <- magica * (g3c$VelDisp*1000)^2 * g3c$Rad50*parsec*1E6 / (G*msol) * (100/ho)
+
+xx <- seq(3, 22)
+yy <- c(0.68389355, 0.38719116, 0.40325591, 0.32696735, 0.27680685, 
+        0.24018684, 0.20226682, 0.18645475, 0.17437005, 0.14271506, 
+        0.13922450, 0.13482418, 0.13741619, 0.11715141, 0.12134983, 
+        0.10078830, 0.09944761, 0.09913166, 0.08590223, 0.07588408)
+
+g3c$log10MassErr <- approx(xx, yy, g3c$Nfof)$y
+g3c$log10MassErr[is.na(g3c$log10MassErr)] <- 0.03
+g3c$log10MassErr[g3c$log10MassErr < 0.1] <- 0.1
 
 masscorr <- c(0.0, 0.0, -2.672595e-01, -1.513503e-01, -1.259069e-01, 
               -9.006064e-02, -5.466009e-02, -6.666895e-02, -1.988694e-02,
@@ -58,7 +66,13 @@ g3c$masscorr[is.na(g3c$masscorr)] <- 0.0
 g3c$mymasscorr <- g3c$mymass / 10^g3c$masscorr
 g3c$MassAfunc <- g3c$mymasscorr
 
-# Vmax calculation
+# Fix bad group
+g3c$MassAfunc[g3c$GroupID == 100622] <- 1E9
+
+############################################################
+# Calculate Vmax
+############################################################
+
 gig <- fread("../data/GAMAGalsInGroups.csv")
 
 g3c$zmax <- NA
@@ -79,10 +93,15 @@ vol_zmax <- cosdist(g3c$zmax, OmegaM=omegam, H0=ho)$CoVol
 vol_zmin <- cosdist(zmin, OmegaM=omegam, H0=ho)$CoVol
 g3c$vmax <- 179.92/(360^2/pi) * 1E9 * (vol_zmax - vol_zmin)
 
+vlimitmin <- Vsurvey / 1000.0
 g3c$weightszlimit <- ifelse(g3c$vmax > Vsurvey, Vsurvey, g3c$vmax)
 g3c$weightszlimit <- ifelse(g3c$vmax < vlimitmin, vlimitmin, g3c$vmax)
 
-# Binning - EXACTLY like gamahmf.r
+############################################################
+# Create Vmax-weighted bins (EXACT gamahmf.r line 316)
+############################################################
+
+logbin <- 0.2
 massx <- seq(10.3, 16.1, logbin)
 gamahmf2 <- weighted.hist(log10(g3c$MassAfunc), 
                           w=1/g3c$weightszlimit, 
@@ -90,24 +109,28 @@ gamahmf2 <- weighted.hist(log10(g3c$MassAfunc),
                           plot=FALSE)
 
 gamax <- gamahmf2$mids
-gamay <- gamahmf2$counts / logbin
+gamay <- gamahmf2$counts / logbin  # phi per dex
 
-# Mass cut - EXACTLY like gamahmf.r line 394
-ok <- gamay > 0 & !is.na(gamay) & gamax > mlimit
+# Apply mass cut
+ok <- gamay > 0 & !is.na(gamay) & gamax > mass_limit
 gamax <- gamax[ok]
 gamay <- gamay[ok]
 
-cat("N bins after M>", mlimit, "cut:", length(gamax), "\n")
-cat("Mass range:", range(gamax), "\n\n")
+N <- length(gamax)
+
+cat("N bins:", N, "\n")
+cat("Mass range:", range(gamax), "\n")
+cat("Phi at M=13:", gamay[which.min(abs(gamax-13))], "\n\n")
 
 ############################################################
-# Simple Stan model - NO truncation, just fit to bins
+# Simple Stan model - fit to bins with chi-squared
+# EXACTLY like gamahmf.r massfn (line 200-208)
 ############################################################
 
-simple_stan <- "
+binned_stan <- "
 data {
   int<lower=0> N;
-  vector[N] x;      // bin centers
+  vector[N] x;      // bin centers (log10 mass)
   vector[N] y;      // observed log10(phi)
 }
 
@@ -124,7 +147,7 @@ model {
   log_phi ~ normal(-3.5, 1.5);
   alpha   ~ normal(-1.5, 0.8);
   
-  // Simple chi-squared fit
+  // Chi-squared fit in log space (matching gamahmf.r)
   for(i in 1:N) {
     real u = beta * (x[i] - mstar);
     real log_phi_pred = log10(beta) + log10(log(10))
@@ -132,7 +155,7 @@ model {
                         + log_phi
                         + (alpha+1) * (x[i] - mstar);
     
-    y[i] ~ normal(log_phi_pred, 0.15);  // Fit in log space
+    y[i] ~ normal(log_phi_pred, 0.15);
   }
 }
 "
@@ -142,30 +165,30 @@ model {
 ############################################################
 
 stan_data <- list(
-    N = length(gamax),
+    N = N,
     x = gamax,
     y = log10(gamay)
 )
 
-cat("Fitting simple model (M>12.7, no truncation)...\n")
-fit3 <- stan(
-    model_code = simple_stan,
+cat("Fitting to Vmax-weighted bins...\n")
+fit <- stan(
+    model_code = binned_stan,
     data       = stan_data,
     chains     = 4,
-    iter       = 2000,
-    warmup     = 1000,
+    iter       = 10000,
+    warmup     = 4000,
     cores      = 4,
-    control = list(adapt_delta = 0.95)
+    control = list(adapt_delta = 0.9)
 )
 
 cat("\n=== RESULTS ===\n")
-print(fit3, pars=c("mstar","log_phi","alpha","beta"))
+print(fit, pars=c("mstar","log_phi","alpha","beta"))
 
 ############################################################
 # Plot
 ############################################################
 
-posterior <- extract(fit3, pars=c("mstar","log_phi","alpha","beta"))
+posterior <- extract(fit, pars=c("mstar","log_phi","alpha","beta"))
 posterior_matrix <- cbind(
     mstar   = posterior$mstar,
     log_phi = posterior$log_phi,
@@ -183,16 +206,16 @@ mrp_log10 <- function(mstar, log_phi, alpha, beta, x) {
           exp(-10^(beta*(x-mstar))))
 }
 
-xfit <- seq(11, 16, length.out=500)
+xfit <- seq(12, 16, length.out=500)
 
-CairoPDF("MRP_STAGE3_SIMPLE.pdf", 10, 7)
+CairoPDF("MRP_FINAL.pdf", 10, 7)
 
 plot(gamax, log10(gamay),
      pch=19, col="darkgreen", cex=1.2,
-     xlim=c(12,16), ylim=c(-8, -2),
+     xlim=c(12,16), ylim=c(-8,-2),
      xlab=expression("Halo Mass  log"[10]*"(M/M"["\u2299"]*")"),
      ylab=expression("log"[10]*"("*phi*")  [Mpc"^{-3}*" dex"^{-1}*"]"),
-     main="Stage 3: Simple (M>12.7 cut, no truncation)")
+     main="FINAL: Vmax-weighted bins, chi-squared fit")
 
 grid(col="gray80")
 
@@ -210,7 +233,7 @@ lines(xfit, mrp_log10(13.51,-3.19,-1.27,0.47,xfit),
       col="black", lwd=2, lty=2)
 
 legend("bottomleft",
-       legend=c("GAMA (Vmax weighted, M>12.7)", "Stan fit",
+       legend=c("GAMA (Vmax weighted)", "Stan fit",
                 "Posterior samples", "Driver+22"),
        col=c("darkgreen","red",rgb(0,0,1,0.3),"black"),
        pch=c(19,NA,NA,NA), lty=c(NA,1,1,2),
@@ -237,5 +260,10 @@ cat(sprintf("alpha:     %6.3f   +%.3f   -%.3f    -1.27\n",
 cat(sprintf("beta:      %6.3f   +%.3f   -%.3f     0.47\n",
             med["beta"],   q84["beta"]-med["beta"],     med["beta"]-q16["beta"]))
 
-cat("\nPlot: MRP_STAGE3_SIMPLE.pdf\n")
-cat("Simple approach: M>12.7 cut only, matching gamahmf.r\n")
+cat("\nPlot: MRP_FINAL.pdf\n")
+cat("\n=== THIS IS THE FINAL VERSION ===\n")
+cat("Exactly matches gamahmf.r approach:\n")
+cat("1. Vmax-weighted bins\n")
+cat("2. M > 12.7 cut\n")
+cat("3. Chi-squared fit to bins\n")
+cat("4. Bayesian uncertainties via Stan\n")
