@@ -148,7 +148,7 @@ data {
   int<lower=0> N;
   vector[N] x;
   vector<lower=0>[N] sigma_x;
-  vector<lower=0>[N] vmax;  // Vmax per group
+  real V_survey;  // Just use the survey volume
   real xlo;
   real xhi;
   int<lower=1> Ng;
@@ -161,8 +161,6 @@ transformed data {
   dx = (xhi - xlo) / (Ng - 1);
   for(k in 1:Ng)
     xgrid[k] = xlo + (k-1) * dx;
-  
-  real total_vmax = sum(vmax);  // Total survey volume represented
 }
 
 parameters {
@@ -177,7 +175,7 @@ model {
   log_phi ~ normal(-3.5, 1.5);
   alpha   ~ normal(-1.5, 0.8);
 
-  // Global normalization with total Vmax
+  // Normal Poisson normalization with survey volume
   {
     vector[Ng] phi_grid;
     for(k in 1:Ng) {
@@ -186,11 +184,11 @@ model {
                     * pow(10, (alpha+1) * (xgrid[k] - mstar))
                     * exp(-pow(10, u));
     }
-    real Lambda = total_vmax * sum(phi_grid) * dx;
+    real Lambda = V_survey * sum(phi_grid) * dx;
     target += -Lambda;
   }
 
-  // Per-group likelihood (NO Vmax here, it's in Lambda)
+  // Per-group likelihood with mass errors
   for(i in 1:N) {
     real x_lo_i = fmax(x[i] - 4.0 * sigma_x[i], xlo);
     real x_hi_i = fmin(x[i] + 4.0 * sigma_x[i], xhi);
@@ -221,14 +219,14 @@ model {
 ############################################################
 
 stan_data <- list(
-    N       = N,
-    x       = x_obs,
-    sigma_x = sigma_obs,
-    vmax    = vmax_obs,
-    xlo     = xlo,
-    xhi     = xhi,
-    Ng      = Ng,
-    Ne      = Ne
+    N         = N,
+    x         = x_obs,
+    sigma_x   = sigma_obs,
+    V_survey  = Vsurvey,
+    xlo       = xlo,
+    xhi       = xhi,
+    Ng        = Ng,
+    Ne        = Ne
 )
 
 cat("Compiling Stan model...\n")
