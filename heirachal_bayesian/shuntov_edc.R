@@ -159,7 +159,7 @@ for(b in seq_along(gamax)) {
         # Weight by 1/Vmax AND by how likely they are to scatter to this bin
         # (closer groups contribute more)
         dist_to_bin <- abs(log10mass_all[nearby] - gamax[b])
-        scatter_weight <- exp(-0.5 * (dist_to_bin / 0.7)^2)  # ~Gaussian relevance
+        scatter_weight <- exp(-0.5 * (dist_to_bin / 0.3)^2)  # ~Gaussian relevance
         w <- vmax_weights[nearby] * scatter_weight
         bin_sigma[b] <- weighted.mean(g3c$log10MassErr[nearby], w)
     } else {
@@ -280,16 +280,14 @@ model {
         real wt_sum = 0.0;
         real sig = bin_sigma[i];
         
-        // Full convolution with NO mass limit truncation
-        // The MRP model predicts the HMF below the completeness limit,
-        // and halos there genuinely scatter up into observed bins.
-        // Truncating would undercount this contribution.
         for (k in 1:N_kernel) {
             real delta = kernel_offset[k];
-            real wt = exp(-0.5 * square(delta / sig));
             real m_true = x[i] - delta;
-            phi_conv += mrp_phi(m_true, mstar, log_phi, alpha, beta) * wt;
-            wt_sum += wt;
+            if (m_true >= mass_lo) {
+                real wt = exp(-0.5 * square(delta / sig));
+                phi_conv += mrp_phi(m_true, mstar, log_phi, alpha, beta) * wt;
+                wt_sum += wt;
+            }
         }
         if (wt_sum > 0) phi_conv = phi_conv / wt_sum;
         
@@ -312,10 +310,12 @@ generated quantities {
         real sig = bin_sigma[i];
         for (k in 1:N_kernel) {
             real delta = kernel_offset[k];
-            real wt = exp(-0.5 * square(delta / sig));
             real m_true = x[i] - delta;
-            phi_conv += mrp_phi(m_true, mstar, log_phi, alpha, beta) * wt;
-            wt_sum += wt;
+            if (m_true >= mass_lo) {
+                real wt = exp(-0.5 * square(delta / sig));
+                phi_conv += mrp_phi(m_true, mstar, log_phi, alpha, beta) * wt;
+                wt_sum += wt;
+            }
         }
         if (wt_sum > 0) phi_conv = phi_conv / wt_sum;
         log_phi_convolved[i] = (phi_conv > 1e-30) ? log10(phi_conv) : -30.0;
@@ -433,8 +433,12 @@ mrp_convolved <- function(mstar, log_phi, alpha, beta, x,
         sig <- min(sig, 0.5)
         
         wt <- exp(-0.5 * (kernel_grid / sig)^2)
-        wt <- wt / sum(wt)
         m_true <- x[i] - kernel_grid
+        
+        valid <- m_true >= mass_lo
+        if(sum(valid) == 0) { result[i] <- 1e-30; next }
+        wt[!valid] <- 0
+        wt <- wt / sum(wt)
         
         phi_vals <- beta * log(10) * 10^log_phi *
                     10^((alpha+1)*(m_true - mstar)) *
