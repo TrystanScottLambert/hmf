@@ -119,13 +119,17 @@ gamahmf_uncorrected <- weighted.hist(log10(g3c$MassAfunc),
 gamax_all <- gamahmf_uncorrected$mids
 gamay_uncorrected_all <- gamahmf_uncorrected$counts / logbin
 
-# Apply mass cut - keep only bins above mass_limit with counts
+# Apply mass cut - only bins above completeness limit
+# Below 12.7 the survey is incomplete (NFoF≥5 multiplicity limit + flux limit)
+# so those bins would bias the fit low. The forward-convolution still extends
+# the MODEL below 12.7 to account for scatter-up, but we don't fit to
+# incomplete data.
 ok <- gamay_uncorrected_all > 0 & gamax_all > mass_limit
 gamax <- gamax_all[ok]
 gamay_uncorrected <- gamay_uncorrected_all[ok]
 
 N_bins <- length(gamax)
-cat("N bins (M>12.7) for fitting:", N_bins, "\n")
+cat("N bins for fitting (M >", mass_limit, "):", N_bins, "\n")
 
 ############################################################
 # Build per-bin mass error kernel (source-weighted)
@@ -478,6 +482,7 @@ cat("  MRP params: M*=", mstarmrp_lcdm, " alpha=", alphamrp_lcdm,
 ############################################################
 
 xfit <- seq(12, 16, length.out=500)
+xfit_conv <- seq(min(gamax) - 0.1, max(gamax) + 0.3, length.out=300)  # only plot convolved near data
 
 CairoPDF("MRP_SHUNTOV_CONVOLUTION.pdf", 12, 8)
 
@@ -516,8 +521,8 @@ for(i in idx) {
                             posterior_matrix[i,"log_phi"],
                             posterior_matrix[i,"alpha"], 
                             posterior_matrix[i,"beta"], 
-                            xfit, kernel_grid_trim, bin_sigma, gamax)
-    if(all(is.finite(y_conv))) lines(xfit, y_conv, col=rgb(0.2,0.5,1,0.03))
+                            xfit_conv, kernel_grid_trim, bin_sigma, gamax)
+    if(all(is.finite(y_conv))) lines(xfit_conv, y_conv, col=rgb(0.2,0.5,1,0.03))
 }
 
 # Median intrinsic model (debiased)
@@ -525,8 +530,8 @@ lines(xfit, mrp_log10(med["mstar"], med["log_phi"], med["alpha"], med["beta"], x
       col="red", lwd=3)
 
 # Median convolved model (matches data)
-lines(xfit, mrp_convolved(med["mstar"], med["log_phi"], med["alpha"], med["beta"],
-                          xfit, kernel_grid_trim, bin_sigma, gamax),
+lines(xfit_conv, mrp_convolved(med["mstar"], med["log_phi"], med["alpha"], med["beta"],
+                          xfit_conv, kernel_grid_trim, bin_sigma, gamax),
       col="blue", lwd=3)
 
 # Driver+22 GAMA5 best fit for reference
