@@ -1,15 +1,13 @@
 ############################################################
-# SIMULATION-RECOVERY TEST v14 (PRODUCTION)
+# SIMULATION-RECOVERY TEST v16
 #
-# Hierarchical model with latent true masses.
-# Non-centered parameterisation for efficient sampling:
-#   z_raw[i] ~ Normal(0, 1)
-#   mt[i] = x_obs[i] + sig[i] * z_raw[i]
+# Same hierarchical model as v14 (proven unbiased), but
+# using optimisation and variational inference instead of
+# full MCMC to avoid the sampling efficiency problem.
 #
-# This decorrelates the latent masses from MRP params,
-# dramatically improving sampling efficiency.
-#
-# Also enforces mt[i] > mlim[i] via rejection in the model.
+# Approach A: optimizing() for MAP + Laplace approx
+# Approach B: vb() for variational Bayes (ADVI)
+# Approach C: Short MCMC with thin=5 for comparison
 ############################################################
 
 library(rstan)
@@ -19,7 +17,7 @@ rstan_options(auto_write = TRUE)
 set.seed(42)
 
 ############################################################
-# 1. Setup
+# 1. Setup + generate data (same as all versions)
 ############################################################
 
 TRUE_MSTAR <- 14.13; TRUE_LOG_PHI <- -3.96
@@ -49,13 +47,6 @@ Vsurvey <- sum(V_sh)
 mlim_of_z <- function(z) 12.0 + 2.5*(z-zmin)/(zlimit-zmin)
 mlim_sh <- mlim_of_z(z_mids)
 
-cat("=== SETUP ===\n")
-cat(sprintf("True: M*=%.2f phi=%.2f a=%.2f b=%.2f\n", tv[1],tv[2],tv[3],tv[4]))
-
-############################################################
-# 2. Generate halos + errors
-############################################################
-
 mass_hi <- 16.0
 all_tm <- c(); all_z <- c()
 for(j in 1:nz) {
@@ -78,100 +69,15 @@ sigma_all <- pmax(0.10, pmin(0.30, 0.30 - 0.06*(all_tm-13)))
 obs_all <- all_tm + rnorm(N_true, 0, sigma_all)
 mlim_per <- mlim_of_z(all_z)
 
+cat("=== SETUP ===\n")
+cat(sprintf("True: M*=%.2f phi=%.2f a=%.2f b=%.2f\n", tv[1],tv[2],tv[3],tv[4]))
 cat(sprintf("N = %d halos, median sigma = %.2f\n\n", N_true, median(sigma_all)))
 
 ############################################################
-# 3. DIAGNOSTIC PLOT
+# 2. Stan model (same as v14 hierarchical non-centered)
 ############################################################
 
-pdf("mock_diagnostic_v14.pdf", width=12, height=8)
-par(mfrow=c(2,2))
-
-br <- seq(11,17,by=0.2)
-h_t <- hist(all_tm, breaks=br, plot=FALSE)
-h_o <- hist(obs_all, breaks=br, plot=FALSE)
-pt <- h_t$counts/(Vsurvey*0.2); po <- h_o$counts/(Vsurvey*0.2)
-xf <- seq(12, 16, length=500)
-yf <- mrp_phi(xf, TRUE_MSTAR, TRUE_LOG_PHI, TRUE_ALPHA, TRUE_BETA)
-
-plot(h_t$mids[pt>0], log10(pt[pt>0]), pch=19, col="blue", cex=1.2,
-     xlim=c(12,16), ylim=c(-8,-2), xlab="log10(M)", ylab="log10(phi)",
-     main=sprintf("HMF: true(blue) obs(red) N=%d", N_true))
-points(h_o$mids[po>0], log10(po[po>0]), pch=17, col="red", cex=1)
-lines(xf, log10(yf), col="black", lwd=2)
-legend("topright",c("True","Observed","MRP"),pch=c(19,17,NA),
-       col=c("blue","red","black"),lty=c(NA,NA,1),lwd=c(NA,NA,2))
-
-plot(all_tm, obs_all-all_tm, pch=".", col=rgb(0,0,0,.3),
-     xlab="True M", ylab="Obs-True", main="Mass errors")
-abline(h=0,col="red",lwd=2); abline(h=c(-.3,.3),col="red",lty=2)
-
-plot(all_tm, all_z, pch=".", col=rgb(0,0,1,.3),
-     xlab="True M", ylab="z", main="Detection boundary")
-zp <- seq(zmin,zlimit,length=200); lines(mlim_of_z(zp),zp,col="red",lwd=2)
-
-hist(mlim_per, breaks=40, col="steelblue", border="white",
-     xlab="m_lim", main=sprintf("Per-group m_lim (spread=%.1f dex)", diff(range(mlim_per))))
-
-dev.off()
-cat("Saved: mock_diagnostic_v14.pdf\n\n")
-
-############################################################
-# 4. STAGE 1: No errors (validation)
-############################################################
-
-cat("========== STAGE 1: No errors ==========\n")
-
-stan_noerr <- "
-data {
-  int<lower=1> N; vector[N] x;
-  int<lower=1> Nsh; vector[Nsh] V_sh; vector[Nsh] mlim_sh;
-  real xhi; int<lower=2> Ng;
-}
-transformed data {
-  real ln10=log(10.0);
-  real xlo=min(mlim_sh)-0.5;
-  real dx=(xhi-xlo)/(Ng-1.0);
-  vector[Ng] xg; for(k in 1:Ng) xg[k]=xlo+(k-1)*dx;
-}
-parameters { real ms; real lp; real al; real<lower=0.1,upper=2.0> be; }
-model {
-  ms~normal(14,1.5); lp~normal(-4,2); al~normal(-1.7,1);
-  vector[Ng] pg;
-  for(k in 1:Ng){real u=xg[k]-ms; pg[k]=be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));}
-  vector[Ng] cum; cum[Ng]=0;
-  for(kr in 1:(Ng-1)){int k=Ng-kr; cum[k]=cum[k+1]+0.5*(pg[k]+pg[k+1])*dx;}
-  real Lam=0;
-  for(j in 1:Nsh){int k0=1; for(k in 1:Ng) if(xg[k]<=mlim_sh[j]) k0=k; if(k0>=Ng) k0=Ng-1; Lam+=V_sh[j]*cum[k0];}
-  for(i in 1:N){real u=x[i]-ms; real p=be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));
-    if(p>1e-30) target+=log(p); else target+=-100;}
-  target+=-Lam;
-}
-"
-
-fit1 <- stan(model_code=stan_noerr,
-    data=list(N=N_true, x=all_tm, Nsh=nz, V_sh=V_sh, mlim_sh=mlim_sh, xhi=16.5, Ng=300),
-    chains=4, iter=2000, warmup=1000, cores=4,
-    init=lapply(1:4, function(i) list(ms=rnorm(1,14,.2),lp=rnorm(1,-4,.2),
-                                       al=rnorm(1,-1.7,.1),be=runif(1,.5,.8))),
-    control=list(adapt_delta=0.95))
-
-p1 <- extract(fit1)
-pm1 <- cbind(ms=p1$ms, lp=p1$lp, al=p1$al, be=p1$be)
-med1 <- apply(pm1,2,median)
-q16_1 <- apply(pm1,2,quantile,.16); q84_1 <- apply(pm1,2,quantile,.84)
-
-cat("Stage 1:\n")
-for(p in names(tv)){ea<-((q84_1[p]-med1[p])+(med1[p]-q16_1[p]))/2
-  cat(sprintf("  %-5s True=%.3f Med=%.3f Bias=%+.2f sig\n",p,tv[p],med1[p],(med1[p]-tv[p])/ea))}
-
-############################################################
-# 5. STAGE 2: Hierarchical (non-centered)
-############################################################
-
-cat("\n========== STAGE 2: Hierarchical (non-centered) ==========\n")
-
-stan_hier_nc <- "
+stan_hier <- "
 data {
   int<lower=1> N;
   vector[N] x_obs;
@@ -195,23 +101,18 @@ parameters {
   real lp;
   real al;
   real<lower=0.1, upper=2.0> be;
-  vector[N] z_raw;  // non-centered: mt = x_obs + sig * z_raw
+  vector[N] z_raw;
 }
 transformed parameters {
   vector[N] mt;
-  for(i in 1:N)
-    mt[i] = x_obs[i] + sig[i] * z_raw[i];
+  for(i in 1:N) mt[i] = x_obs[i] + sig[i] * z_raw[i];
 }
 model {
-  // Priors on MRP params
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
   al ~ normal(-1.7, 1.0);
-  
-  // Non-centered prior on z_raw
   z_raw ~ std_normal();
   
-  // MRP on grid for Lambda
   vector[Ng] pg;
   for(k in 1:Ng) {
     real u = xg[k] - ms;
@@ -224,7 +125,6 @@ model {
     cum[k] = cum[k+1] + 0.5*(pg[k]+pg[k+1])*dx;
   }
   
-  // Lambda (expected true count)
   real Lambda = 0;
   for(j in 1:Nsh) {
     int k0 = 1;
@@ -234,147 +134,242 @@ model {
   }
   target += -Lambda;
   
-  // Per-group: MRP evaluated at latent true mass
   for(i in 1:N) {
     real u = mt[i] - ms;
     real phi_i = be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));
-    
     if(mt[i] > mlim[i] && phi_i > 1e-30)
       target += log(phi_i);
     else
       target += -100;
   }
-  // Note: the Normal(x_obs | mt, sig) is already accounted for
-  // by the z_raw ~ std_normal() prior + the transformation
-  // mt = x_obs + sig * z_raw, which implies:
-  // x_obs = mt - sig * z_raw => x_obs ~ Normal(mt, sig)
-  // The Jacobian is 1 (linear transform), so this is correct.
 }
 "
 
-cat(sprintf("N=%d + %d latent = %d params\n", N_true, N_true, N_true+4))
-cat("Non-centered parameterisation, max_treedepth=14\n\n")
+stan_data <- list(N=N_true, x_obs=obs_all, sig=sigma_all, mlim=mlim_per,
+                  Nsh=nz, V_sh=V_sh, mlim_sh=mlim_sh, xhi=16.5, Ng=200)
+
+# Compile once
+cat("Compiling Stan model...\n")
+sm <- stan_model(model_code=stan_hier)
 
 init_fn <- function() {
     list(ms=rnorm(1,14,.2), lp=rnorm(1,-4,.2),
          al=rnorm(1,-1.7,.1), be=runif(1,.5,.8),
-         z_raw=rnorm(N_true, 0, 0.5))
+         z_raw=rnorm(N_true, 0, 0.3))
 }
 
-fit2 <- stan(model_code=stan_hier_nc,
-    data=list(N=N_true, x_obs=obs_all, sig=sigma_all, mlim=mlim_per,
-              Nsh=nz, V_sh=V_sh, mlim_sh=mlim_sh, xhi=16.5, Ng=250),
-    chains=4, iter=4000, warmup=2000, cores=4,
-    init=lapply(1:4, function(i) init_fn()),
-    control=list(adapt_delta=0.90, max_treedepth=14))
-
 ############################################################
-# 6. RESULTS
+# APPROACH A: MAP via optimizing()
 ############################################################
 
-cat("\n=== STAGE 2 RESULTS ===\n")
-print(fit2, pars=c("ms","lp","al","be"))
+cat("\n========== APPROACH A: MAP (optimizing) ==========\n")
 
-p2 <- extract(fit2)
-pm2 <- cbind(ms=p2$ms, lp=p2$lp, al=p2$al, be=p2$be)
-med2 <- apply(pm2,2,median)
-q16_2 <- apply(pm2,2,quantile,.16); q84_2 <- apply(pm2,2,quantile,.84)
+t0 <- proc.time()
+opt <- optimizing(sm, data=stan_data, init=init_fn(),
+                  hessian=TRUE, as_vector=FALSE,
+                  iter=5000, algorithm="LBFGS")
+t_opt <- (proc.time()-t0)[3]
 
-summ2 <- summary(fit2, pars=c("ms","lp","al","be"))$summary
-n_div2 <- sum(sapply(1:4, function(ch) sum(get_sampler_params(fit2,inc_warmup=FALSE)[[ch]][,"divergent__"])))
-n_maxtree <- sum(sapply(1:4, function(ch) sum(get_sampler_params(fit2,inc_warmup=FALSE)[[ch]][,"treedepth__"] >= 14)))
+cat(sprintf("Optimizing time: %.1f seconds\n", t_opt))
+cat(sprintf("Converged: %s (return code %d)\n", 
+            ifelse(opt$return_code==0, "YES", "NO"), opt$return_code))
 
-cat(sprintf("Max Rhat: %.3f | Min n_eff: %.0f | Div: %d | MaxTree: %d\n\n",
-            max(summ2[,"Rhat"]), min(summ2[,"n_eff"]), n_div2, n_maxtree))
+# Extract MAP estimates
+map_ms <- opt$par$ms
+map_lp <- opt$par$lp
+map_al <- opt$par$al
+map_be <- opt$par$be
 
-cat("Stage 2 Recovery:\n")
-cat(sprintf("%-6s %8s %8s %8s %8s %10s\n","Param","True","Median","+1sig","-1sig","Bias"))
-cat(strrep("-",52),"\n")
-for(p in names(tv)) {
-    eu <- q84_2[p]-med2[p]; ed <- med2[p]-q16_2[p]; ea <- (eu+ed)/2
-    bias <- (med2[p]-tv[p])/ea
-    st <- ifelse(abs(bias)<1,"OK",ifelse(abs(bias)<2,"marginal","FAIL"))
-    cat(sprintf("%-6s %8.3f %8.3f  +%.3f  -%.3f  %+.2f sig [%s]\n",
-                p, tv[p], med2[p], eu, ed, bias, st))
-}
-
-cat("\nCorrelations:\n")
-print(round(cor(pm2), 3))
+cat(sprintf("\nMAP estimates:\n"))
+cat(sprintf("  ms  = %.3f (true %.3f, delta = %+.3f)\n", map_ms, tv["ms"], map_ms-tv["ms"]))
+cat(sprintf("  lp  = %.3f (true %.3f, delta = %+.3f)\n", map_lp, tv["lp"], map_lp-tv["lp"]))
+cat(sprintf("  al  = %.3f (true %.3f, delta = %+.3f)\n", map_al, tv["al"], map_al-tv["al"]))
+cat(sprintf("  be  = %.3f (true %.3f, delta = %+.3f)\n", map_be, tv["be"], map_be-tv["be"]))
 
 # Latent mass recovery
-mt_med <- apply(p2$mt, 2, median)
-cat(sprintf("\nLatent mass: median |recovered - true| = %.3f dex (vs sigma = %.3f)\n",
-            median(abs(mt_med - all_tm)), median(sigma_all)))
+map_zraw <- opt$par$z_raw
+map_mt <- obs_all + sigma_all * map_zraw
+cat(sprintf("\nLatent mass: median |MAP - true| = %.3f dex (vs sigma = %.3f)\n",
+            median(abs(map_mt - all_tm)), median(sigma_all)))
+
+# Hessian for uncertainties (just for the 4 MRP params)
+# The Hessian is for all parameters including z_raw
+# We need the marginal variance for the first 4 params
+if(!is.null(opt$hessian)) {
+    cat("\nHessian available, computing uncertainties...\n")
+    # The parameter ordering in the hessian is: ms, lp, al, be, z_raw[1..N]
+    H <- opt$hessian
+    # For Laplace approx, Sigma = -H^{-1}
+    # But H is huge (784x784). We can try to invert just the 4x4 block
+    # after marginalising over z_raw using Schur complement.
+    # For now, just use the diagonal of the full inverse if feasible.
+    np <- 4  # number of MRP params
+    nz_raw <- N_true
+    
+    # Partition: H = [A B; C D] where A is 4x4, D is NxN
+    # Marginal covariance of MRP params = -(A - B D^{-1} C)^{-1}
+    # This requires inverting the NxN D matrix.
+    # Since z_raw are nearly independent given MRP params,
+    # D should be nearly diagonal -> cheap to invert.
+    
+    tryCatch({
+        A <- -H[1:np, 1:np]
+        B <- -H[1:np, (np+1):(np+nz_raw)]
+        D <- -H[(np+1):(np+nz_raw), (np+1):(np+nz_raw)]
+        
+        # D is nearly diagonal, use diagonal approximation
+        D_diag_inv <- diag(1/diag(D))
+        Schur <- A - B %*% D_diag_inv %*% t(B)
+        Sigma_mrp <- solve(Schur)
+        se_laplace <- sqrt(diag(Sigma_mrp))
+        
+        cat("Laplace SE (diagonal D approx):\n")
+        pnames <- c("ms","lp","al","be")
+        for(i in 1:4) {
+            bias <- (opt$par[[pnames[i]]] - tv[pnames[i]]) / se_laplace[i]
+            cat(sprintf("  %-5s MAP=%.3f SE=%.3f  Bias=%+.2f sig\n",
+                        pnames[i], opt$par[[pnames[i]]], se_laplace[i], bias))
+        }
+    }, error=function(e) {
+        cat(sprintf("Hessian analysis failed: %s\n", e$message))
+    })
+} else {
+    cat("Hessian not available.\n")
+}
 
 ############################################################
-# 7. PLOTS
+# APPROACH B: Variational Bayes
 ############################################################
 
-pdf("sim_recovery_v14.pdf", width=14, height=14)
-par(mfrow=c(3,3))
+cat("\n========== APPROACH B: Variational Bayes (ADVI) ==========\n")
+
+t0 <- proc.time()
+vb_fit <- tryCatch(
+    vb(sm, data=stan_data, init=init_fn(),
+       iter=10000, output_samples=4000,
+       algorithm="meanfield"),
+    error=function(e) { cat(sprintf("VB failed: %s\n", e$message)); NULL }
+)
+t_vb <- (proc.time()-t0)[3]
+
+if(!is.null(vb_fit)) {
+    cat(sprintf("VB time: %.1f seconds\n", t_vb))
+    
+    pvb <- extract(vb_fit)
+    pmvb <- cbind(ms=pvb$ms, lp=pvb$lp, al=pvb$al, be=pvb$be)
+    medvb <- apply(pmvb,2,median)
+    q16vb <- apply(pmvb,2,quantile,.16)
+    q84vb <- apply(pmvb,2,quantile,.84)
+    
+    cat("VB Recovery:\n")
+    for(p in names(tv)) {
+        ea <- ((q84vb[p]-medvb[p])+(medvb[p]-q16vb[p]))/2
+        bias <- (medvb[p]-tv[p])/ea
+        st <- ifelse(abs(bias)<1,"OK",ifelse(abs(bias)<2,"marginal","FAIL"))
+        cat(sprintf("  %-5s True=%.3f Med=%.3f SE~%.3f Bias=%+.2f sig [%s]\n",
+                    p, tv[p], medvb[p], ea, bias, st))
+    }
+}
+
+############################################################
+# APPROACH C: Short MCMC with thinning
+############################################################
+
+cat("\n========== APPROACH C: Short MCMC (thin=5) ==========\n")
+
+t0 <- proc.time()
+fit_mcmc <- sampling(sm, data=stan_data,
+    chains=4, iter=2000, warmup=1000, thin=5, cores=4,
+    init=lapply(1:4, function(i) init_fn()),
+    control=list(adapt_delta=0.85, max_treedepth=12))
+t_mcmc <- (proc.time()-t0)[3]
+
+cat(sprintf("MCMC time: %.1f seconds\n", t_mcmc))
+
+pmc <- extract(fit_mcmc)
+pmmc <- cbind(ms=pmc$ms, lp=pmc$lp, al=pmc$al, be=pmc$be)
+medmc <- apply(pmmc,2,median)
+q16mc <- apply(pmmc,2,quantile,.16)
+q84mc <- apply(pmmc,2,quantile,.84)
+
+summ_mc <- summary(fit_mcmc, pars=c("ms","lp","al","be"))$summary
+n_div_mc <- sum(sapply(1:4, function(ch) sum(get_sampler_params(fit_mcmc,inc_warmup=FALSE)[[ch]][,"divergent__"])))
+n_mt_mc <- sum(sapply(1:4, function(ch) sum(get_sampler_params(fit_mcmc,inc_warmup=FALSE)[[ch]][,"treedepth__"] >= 12)))
+
+cat(sprintf("Max Rhat: %.3f | Min n_eff: %.0f | Div: %d | MaxTree: %d\n",
+            max(summ_mc[,"Rhat"]), min(summ_mc[,"n_eff"]), n_div_mc, n_mt_mc))
+
+cat("MCMC Recovery:\n")
+for(p in names(tv)) {
+    ea <- ((q84mc[p]-medmc[p])+(medmc[p]-q16mc[p]))/2
+    bias <- (medmc[p]-tv[p])/ea
+    st <- ifelse(abs(bias)<1,"OK",ifelse(abs(bias)<2,"marginal","FAIL"))
+    cat(sprintf("  %-5s True=%.3f Med=%.3f SE~%.3f Bias=%+.2f sig [%s]\n",
+                p, tv[p], medmc[p], ea, bias, st))
+}
+
+############################################################
+# PLOTS
+############################################################
+
+pdf("sim_recovery_v16.pdf", width=14, height=10)
+par(mfrow=c(2,3))
 
 xf <- seq(11.5, 16.5, length=500)
+br <- seq(11,17,by=0.2)
+h <- hist(obs_all, breaks=br, plot=FALSE)
+ph <- h$counts/(Vsurvey*0.2); ok <- ph>0
 
-# Stage 1 HMF
-h1 <- hist(all_tm, breaks=br, plot=FALSE)
-ph1 <- h1$counts/(Vsurvey*0.2); ok1 <- ph1>0
-plot(h1$mids[ok1], log10(ph1[ok1]), pch=19, col="darkgreen", cex=1.3,
+# HMF with MAP
+plot(h$mids[ok], log10(ph[ok]), pch=19, col="darkgreen", cex=1.3,
      xlim=c(12,16), ylim=c(-8,-2), xlab="log10(M)", ylab="log10(phi)",
-     main=sprintf("S1: True masses (N=%d)", N_true))
+     main="v16: MAP + VB + MCMC")
 grid(col="gray80")
-idx <- sample(nrow(pm1), min(200,nrow(pm1)))
-for(i in idx){y<-tryCatch(mrp_log10(xf,pm1[i,"ms"],pm1[i,"lp"],pm1[i,"al"],pm1[i,"be"]),
-    error=function(e) rep(NA,length(xf))); if(all(is.finite(y))) lines(xf,y,col=rgb(0,0,1,.03))}
-lines(xf, mrp_log10(xf,tv["ms"],tv["lp"],tv["al"],tv["be"]),col="black",lwd=2,lty=2)
-lines(xf, mrp_log10(xf,med1["ms"],med1["lp"],med1["al"],med1["be"]),col="red",lwd=3)
-
-# Stage 2 HMF
-h2 <- hist(obs_all, breaks=br, plot=FALSE)
-ph2 <- h2$counts/(Vsurvey*0.2); ok2 <- ph2>0
-plot(h2$mids[ok2], log10(ph2[ok2]), pch=19, col="darkgreen", cex=1.3,
-     xlim=c(12,16), ylim=c(-8,-2), xlab="log10(M)", ylab="log10(phi)",
-     main=sprintf("S2: Hierarchical (N=%d)", N_true))
-grid(col="gray80")
-idx <- sample(nrow(pm2), min(200,nrow(pm2)))
-for(i in idx){y<-tryCatch(mrp_log10(xf,pm2[i,"ms"],pm2[i,"lp"],pm2[i,"al"],pm2[i,"be"]),
-    error=function(e) rep(NA,length(xf))); if(all(is.finite(y))) lines(xf,y,col=rgb(0,0,1,.03))}
-lines(xf, mrp_log10(xf,tv["ms"],tv["lp"],tv["al"],tv["be"]),col="black",lwd=2,lty=2)
-lines(xf, mrp_log10(xf,med2["ms"],med2["lp"],med2["al"],med2["be"]),col="red",lwd=3)
-legend("topright",c("Data","TRUE","Fit"),col=c("darkgreen","black","red"),
-       pch=c(19,NA,NA),lty=c(NA,2,1),lwd=c(NA,2,3),cex=.8)
-
-# Latent mass recovery
-plot(all_tm, mt_med, pch=".", col=rgb(0,0,0,.3),
-     xlab="True mass", ylab="Recovered mass", main="Latent mass recovery")
-abline(0,1,col="red",lwd=2)
-
-# Posteriors for all 4 params
-for(p in c("ms","lp","al","be")) {
-    hist(pm2[,p], breaks=50,
-         main=c(ms="M*",lp="log_phi",al="alpha",be="beta")[p],
-         xlab=p, col="steelblue", border="white", freq=FALSE)
-    abline(v=tv[p], col="red", lwd=3)
-    abline(v=med2[p], col="blue", lwd=2, lty=2)
-    legend("topright",c(sprintf("True: %.3f",tv[p]),sprintf("Med: %.3f",med2[p])),
-           col=c("red","blue"),lty=c(1,2),lwd=c(3,2),cex=.8)
-}
+lines(xf, mrp_log10(xf, tv["ms"], tv["lp"], tv["al"], tv["be"]), col="black", lwd=2, lty=2)
+lines(xf, mrp_log10(xf, map_ms, map_lp, map_al, map_be), col="red", lwd=3)
+if(!is.null(vb_fit))
+    lines(xf, mrp_log10(xf, medvb["ms"], medvb["lp"], medvb["al"], medvb["be"]), col="blue", lwd=2, lty=3)
+lines(xf, mrp_log10(xf, medmc["ms"], medmc["lp"], medmc["al"], medmc["be"]), col="purple", lwd=2, lty=4)
+legend("topright", c("TRUE","MAP","VB","MCMC"), col=c("black","red","blue","purple"),
+       lty=c(2,1,3,4), lwd=c(2,3,2,2), cex=.8)
 
 # Bias comparison
-bias1 <- sapply(names(tv), function(p) (med1[p]-tv[p])/((q84_1[p]-q16_1[p])/2))
-bias2 <- sapply(names(tv), function(p) (med2[p]-tv[p])/((q84_2[p]-q16_2[p])/2))
-plot(1:4-.02, bias1, pch=19, col="blue", cex=2, ylim=c(-3,3),
-     xlab="", ylab="Bias (sigma)", main="Recovery comparison", xaxt="n")
-points(1:4+.02, bias2, pch=17, col="red", cex=2)
-axis(1, at=1:4, labels=c("M*","phi*","alpha","beta"))
-abline(h=0, col="gray"); abline(h=c(-1,1), col="gray", lty=2)
-legend("topleft", c("S1: no err","S2: hierarchical"), pch=c(19,17), col=c("blue","red"))
+biases <- data.frame(
+    param=c("M*","phi*","alpha","beta"),
+    MAP=c(map_ms-tv["ms"], map_lp-tv["lp"], map_al-tv["al"], map_be-tv["be"]),
+    MCMC=c(medmc["ms"]-tv["ms"], medmc["lp"]-tv["lp"], medmc["al"]-tv["al"], medmc["be"]-tv["be"])
+)
+if(!is.null(vb_fit))
+    biases$VB <- c(medvb["ms"]-tv["ms"], medvb["lp"]-tv["lp"], medvb["al"]-tv["al"], medvb["be"]-tv["be"])
+
+plot(1:4, biases$MAP, pch=19, col="red", cex=2, ylim=c(-1,1),
+     xlab="", ylab="Median - True", main="Absolute bias", xaxt="n")
+points(1:4+.1, biases$MCMC, pch=17, col="purple", cex=2)
+if(!is.null(vb_fit)) points(1:4-.1, biases$VB, pch=15, col="blue", cex=2)
+axis(1, at=1:4, labels=biases$param)
+abline(h=0, col="gray", lwd=2)
+legend("topleft", c("MAP","MCMC","VB"), pch=c(19,17,15), col=c("red","purple","blue"), cex=.9)
+
+# Latent mass recovery (MAP)
+plot(all_tm, map_mt, pch=".", col=rgb(0,0,0,.3),
+     xlab="True mass", ylab="MAP latent mass", main="Latent mass (MAP)")
+abline(0,1,col="red",lwd=2)
+
+# MCMC posteriors
+for(p in c("ms","lp","al")) {
+    hist(pmmc[,p], breaks=30, col="steelblue", border="white", freq=FALSE,
+         main=c(ms="M* (MCMC)",lp="log_phi (MCMC)",al="alpha (MCMC)")[p], xlab=p)
+    abline(v=tv[p], col="red", lwd=3)
+    abline(v=medmc[p], col="blue", lwd=2, lty=2)
+    if(!is.null(vb_fit)) abline(v=medvb[p], col="darkgreen", lwd=2, lty=3)
+}
 
 dev.off()
-cat("\nSaved: sim_recovery_v14.pdf, mock_diagnostic_v14.pdf\n")
+cat("\nSaved: sim_recovery_v16.pdf\n")
 
-saveRDS(list(true=tv,
-    stage1=list(post=pm1, med=med1, q16=q16_1, q84=q84_1),
-    stage2=list(post=pm2, med=med2, q16=q16_2, q84=q84_2,
-                mt_med=mt_med, true_mass=all_tm)),
-    "sim_recovery_v14.rds")
-cat("Done!\n")
+cat("\n=== TIMING SUMMARY ===\n")
+cat(sprintf("  MAP:  %.0f seconds\n", t_opt))
+cat(sprintf("  VB:   %.0f seconds\n", t_vb))
+cat(sprintf("  MCMC: %.0f seconds\n", t_mcmc))
+
+cat("\nDone!\n")
