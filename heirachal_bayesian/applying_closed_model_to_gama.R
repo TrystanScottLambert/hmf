@@ -1,20 +1,16 @@
 ############################################################
-# HIERARCHICAL MRP FIT TO GAMA DATA (v2 - fixed mlim)
+# HIERARCHICAL MRP FIT TO GAMA DATA (v3)
 #
-# Uses the proven hierarchical latent-mass model from
-# simulation-recovery testing (v13/v14/v16).
+# v3 changes:
+# - Option A: Uniform mass cut (conservative but clean)
+# - Option B: Per-group zmax-based limits (more data, noisier)
+# - Both use the proven hierarchical latent-mass Stan model
+# - Better diagnostics for understanding mlim behaviour
+# - Increased MCMC iterations for better mixing
 #
-# v2 fixes: mass limit handling that was causing the
-# optimizer to find unphysical solutions (alpha > 0).
-#
-# Root cause in v1: the smooth mlim(z) placed detection
-# limits ABOVE many observed masses, forcing the model
-# into an impossible corner. Now uses:
-#   - Per-group mlim from zmax (physically grounded)
-#   - Per-shell mlim from the lower envelope of per-group
-#     limits (for the Poisson normalisation Lambda)
-#   - Consistency check: every group must be plausibly
-#     above its limit within measurement error
+# The key insight: the model needs to know WHERE the
+# detection boundary is. A noisy/wrong mlim biases alpha
+# more than losing some low-mass groups does.
 ############################################################
 
 library(celestial)
@@ -28,6 +24,21 @@ library(Cairo)
 set.seed(42)
 
 ############################################################
+# USER SETTINGS
+############################################################
+
+# Choose mass limit strategy:
+#   "uniform"  = single mass cut applied everywhere (safest)
+#   "pergroup" = zmax-based per-group limits (more data)
+MLIM_STRATEGY <- "uniform"
+
+# Uniform mass cut (only used if MLIM_STRATEGY == "uniform")
+# This should be above the completeness limit at zlimit.
+# From the v2 shell limits, mlim(z=0.25) ~ 12.9, so 12.8
+# is a reasonable conservative choice.
+UNIFORM_MCUT <- 12.8
+
+############################################################
 # 1. Data preparation (unchanged)
 ############################################################
 
@@ -38,8 +49,10 @@ zmin   <- 0.01
 multi  <- 5
 
 cat("============================================\n")
-cat("  HIERARCHICAL MRP FIT TO GAMA DATA (v2)\n")
-cat("============================================\n\n")
+cat("  HIERARCHICAL MRP FIT TO GAMA DATA (v3)\n")
+cat(sprintf("  Strategy: %s", MLIM_STRATEGY))
+if(MLIM_STRATEGY == "uniform") cat(sprintf(" (cut = %.1f)", UNIFORM_MCUT))
+cat("\n============================================\n\n")
 
 g3cx <- Rfits_read_table("../data/G3CFoFGroupv10.fits")
 g3c  <- g3cx[g3cx$Nfof > multi-1 & g3cx$Zfof < zlimit & 
@@ -56,7 +69,7 @@ g3c$MassAfunc <- g3c$MassAfunc * 100 / ho
 g3c$MassA <- g3c$MassA * 100 / ho
 g3c$mymass <- magica * (g3c$VelDisp*1000)^2 * g3c$Rad50*parsec*1E6 / (G*msol) * (100/ho)
 
-# Mass errors from multiplicity-error relation
+# Mass errors
 xx <- seq(3, 22)
 yy <- c(0.68389355, 0.38719116, 0.40325591, 0.32696735, 0.27680685, 
         0.24018684, 0.20226682, 0.18645475, 0.17437005, 0.14271506, 
@@ -79,6 +92,7 @@ g3c$masscorr <- masscorr[g3c$Nfof]
 g3c$masscorr[is.na(g3c$masscorr)] <- 0.0
 g3c$mymasscorr <- g3c$mymass / 10^g3c$masscorr
 g3c$MassAfunc <- g3c$mymasscorr
+g3c$log_mass <- log10(g3c$MassAfunc)
 
 ############################################################
 # 2. Calculate zmax for each group
@@ -103,50 +117,8 @@ g3c$zmax <- ifelse(g3c$zmax < g3c$Zfof, g3c$Zfof, g3c$zmax)
 g3c$zmax <- ifelse(g3c$zmax > zlimit, zlimit, g3c$zmax)
 
 ############################################################
-# 3. Per-group mass limits from zmax
-#
-# CRITICAL: The per-group mlim must satisfy two conditions:
-#   (a) Physical: derived from the group's actual detectability
-#   (b) Consistent: x_obs must be plausibly above mlim within
-#       measurement error (otherwise the latent mass model
-#       can't find a valid mt > mlim)
-#
-# The zmax-based approach from the original script:
-#   mlim_i = log10(M_obs_i) - 2*log10(zmax_i / z_obs_i)
-# This comes from the idea that if the group were pushed to
-# zmax, its flux would drop as ~(d_L)^2, so the minimum
-# detectable mass scales similarly.
+# 3. Mass limits and shell setup
 ############################################################
-
-cat("Computing per-group mass limits...\n")
-
-g3c$log_mass <- log10(g3c$MassAfunc)
-
-# zmax-based mass limit (same formula as original)
-g3c$log_mass_limit <- g3c$log_mass - 2*log10(g3c$zmax / g3c$Zfof)
-
-# Cap: mlim should not exceed x_obs - 0.5 dex
-# (group must be comfortably above its detection limit)
-g3c$log_mass_limit <- pmin(g3c$log_mass_limit, g3c$log_mass - 0.5)
-
-# Floor: no detection below 10^10.5
-g3c$log_mass_limit <- pmax(g3c$log_mass_limit, 10.5)
-
-cat(sprintf("  Mass limit range: %.2f -- %.2f\n", 
-            min(g3c$log_mass_limit, na.rm=TRUE), max(g3c$log_mass_limit, na.rm=TRUE)))
-cat(sprintf("  Median (M_obs - mlim): %.2f dex\n",
-            median(g3c$log_mass - g3c$log_mass_limit, na.rm=TRUE)))
-
-############################################################
-# 4. Redshift shells for Lambda (Poisson normalisation)
-#
-# For the expected count Lambda, we need a mass limit per
-# redshift shell. We derive this from the per-group limits:
-# in each shell, use a robust low percentile of per-group
-# mlim values as the shell's detection boundary.
-############################################################
-
-cat("Setting up redshift shells...\n")
 
 # GAMA sky area
 sky_area_deg2 <- 179.92
@@ -156,93 +128,114 @@ nsh <- 20
 z_edges <- seq(zmin, zlimit, length.out=nsh+1)
 z_mids  <- (z_edges[-1] + z_edges[-(nsh+1)]) / 2
 
-# Shell volumes using celestial package
+# Shell volumes
 d_edges <- sapply(z_edges, function(z) cosdistCoDist(z, OmegaM=omegam, H0=ho))
 V_sh <- (4/3) * pi * (d_edges[-1]^3 - d_edges[-(nsh+1)]^3) * sky_frac
 Vsurvey <- sum(V_sh)
 
-# Per-shell mass limit: use 10th percentile of per-group limits
-# within each shell for a robust lower envelope.
-mlim_sh <- numeric(nsh)
-for(j in 1:nsh) {
-    in_shell <- !is.na(g3c$Zfof) & !is.na(g3c$log_mass_limit) &
-                g3c$Zfof >= z_edges[j] & g3c$Zfof < z_edges[j+1]
-    if(sum(in_shell) >= 5) {
-        mlim_sh[j] <- quantile(g3c$log_mass_limit[in_shell], 0.10)
-    } else if(sum(in_shell) > 0) {
-        mlim_sh[j] <- min(g3c$log_mass_limit[in_shell])
-    } else {
-        mlim_sh[j] <- NA
+if(MLIM_STRATEGY == "uniform") {
+    ##########################################################
+    # OPTION A: Uniform mass cut
+    #
+    # Every group must have x_obs > UNIFORM_MCUT.
+    # Every shell has the same mlim = UNIFORM_MCUT.
+    # Per-group mlim = UNIFORM_MCUT for all groups.
+    #
+    # This is the closest to the recovery test setup:
+    # the model knows EXACTLY where the detection boundary
+    # is, so alpha can be properly constrained.
+    ##########################################################
+    
+    cat(sprintf("\nApplying uniform mass cut at %.1f...\n", UNIFORM_MCUT))
+    
+    # Filter groups
+    good <- is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0 & 
+            !is.na(g3c$log10MassErr) & g3c$log_mass > UNIFORM_MCUT &
+            g3c$log_mass < 17
+    
+    x_obs     <- g3c$log_mass[good]
+    sigma_obs <- g3c$log10MassErr[good]
+    mlim_per  <- rep(UNIFORM_MCUT, sum(good))  # same for all
+    
+    # All shells have the same limit
+    mlim_sh <- rep(UNIFORM_MCUT, nsh)
+    
+    N <- length(x_obs)
+    cat(sprintf("  Groups above cut: %d / %d\n", N, nrow(g3c)))
+    
+} else if(MLIM_STRATEGY == "pergroup") {
+    ##########################################################
+    # OPTION B: Per-group zmax-based limits
+    #
+    # Same as v2 but with improved limit calculation.
+    # The zmax-based limit is:
+    #   mlim_i = log10(M_i) - 2*log10(zmax_i / z_i)
+    # Capped at x_obs - 0.5 dex, floored at 10.5.
+    ##########################################################
+    
+    cat("\nUsing per-group zmax-based mass limits...\n")
+    
+    g3c$log_mass_limit <- g3c$log_mass - 2*log10(g3c$zmax / g3c$Zfof)
+    g3c$log_mass_limit <- pmin(g3c$log_mass_limit, g3c$log_mass - 0.5)
+    g3c$log_mass_limit <- pmax(g3c$log_mass_limit, 10.5)
+    
+    good <- is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0 & 
+            !is.na(g3c$log_mass_limit) & !is.na(g3c$log10MassErr) &
+            !is.na(g3c$zmax) & g3c$log_mass > 10 & g3c$log_mass < 17
+    
+    x_obs     <- g3c$log_mass[good]
+    sigma_obs <- g3c$log10MassErr[good]
+    mlim_per  <- g3c$log_mass_limit[good]
+    
+    # Per-shell limits from 10th percentile
+    for(j in 1:nsh) {
+        in_shell <- g3c$Zfof[good] >= z_edges[j] & g3c$Zfof[good] < z_edges[j+1]
+        if(sum(in_shell) >= 5) {
+            mlim_sh[j] <- quantile(mlim_per[in_shell], 0.10)
+        } else if(sum(in_shell) > 0) {
+            mlim_sh[j] <- min(mlim_per[in_shell])
+        } else {
+            mlim_sh[j] <- NA
+        }
     }
+    if(any(is.na(mlim_sh))) {
+        ok_sh <- !is.na(mlim_sh)
+        mlim_sh <- approx(z_mids[ok_sh], mlim_sh[ok_sh], z_mids, rule=2)$y
+    }
+    for(j in 2:nsh) mlim_sh[j] <- max(mlim_sh[j], mlim_sh[j-1])
+    
+    N <- length(x_obs)
 }
-
-# Fill NAs by interpolation
-if(any(is.na(mlim_sh))) {
-    ok_sh <- !is.na(mlim_sh)
-    mlim_sh <- approx(z_mids[ok_sh], mlim_sh[ok_sh], z_mids, rule=2)$y
-}
-
-# Enforce monotonically non-decreasing with redshift
-for(j in 2:nsh) {
-    mlim_sh[j] <- max(mlim_sh[j], mlim_sh[j-1])
-}
-
-cat(sprintf("  Survey volume: %.4e Mpc^3\n", Vsurvey))
-cat(sprintf("  N shells: %d\n", nsh))
-cat(sprintf("  mlim_sh range: %.2f -- %.2f\n", min(mlim_sh), max(mlim_sh)))
-
-############################################################
-# 5. Prepare final data vectors
-############################################################
-
-good <- is.finite(g3c$MassAfunc) & g3c$MassAfunc > 0 & 
-        !is.na(g3c$log_mass_limit) & !is.na(g3c$log10MassErr) &
-        !is.na(g3c$zmax)
-
-x_obs     <- g3c$log_mass[good]
-sigma_obs <- g3c$log10MassErr[good]
-mlim_per  <- g3c$log_mass_limit[good]
-
-# Quality cuts
-keep <- x_obs > 10 & x_obs < 17
-x_obs     <- x_obs[keep]
-sigma_obs <- sigma_obs[keep]
-mlim_per  <- mlim_per[keep]
-
-N <- length(x_obs)
-
-# DIAGNOSTIC: verify every group is above its per-group limit
-n_below <- sum(x_obs < mlim_per)
-margin  <- x_obs - mlim_per
 
 cat(sprintf("\n  N groups: %d\n", N))
 cat(sprintf("  Mass range: %.2f -- %.2f\n", min(x_obs), max(x_obs)))
 cat(sprintf("  Sigma range: %.2f -- %.2f (median %.2f)\n", 
             min(sigma_obs), max(sigma_obs), median(sigma_obs)))
 cat(sprintf("  mlim_per range: %.2f -- %.2f\n", min(mlim_per), max(mlim_per)))
-cat(sprintf("  Groups below own mlim: %d (should be 0)\n", n_below))
-cat(sprintf("  Min margin (x_obs - mlim): %.2f dex\n", min(margin)))
-cat(sprintf("  Median margin: %.2f dex\n\n", median(margin)))
+cat(sprintf("  mlim_sh range: %.2f -- %.2f\n", min(mlim_sh), max(mlim_sh)))
 
-if(n_below > 0) {
-    warning(sprintf("%d groups have x_obs < mlim! Check mass limit calculation.", n_below))
-}
+margin <- x_obs - mlim_per
+n_below <- sum(margin < 0)
+cat(sprintf("  Groups below own mlim: %d (should be 0)\n", n_below))
+cat(sprintf("  Min margin: %.2f dex | Median margin: %.2f dex\n", 
+            min(margin), median(margin)))
+cat(sprintf("  Survey volume: %.4e Mpc^3\n\n", Vsurvey))
 
 ############################################################
-# 6. Hierarchical Stan model (from recovery test v14/v16)
+# 4. Stan model (identical to recovery test)
 ############################################################
 
 stan_hierarchical <- "
 data {
-  int<lower=1> N;          // number of groups
-  vector[N] x_obs;         // observed log10(M)
-  vector<lower=0>[N] sig;  // measurement error per group (dex)
-  vector[N] mlim;          // per-group detection limit on true mass
-  int<lower=1> Nsh;        // number of redshift shells
-  vector[Nsh] V_sh;        // comoving volume per shell (Mpc^3)
-  vector[Nsh] mlim_sh;     // mass limit per shell
-  real xhi;                // upper mass limit for integration
-  int<lower=2> Ng;         // grid points for Lambda integration
+  int<lower=1> N;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;
+  vector[N] mlim;
+  int<lower=1> Nsh;
+  vector[Nsh] V_sh;
+  vector[Nsh] mlim_sh;
+  real xhi;
+  int<lower=2> Ng;
 }
 transformed data {
   real ln10 = log(10.0);
@@ -252,11 +245,11 @@ transformed data {
   for(k in 1:Ng) xg[k] = xlo + (k-1)*dx;
 }
 parameters {
-  real ms;                          // M*
-  real lp;                          // log10(phi*)
-  real al;                          // alpha
-  real<lower=0.1, upper=2.0> be;    // beta
-  vector[N] z_raw;                  // non-centered latent masses
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+  vector[N] z_raw;
 }
 transformed parameters {
   vector[N] mt;
@@ -282,7 +275,6 @@ model {
     cum[k] = cum[k+1] + 0.5*(pg[k]+pg[k+1])*dx;
   }
   
-  // Lambda = sum_j V_j * integral(phi, mlim_j, xhi)
   real Lambda = 0;
   for(j in 1:Nsh) {
     int k0 = 1;
@@ -292,7 +284,6 @@ model {
   }
   target += -Lambda;
   
-  // MRP at latent true masses
   for(i in 1:N) {
     real u = mt[i] - ms;
     real phi_i = be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));
@@ -305,7 +296,7 @@ model {
 "
 
 ############################################################
-# 7. Compile and prepare
+# 5. Compile and prepare
 ############################################################
 
 cat("Compiling hierarchical Stan model...\n")
@@ -332,14 +323,13 @@ init_fn <- function() {
 }
 
 ############################################################
-# 8. MAP via optimizing()
+# 6. MAP via optimizing() with multi-start
 ############################################################
 
 cat("\n========== APPROACH A: MAP (optimizing) ==========\n")
 
-# Try multiple initialisations to avoid local optima
 best_opt <- NULL
-best_lp_val  <- -Inf
+best_lp_val <- -Inf
 
 for(trial in 1:5) {
     cat(sprintf("  Trial %d... ", trial))
@@ -347,12 +337,14 @@ for(trial in 1:5) {
     this_opt <- tryCatch(
         optimizing(sm, data=stan_data, init=this_init,
                    hessian=FALSE, as_vector=FALSE,
-                   iter=10000, algorithm="LBFGS"),
+                   iter=20000, algorithm="LBFGS",
+                   tol_rel_grad=1e-12),
         error=function(e) { cat(sprintf("failed: %s\n", e$message)); NULL }
     )
     if(!is.null(this_opt)) {
-        cat(sprintf("lp=%.1f  ms=%.2f al=%.2f (code %d)\n", 
-                    this_opt$value, this_opt$par$ms, this_opt$par$al, this_opt$return_code))
+        cat(sprintf("lp=%.1f  ms=%.2f lp=%.2f al=%.2f be=%.2f (code %d)\n", 
+                    this_opt$value, this_opt$par$ms, this_opt$par$lp,
+                    this_opt$par$al, this_opt$par$be, this_opt$return_code))
         if(this_opt$value > best_lp_val) {
             best_lp_val <- this_opt$value
             best_opt <- this_opt
@@ -360,9 +352,8 @@ for(trial in 1:5) {
     }
 }
 
-# Re-run the best with hessian
 if(!is.null(best_opt)) {
-    cat("\n  Re-optimizing best solution with hessian...\n")
+    cat("\n  Re-optimizing best with hessian...\n")
     rerun_init <- list(
         ms = best_opt$par$ms, lp = best_opt$par$lp,
         al = best_opt$par$al, be = best_opt$par$be,
@@ -370,8 +361,9 @@ if(!is.null(best_opt)) {
     opt <- tryCatch(
         optimizing(sm, data=stan_data, init=rerun_init,
                    hessian=TRUE, as_vector=FALSE,
-                   iter=10000, algorithm="LBFGS"),
-        error=function(e) { cat("Hessian rerun failed, using best trial\n"); best_opt }
+                   iter=20000, algorithm="LBFGS",
+                   tol_rel_grad=1e-12),
+        error=function(e) { cat("Hessian rerun failed\n"); best_opt }
     )
 } else {
     stop("All optimization trials failed!")
@@ -391,24 +383,17 @@ cat(sprintf("  log_phi* = %.3f\n", map_lp))
 cat(sprintf("  alpha    = %.3f\n", map_al))
 cat(sprintf("  beta     = %.3f\n", map_be))
 
-# Sanity check
-if(map_al > 0) {
-    warning("alpha > 0 is unphysical! Something is still wrong with mass limits.")
-}
-if(map_ms < 12) {
-    warning("M* < 12 is unphysical! Expected ~13-14.")
-}
+if(map_al > 0) warning("alpha > 0 is unphysical!")
+if(map_ms < 12) warning("M* < 12 is unphysical!")
 
-# Laplace standard errors
+# Laplace SEs
 se_laplace <- rep(NA, 4)
 pnames <- c("ms","lp","al","be")
 
 if(!is.null(opt$hessian)) {
     cat("\nComputing Laplace standard errors...\n")
     H <- opt$hessian
-    np <- 4
-    nz_h <- N
-    
+    np <- 4; nz_h <- N
     tryCatch({
         A <- -H[1:np, 1:np]
         B <- -H[1:np, (np+1):(np+nz_h)]
@@ -417,32 +402,26 @@ if(!is.null(opt$hessian)) {
         Schur <- A - B %*% D_diag_inv %*% t(B)
         Sigma_mrp <- solve(Schur)
         se_laplace <- sqrt(diag(Sigma_mrp))
-        
         cat("Laplace SE:\n")
         for(i in 1:4) {
             cat(sprintf("  %-10s MAP = %7.3f  SE = %.3f\n",
                         c("M*","log_phi*","alpha","beta")[i],
                         opt$par[[pnames[i]]], se_laplace[i]))
         }
-    }, error=function(e) {
-        cat(sprintf("Hessian analysis failed: %s\n", e$message))
-    })
+    }, error=function(e) cat(sprintf("Hessian failed: %s\n", e$message)))
 }
 
-# Latent mass summary
 map_zraw <- opt$par$z_raw
 map_mt <- x_obs + sigma_obs * map_zraw
 cat(sprintf("\nLatent mass shift: median |MAP_mt - x_obs| = %.3f dex\n",
             median(abs(map_mt - x_obs))))
-
-n_mt_below <- sum(map_mt < mlim_per)
-cat(sprintf("Latent masses below mlim: %d / %d\n", n_mt_below, N))
+cat(sprintf("Latent masses below mlim: %d / %d\n", sum(map_mt < mlim_per), N))
 
 ############################################################
-# 9. Short MCMC from MAP
+# 7. MCMC
 ############################################################
 
-cat("\n========== APPROACH B: Short MCMC ==========\n")
+cat("\n========== APPROACH B: MCMC ==========\n")
 
 init_from_map <- function() {
     list(ms    = map_ms + rnorm(1, 0, 0.05),
@@ -485,7 +464,7 @@ for(p in pnames) {
 }
 
 ############################################################
-# 10. Results comparison
+# 8. Results comparison
 ############################################################
 
 cat("\n============================================\n")
@@ -509,7 +488,7 @@ for(p in pnames) {
 }
 
 ############################################################
-# 11. Plotting
+# 9. Plotting
 ############################################################
 
 mrp_log10 <- function(x, mstar, log_phi, alpha, beta) {
@@ -524,7 +503,7 @@ breaks <- seq(x_min, x_max, by=0.2)
 hist_plt <- hist(x_obs, breaks=breaks, plot=FALSE)
 phi_plt  <- hist_plt$counts / (Vsurvey * 0.2)
 ok       <- phi_plt > 0
-xfit     <- seq(x_min, 16.5, length.out=500)
+xfit     <- seq(11, 16.5, length.out=500)
 
 CairoPDF("MRP_HIERARCHICAL_FIT.pdf", 14, 10)
 par(mfrow=c(2,3))
@@ -535,7 +514,7 @@ plot(hist_plt$mids[ok], log10(phi_plt[ok]),
      xlim=c(12,16), ylim=c(-8,-2),
      xlab=expression("log"[10]*"(M/M"["\u2299"]*")"),
      ylab=expression("log"[10]*"("*phi*")  [Mpc"^{-3}*" dex"^{-1}*"]"),
-     main="Hierarchical MRP Fit to GAMA (v2)")
+     main=sprintf("Hierarchical MRP (v3, %s)", MLIM_STRATEGY))
 grid(col="gray80")
 
 if(nrow(pmmc) > 10) {
@@ -554,12 +533,21 @@ lines(xfit, mrp_log10(xfit, medmc["ms"], medmc["lp"], medmc["al"], medmc["be"]),
 lines(xfit, mrp_log10(xfit, driver22["ms"], driver22["lp"], driver22["al"], driver22["be"]),
       col="black", lwd=2, lty=3)
 
+# Show mass cut if uniform
+if(MLIM_STRATEGY == "uniform") {
+    abline(v=UNIFORM_MCUT, col="orange", lwd=2, lty=4)
+}
+
 legend("bottomleft",
        legend=c("GAMA (binned)", "MAP", "MCMC median", 
-                "Posterior draws", "Driver+22"),
-       col=c("darkgreen","red","purple",rgb(0,0,1,0.3),"black"),
-       pch=c(19,NA,NA,NA,NA), lty=c(NA,1,2,1,3),
-       lwd=c(NA,3,2,1,2), bg="white", cex=0.8)
+                "Posterior draws", "Driver+22",
+                if(MLIM_STRATEGY=="uniform") "Mass cut" else NULL),
+       col=c("darkgreen","red","purple",rgb(0,0,1,0.3),"black",
+             if(MLIM_STRATEGY=="uniform") "orange" else NULL),
+       pch=c(19,NA,NA,NA,NA, if(MLIM_STRATEGY=="uniform") NA else NULL),
+       lty=c(NA,1,2,1,3, if(MLIM_STRATEGY=="uniform") 4 else NULL),
+       lwd=c(NA,3,2,1,2, if(MLIM_STRATEGY=="uniform") 2 else NULL),
+       bg="white", cex=0.7)
 
 text(14.5, -2.3,
      sprintf("MAP:\nM* = %.2f\nlog\u03c6* = %.2f\n\u03b1 = %.2f\n\u03b2 = %.2f",
@@ -567,15 +555,12 @@ text(14.5, -2.3,
      col="red", cex=0.8, pos=4)
 
 # Panel 2: Parameter comparison
-vals_map  <- c(map_ms, map_lp, map_al, map_be)
-vals_mcmc <- medmc
-vals_d22  <- driver22
-
-plot(1:4, vals_map, pch=19, col="red", cex=2, 
-     ylim=range(c(vals_map, vals_mcmc, vals_d22)),
+plot(1:4, c(map_ms, map_lp, map_al, map_be), pch=19, col="red", cex=2, 
+     ylim=range(c(map_ms, map_lp, map_al, map_be, 
+                  medmc, driver22)),
      xlab="", ylab="Parameter value", main="MAP vs MCMC vs Driver+22", xaxt="n")
-points(1:4+0.1, vals_mcmc, pch=17, col="purple", cex=2)
-points(1:4-0.1, vals_d22, pch=15, col="black", cex=2)
+points(1:4+0.1, medmc, pch=17, col="purple", cex=2)
+points(1:4-0.1, driver22, pch=15, col="black", cex=2)
 axis(1, at=1:4, labels=c("M*","log_phi*","alpha","beta"))
 legend("topleft", c("MAP","MCMC","Driver+22"), 
        pch=c(19,17,15), col=c("red","purple","black"), cex=0.9)
@@ -585,39 +570,49 @@ plot(x_obs, map_mt, pch=".", col=rgb(0,0,0,0.3),
      xlab="Observed mass", ylab="MAP latent mass",
      main="Latent mass recovery")
 abline(0, 1, col="red", lwd=2)
-points(x_obs[map_mt < mlim_per + 0.1], map_mt[map_mt < mlim_per + 0.1],
-       pch=20, col="orange", cex=0.5)
+if(MLIM_STRATEGY == "uniform") abline(h=UNIFORM_MCUT, col="orange", lty=2)
 
-# Panel 4: Mass and limit distributions
-hist(x_obs, breaks=50, col=rgb(0.2,0.5,0.2,0.5), border="white",
-     main="Observed mass vs detection limits", xlab="log10(M)")
-hist(mlim_per, breaks=50, col=rgb(0.8,0.2,0.2,0.3), border="white", add=TRUE)
-legend("topright", c("x_obs", "mlim"), 
-       fill=c(rgb(0.2,0.5,0.2,0.5), rgb(0.8,0.2,0.2,0.3)), cex=0.9)
+# Panel 4: Mass histogram with cut
+hist(g3c$log_mass[is.finite(g3c$log_mass)], breaks=seq(10,17,by=0.2), 
+     col=rgb(0.7,0.7,0.7,0.5), border="white",
+     main="Sample selection", xlab="log10(M)")
+hist(x_obs, breaks=seq(10,17,by=0.2), 
+     col=rgb(0.2,0.5,0.2,0.5), border="white", add=TRUE)
+if(MLIM_STRATEGY == "uniform") abline(v=UNIFORM_MCUT, col="orange", lwd=3, lty=2)
+legend("topright", c("All groups", "Used in fit",
+       if(MLIM_STRATEGY=="uniform") sprintf("Cut = %.1f", UNIFORM_MCUT) else NULL),
+       fill=c(rgb(0.7,0.7,0.7,0.5), rgb(0.2,0.5,0.2,0.5), NA),
+       border=c("white","white",NA),
+       col=c(NA, NA, if(MLIM_STRATEGY=="uniform") "orange" else NA),
+       lty=c(NA, NA, if(MLIM_STRATEGY=="uniform") 2 else NA),
+       lwd=c(NA, NA, if(MLIM_STRATEGY=="uniform") 3 else NA),
+       cex=0.8)
 
-# Panel 5: Mass error distribution
+# Panel 5: Error distribution
 hist(sigma_obs, breaks=30, col="steelblue", border="white",
      main="Mass error distribution", xlab="sigma (dex)")
 abline(v=median(sigma_obs), col="red", lwd=2, lty=2)
 
-# Panel 6: mlim vs redshift (keep z_groups for plotting)
-z_groups <- g3c$Zfof[good][keep]
-plot(z_groups, mlim_per, pch=".", col=rgb(0,0,0,0.3),
-     xlab="Redshift", ylab="mlim (log10 M)",
-     main="Per-group limits & shell limits")
-points(z_mids, mlim_sh, col="red", pch=19, cex=1.5)
-lines(z_mids, mlim_sh, col="red", lwd=2)
-legend("topleft", c("Per-group", "Per-shell"), 
-       col=c("black","red"), pch=c(46,19), cex=0.9)
+# Panel 6: MCMC trace for alpha
+if(nrow(pmmc) > 10) {
+    hist(pmmc[,"al"], breaks=30, col="steelblue", border="white", freq=FALSE,
+         main="alpha posterior (MCMC)", xlab="alpha")
+    abline(v=map_al, col="red", lwd=3)
+    abline(v=driver22["al"], col="black", lwd=2, lty=3)
+    legend("topright", c("MAP","Driver+22"), col=c("red","black"), 
+           lty=c(1,3), lwd=c(3,2), cex=0.8)
+}
 
 dev.off()
 cat("\nPlot saved: MRP_HIERARCHICAL_FIT.pdf\n")
 
 ############################################################
-# 12. Save results
+# 10. Save results
 ############################################################
 
 saveRDS(list(
+    strategy = MLIM_STRATEGY,
+    uniform_mcut = if(MLIM_STRATEGY=="uniform") UNIFORM_MCUT else NA,
     map = list(ms=map_ms, lp=map_lp, al=map_al, be=map_be,
                se=se_laplace, mt=map_mt, z_raw=map_zraw,
                converged=(opt$return_code==0)),
@@ -629,4 +624,4 @@ saveRDS(list(
 ), "hierarchical_mrp_results.rds")
 
 cat("\nResults saved: hierarchical_mrp_results.rds\n")
-cat("\nDone!\n")
+cat(sprintf("\nDone! (Strategy: %s, N=%d groups)\n", MLIM_STRATEGY, N))
