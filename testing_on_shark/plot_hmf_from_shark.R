@@ -191,7 +191,68 @@ for(q in quantiles_to_test) {
 }
 
 ############################################################
-# 6. Shells (shared across all runs)
+# 5b. Turnover-based mlim(z) (Wright+17 style)
+#
+# In each redshift bin, histogram the detected halo masses.
+# The peak (mode) of the histogram is where incompleteness
+# kicks in — below this, counts decline due to missing groups.
+# Bootstrap to get uncertainty on the turnover point.
+############################################################
+
+cat("\nComputing turnover-based mlim(z) (Wright+17 style)...\n")
+
+turnover_bins <- numeric(nbin_z)
+turnover_lo   <- numeric(nbin_z)
+turnover_hi   <- numeric(nbin_z)
+
+n_boot <- 200
+hist_bw <- 0.3  # bin width for the mass histogram within each z-bin
+
+for(b in 1:nbin_z) {
+    in_bin <- z_gama >= z_be[b] & z_gama < z_be[b+1]
+    masses_in_bin <- m_gama[in_bin]
+    
+    if(sum(in_bin) > 20) {
+        # Find turnover: peak of the mass histogram
+        hh <- hist(masses_in_bin, breaks=seq(10, 16, by=hist_bw), plot=FALSE)
+        peak_idx <- which.max(hh$counts)
+        turnover_bins[b] <- hh$mids[peak_idx]
+        
+        # Bootstrap the turnover
+        boot_turnovers <- numeric(n_boot)
+        for(ib in 1:n_boot) {
+            boot_sample <- sample(masses_in_bin, replace=TRUE)
+            hb <- hist(boot_sample, breaks=seq(10, 16, by=hist_bw), plot=FALSE)
+            boot_turnovers[ib] <- hb$mids[which.max(hb$counts)]
+        }
+        turnover_lo[b] <- quantile(boot_turnovers, 0.16)
+        turnover_hi[b] <- quantile(boot_turnovers, 0.84)
+    } else {
+        turnover_bins[b] <- NA
+        turnover_lo[b] <- NA
+        turnover_hi[b] <- NA
+    }
+}
+
+ok_to <- !is.na(turnover_bins)
+
+# Fit polynomial
+fit_to_l <- lm(turnover_bins[ok_to] ~ z_bm[ok_to])
+fit_to_q <- lm(turnover_bins[ok_to] ~ z_bm[ok_to] + I(z_bm[ok_to]^2))
+
+if(AIC(fit_to_q) < AIC(fit_to_l) - 2) {
+    cc_to <- coef(fit_to_q)
+    mlim_funcs[["turnover"]] <- function(z) cc_to[1] + cc_to[2]*z + cc_to[3]*z^2
+    environment(mlim_funcs[["turnover"]]) <- list2env(list(cc_to=cc_to))
+    cat(sprintf("  turnover: mlim(z) = %.2f + %.2f*z + %.2f*z^2  [mlim(0.25)=%.2f]\n",
+                cc_to[1], cc_to[2], cc_to[3], cc_to[1]+cc_to[2]*0.25+cc_to[3]*0.25^2))
+} else {
+    cc_to <- coef(fit_to_l)
+    mlim_funcs[["turnover"]] <- function(z) cc_to[1] + cc_to[2]*z
+    environment(mlim_funcs[["turnover"]]) <- list2env(list(cc_to=cc_to))
+    cat(sprintf("  turnover: mlim(z) = %.2f + %.2f*z  [mlim(0.25)=%.2f]\n",
+                cc_to[1], cc_to[2], cc_to[1]+cc_to[2]*0.25))
+}
 ############################################################
 
 nsh <- 20
@@ -375,7 +436,7 @@ h_gama_plot <- hist(m_gama, breaks=breaks, plot=FALSE)
 phi_gama_plot <- h_gama_plot$counts / (Vsurvey * bin_width)
 ok_gama_plot  <- h_gama_plot$counts >= 5
 
-qcols <- c(q05="red", q10="orange", q25="darkgreen", q50="purple")
+qcols <- c(q05="red", q10="orange", q25="darkgreen", q50="purple", turnover="cyan4")
 
 CairoPDF("shark_recovery.pdf", 14, 14)
 par(mfrow=c(3,2))
@@ -394,6 +455,11 @@ for(qname in names(mlim_funcs)) {
     lines(z_plot, mlim_funcs[[qname]](z_plot), col=qcols[qname], lwd=2.5)
 }
 
+# Turnover points with bootstrap error bars
+points(z_bm[ok_to], turnover_bins[ok_to], pch=15, col="cyan4", cex=1.2)
+arrows(z_bm[ok_to], turnover_lo[ok_to], z_bm[ok_to], turnover_hi[ok_to],
+       angle=90, code=3, length=0.02, col="cyan4")
+
 # True 50% line
 ok50 <- !is.na(mlim_true50)
 fit50_l <- lm(mlim_true50[ok50] ~ z_bin_mids_fine[ok50])
@@ -408,10 +474,10 @@ if(AIC(fit50_q) < AIC(fit50_l) - 2) {
 
 legend("topleft",
        legend=c("5th pctile", "10th pctile", "25th pctile", 
-                "50th pctile (median)", "True 50% completeness"),
-       col=c("red","orange","darkgreen","purple","blue"),
-       lty=c(1,1,1,1,2), lwd=c(2.5,2.5,2.5,2.5,3),
-       bg="white", cex=0.6)
+                "50th pctile", "Turnover (Wright+17)", "True 50% comp."),
+       col=c("red","orange","darkgreen","purple","cyan4","blue"),
+       lty=c(1,1,1,1,1,2), lwd=c(2.5,2.5,2.5,2.5,2.5,3),
+       bg="white", cex=0.55)
 
 # ---- Panel 2: Completeness vs mass slices ----
 z_slices <- c(0.05, 0.10, 0.15, 0.20)
@@ -456,10 +522,10 @@ for(qname in names(results)) {
 
 legend("topright",
        legend=c("True HMF (AM)", "GAMA-selected", "True MRP",
-                "q05 MAP", "q10 MAP", "q25 MAP", "q50 MAP"),
-       col=c("grey40","grey60","blue","red","orange","darkgreen","purple"),
-       pch=c(19,17,NA,NA,NA,NA,NA), lty=c(NA,NA,1,2,2,2,2),
-       lwd=c(NA,NA,3,2,2,2,2), bg="white", cex=0.55)
+                "q05 MAP", "q10 MAP", "q25 MAP", "q50 MAP", "turnover MAP"),
+       col=c("grey40","grey60","blue","red","orange","darkgreen","purple","cyan4"),
+       pch=c(19,17,NA,NA,NA,NA,NA,NA), lty=c(NA,NA,1,2,2,2,2,2),
+       lwd=c(NA,NA,3,2,2,2,2,2), bg="white", cex=0.5)
 
 # ---- Panel 4: Bias summary ----
 bias_mat <- sapply(results, function(r) r$bias)
