@@ -25,6 +25,7 @@ set.seed(42)
 ############################################################
 
 TRUE_MS <- 13.51; TRUE_LP <- -3.19; TRUE_AL <- -1.27; TRUE_BE <- 0.47
+ADD_ERRORS <- TRUE  # Set FALSE for no-error comparison
 
 mrp_phi <- function(x, ms, lp, al, be) {
     be * log(10) * 10^lp * 10^((al+1)*(x-ms)) * exp(-10^(be*(x-ms)))
@@ -32,6 +33,7 @@ mrp_phi <- function(x, ms, lp, al, be) {
 
 cat("============================================\n")
 cat("  QUANTILE COMPARISON FOR mlim(z)\n")
+if(exists("ADD_ERRORS") && ADD_ERRORS) cat("  WITH MASS ERRORS\n")
 cat("============================================\n\n")
 
 data_dir <- "/Users/00115372/Desktop/masking_mock_cat"
@@ -90,9 +92,44 @@ groups_vol[, detected := n_gama >= multi]
 
 groups_gama <- groups_vol[detected == TRUE]
 z_gama <- groups_gama$redshift_cosmological
-m_gama <- groups_gama$log_mass_am
+m_gama_true <- groups_gama$log_mass_am  # true AM masses (for completeness calc)
 
 cat(sprintf("  Detected: %d / %d\n", nrow(groups_gama), N_total))
+
+############################################################
+# 3b. Add mass measurement errors
+#
+# Sigma depends on multiplicity (n_gama), matching GAMA:
+#   Nfof=2-4: ~0.4 dex, Nfof=5-8: ~0.25 dex, Nfof>10: ~0.15 dex
+# Selection is unaffected (based on galaxy mags).
+# mlim(z) and fitting use the OBSERVED (noisy) masses.
+############################################################
+
+ADD_ERRORS_LABEL <- ifelse(ADD_ERRORS, "WITH ERRORS", "NO ERRORS")
+
+if(ADD_ERRORS) {
+    cat("\nAdding mass measurement errors...\n")
+    
+    # Error model: sigma depends on n_gama (like GAMA)
+    xx_err <- seq(2, 22)
+    yy_err <- c(0.68, 0.39, 0.40, 0.33, 0.28, 0.24, 0.20, 0.19, 0.17,
+                0.14, 0.14, 0.13, 0.14, 0.12, 0.12, 0.10, 0.10, 0.10,
+                0.09, 0.08, 0.08)
+    
+    sigma_obs <- approx(xx_err, yy_err, groups_gama$n_gama, rule=2)$y
+    sigma_obs[sigma_obs < 0.10] <- 0.10  # floor at 0.1 dex
+    
+    # Observed = true + N(0, sigma)
+    m_gama <- m_gama_true + rnorm(length(m_gama_true), 0, sigma_obs)
+    
+    cat(sprintf("  Sigma range: %.2f -- %.2f (median %.2f)\n",
+                min(sigma_obs), max(sigma_obs), median(sigma_obs)))
+    cat(sprintf("  Median |error|: %.3f dex\n", median(abs(m_gama - m_gama_true))))
+} else {
+    m_gama <- m_gama_true
+    sigma_obs <- rep(0, length(m_gama))
+    cat("\n  No mass errors (perfect masses)\n")
+}
 
 ############################################################
 # 4. Compute true completeness (for reference)
@@ -265,7 +302,12 @@ V_sh <- (4/3) * pi * (d_edges[-1]^3 - d_edges[-(nsh+1)]^3) * sky_frac
 # 7. Stan model
 ############################################################
 
-stan_poisson <- "
+############################################################
+# 7. Stan models: Simple Poisson AND Hierarchical
+############################################################
+
+# Model A: Simple Poisson (ignores errors)
+stan_simple <- "
 data {
   int<lower=1> N;
   vector[N] x_obs;
@@ -325,11 +367,83 @@ model {
 }
 "
 
-cat("\nCompiling Stan model...\n")
-sm <- stan_model(model_code=stan_poisson)
+# Model B: Hierarchical with latent masses (accounts for errors)
+stan_hier <- "
+data {
+  int<lower=1> N;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;
+  vector[N] mlim;
+  int<lower=1> Nsh;
+  vector[Nsh] V_sh;
+  vector[Nsh] mlim_sh;
+  real xhi;
+  int<lower=2> Ng;
+}
+transformed data {
+  real ln10 = log(10.0);
+  real xlo = min(mlim_sh) - 0.5;
+  real dx = (xhi - xlo) / (Ng - 1.0);
+  vector[Ng] xg;
+  for(k in 1:Ng) xg[k] = xlo + (k-1)*dx;
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+  vector[N] z_raw;
+}
+transformed parameters {
+  vector[N] mt;
+  for(i in 1:N) mt[i] = x_obs[i] + sig[i] * z_raw[i];
+}
+model {
+  ms ~ normal(14.0, 1.5);
+  lp ~ normal(-4.0, 2.0);
+  al ~ normal(-1.7, 1.0);
+  z_raw ~ std_normal();
+  
+  vector[Ng] pg;
+  for(k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));
+  }
+  vector[Ng] cum;
+  cum[Ng] = 0;
+  for(kr in 1:(Ng-1)) {
+    int k = Ng - kr;
+    cum[k] = cum[k+1] + 0.5*(pg[k]+pg[k+1])*dx;
+  }
+  
+  real Lambda = 0;
+  for(j in 1:Nsh) {
+    int k0 = 1;
+    for(k in 1:Ng) if(xg[k] <= mlim_sh[j]) k0 = k;
+    if(k0 >= Ng) k0 = Ng-1;
+    Lambda += V_sh[j] * cum[k0];
+  }
+  target += -Lambda;
+  
+  for(i in 1:N) {
+    real u = mt[i] - ms;
+    real phi_i = be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));
+    if(mt[i] > mlim[i] && phi_i > 1e-30)
+      target += log(phi_i);
+    else
+      target += -100;
+  }
+}
+"
+
+cat("\nCompiling Stan models...\n")
+sm_simple <- stan_model(model_code=stan_simple)
+if(ADD_ERRORS) {
+    sm_hier <- stan_model(model_code=stan_hier)
+}
 
 ############################################################
-# 8. Run MAP for each quantile
+# 8. Run MAP for each mlim method x model combination
 ############################################################
 
 results <- list()
@@ -342,16 +456,18 @@ for(qname in names(mlim_funcs)) {
     mlim_sh <- this_mlim(z_mids)
     mlim_per <- this_mlim(z_gama)
     above <- m_gama > mlim_per
-    x_obs <- m_gama[above]
-    N <- length(x_obs)
+    x_fit <- m_gama[above]
+    sig_fit <- sigma_obs[above]
+    N_fit <- length(x_fit)
     
     cat(sprintf("  mlim_sh range: %.2f -- %.2f\n", min(mlim_sh), max(mlim_sh)))
-    cat(sprintf("  N above mlim: %d / %d (%.1f%%)\n", N, length(m_gama), 100*N/length(m_gama)))
+    cat(sprintf("  N above mlim: %d / %d (%.1f%%)\n", N_fit, length(m_gama), 100*N_fit/length(m_gama)))
     
-    stan_data <- list(N=N, x_obs=x_obs, Nsh=nsh, V_sh=V_sh,
-                      mlim_sh=mlim_sh, xhi=16.5, Ng=300)
+    # ---- Model A: Simple (no errors) ----
+    stan_data_simple <- list(N=N_fit, x_obs=x_fit, Nsh=nsh, V_sh=V_sh,
+                             mlim_sh=mlim_sh, xhi=16.5, Ng=300)
     
-    init_fn <- function() {
+    init_simple <- function() {
         list(ms=rnorm(1,14,0.3), lp=rnorm(1,-3.5,0.3),
              al=rnorm(1,-1.3,0.2), be=runif(1,0.3,0.7))
     }
@@ -359,7 +475,7 @@ for(qname in names(mlim_funcs)) {
     best_opt <- NULL; best_lp_val <- -Inf
     for(trial in 1:5) {
         this_opt <- tryCatch(
-            optimizing(sm, data=stan_data, init=init_fn(),
+            optimizing(sm_simple, data=stan_data_simple, init=init_simple(),
                        hessian=FALSE, as_vector=FALSE,
                        iter=20000, algorithm="LBFGS"),
             error=function(e) NULL)
@@ -368,32 +484,91 @@ for(qname in names(mlim_funcs)) {
         }
     }
     
-    # Hessian run
-    opt <- tryCatch(
-        optimizing(sm, data=stan_data,
+    opt_s <- tryCatch(
+        optimizing(sm_simple, data=stan_data_simple,
                    init=list(ms=best_opt$par$ms, lp=best_opt$par$lp,
                              al=best_opt$par$al, be=best_opt$par$be),
                    hessian=TRUE, as_vector=FALSE, iter=20000, algorithm="LBFGS"),
         error=function(e) best_opt)
     
-    map_par <- c(opt$par$ms, opt$par$lp, opt$par$al, opt$par$be)
-    
-    se <- rep(NA, 4)
-    if(!is.null(opt$hessian)) {
-        tryCatch({
-            se <- sqrt(diag(solve(-opt$hessian)))
-        }, error=function(e) {})
+    map_s <- c(opt_s$par$ms, opt_s$par$lp, opt_s$par$al, opt_s$par$be)
+    se_s <- rep(NA, 4)
+    if(!is.null(opt_s$hessian)) {
+        tryCatch({ se_s <- sqrt(diag(solve(-opt_s$hessian))) }, error=function(e) {})
     }
+    bias_s <- (map_s - tv) / se_s
     
-    bias <- (map_par - tv) / se
+    cat(sprintf("  Simple MAP: ms=%.3f lp=%.3f al=%.3f be=%.3f\n",
+                map_s[1], map_s[2], map_s[3], map_s[4]))
+    cat(sprintf("  Bias(sig):  ms=%+.2f lp=%+.2f al=%+.2f be=%+.2f\n",
+                bias_s[1], bias_s[2], bias_s[3], bias_s[4]))
     
-    results[[qname]] <- list(map=map_par, se=se, bias=bias, N=N,
-                              mlim_func=this_mlim)
+    results[[qname]] <- list(simple=list(map=map_s, se=se_s, bias=bias_s), N=N_fit)
     
-    cat(sprintf("  MAP: M*=%.3f lp=%.3f al=%.3f be=%.3f\n",
-                map_par[1], map_par[2], map_par[3], map_par[4]))
-    cat(sprintf("  Bias(sig): ms=%+.2f lp=%+.2f al=%+.2f be=%+.2f\n",
-                bias[1], bias[2], bias[3], bias[4]))
+    # ---- Model B: Hierarchical (with errors) ----
+    if(ADD_ERRORS) {
+        stan_data_hier <- list(N=N_fit, x_obs=x_fit, sig=sig_fit,
+                               mlim=mlim_per[above],
+                               Nsh=nsh, V_sh=V_sh, mlim_sh=mlim_sh,
+                               xhi=16.5, Ng=300)
+        
+        init_hier <- function() {
+            list(ms=rnorm(1,14,0.3), lp=rnorm(1,-3.5,0.3),
+                 al=rnorm(1,-1.3,0.2), be=runif(1,0.3,0.7),
+                 z_raw=rnorm(N_fit, 0, 0.3))
+        }
+        
+        best_opt_h <- NULL; best_lp_val_h <- -Inf
+        for(trial in 1:3) {
+            this_opt <- tryCatch(
+                optimizing(sm_hier, data=stan_data_hier, init=init_hier(),
+                           hessian=FALSE, as_vector=FALSE,
+                           iter=20000, algorithm="LBFGS"),
+                error=function(e) NULL)
+            if(!is.null(this_opt) && this_opt$value > best_lp_val_h) {
+                best_lp_val_h <- this_opt$value; best_opt_h <- this_opt
+            }
+        }
+        
+        if(!is.null(best_opt_h)) {
+            opt_h <- tryCatch(
+                optimizing(sm_hier, data=stan_data_hier,
+                           init=list(ms=best_opt_h$par$ms, lp=best_opt_h$par$lp,
+                                     al=best_opt_h$par$al, be=best_opt_h$par$be,
+                                     z_raw=best_opt_h$par$z_raw),
+                           hessian=TRUE, as_vector=FALSE, iter=20000, algorithm="LBFGS"),
+                error=function(e) best_opt_h)
+            
+            map_h <- c(opt_h$par$ms, opt_h$par$lp, opt_h$par$al, opt_h$par$be)
+            
+            # Laplace SE via Schur complement
+            se_h <- rep(NA, 4)
+            if(!is.null(opt_h$hessian)) {
+                tryCatch({
+                    H <- opt_h$hessian
+                    np <- 4; nz_h <- N_fit
+                    A <- -H[1:np, 1:np]
+                    B <- -H[1:np, (np+1):(np+nz_h)]
+                    D <- -H[(np+1):(np+nz_h), (np+1):(np+nz_h)]
+                    D_diag_inv <- diag(1/diag(D))
+                    Schur <- A - B %*% D_diag_inv %*% t(B)
+                    se_h <- sqrt(diag(solve(Schur)))
+                }, error=function(e) { cat(sprintf("  Hier Hessian failed: %s\n", e$message)) })
+            }
+            
+            bias_h <- (map_h - tv) / se_h
+            
+            cat(sprintf("  Hier MAP:   ms=%.3f lp=%.3f al=%.3f be=%.3f\n",
+                        map_h[1], map_h[2], map_h[3], map_h[4]))
+            cat(sprintf("  Bias(sig):  ms=%+.2f lp=%+.2f al=%+.2f be=%+.2f\n",
+                        bias_h[1], bias_h[2], bias_h[3], bias_h[4]))
+            
+            results[[qname]]$hier <- list(map=map_h, se=se_h, bias=bias_h)
+        } else {
+            cat("  Hier optimization failed for all trials\n")
+            results[[qname]]$hier <- list(map=rep(NA,4), se=rep(NA,4), bias=rep(NA,4))
+        }
+    }
 }
 
 ############################################################
@@ -401,22 +576,40 @@ for(qname in names(mlim_funcs)) {
 ############################################################
 
 cat("\n============================================\n")
-cat("  COMPARISON: Which quantile works best?\n")
+cat("  COMPARISON: mlim method x model\n")
 cat("============================================\n\n")
 
 cat(sprintf("  TRUE: M*=%.3f  lp=%.3f  al=%.3f  be=%.3f\n\n", tv[1], tv[2], tv[3], tv[4]))
 
 plab <- c("M*","log_phi*","alpha","beta")
-cat(sprintf("  %-8s  %5s  %8s  %8s  %8s  %8s  %6s  %6s  %6s  %6s\n",
-            "Quantile", "N", "M*", "lp", "al", "be", 
-            "dM*", "dlp", "dal", "dbe"))
 
+cat("  --- SIMPLE MODEL (no error correction) ---\n")
+cat(sprintf("  %-10s  %5s  %8s  %8s  %8s  %8s  %6s  %6s  %6s  %6s\n",
+            "Method", "N", "M*", "lp", "al", "be", "dM*", "dlp", "dal", "dbe"))
 for(qname in names(results)) {
-    r <- results[[qname]]
-    cat(sprintf("  %-8s  %5d  %8.3f  %8.3f  %8.3f  %8.3f  %+6.2f  %+6.2f  %+6.2f  %+6.2f\n",
-                qname, r$N,
+    r <- results[[qname]]$simple
+    cat(sprintf("  %-10s  %5d  %8.3f  %8.3f  %8.3f  %8.3f  %+6.2f  %+6.2f  %+6.2f  %+6.2f\n",
+                qname, results[[qname]]$N,
                 r$map[1], r$map[2], r$map[3], r$map[4],
                 r$bias[1], r$bias[2], r$bias[3], r$bias[4]))
+}
+
+if(ADD_ERRORS) {
+    cat("\n  --- HIERARCHICAL MODEL (with error correction) ---\n")
+    cat(sprintf("  %-10s  %5s  %8s  %8s  %8s  %8s  %6s  %6s  %6s  %6s\n",
+                "Method", "N", "M*", "lp", "al", "be", "dM*", "dlp", "dal", "dbe"))
+    for(qname in names(results)) {
+        r <- results[[qname]]$hier
+        if(!any(is.na(r$map))) {
+            cat(sprintf("  %-10s  %5d  %8.3f  %8.3f  %8.3f  %8.3f  %+6.2f  %+6.2f  %+6.2f  %+6.2f\n",
+                        qname, results[[qname]]$N,
+                        r$map[1], r$map[2], r$map[3], r$map[4],
+                        r$bias[1], r$bias[2], r$bias[3], r$bias[4]))
+        } else {
+            cat(sprintf("  %-10s  %5d  %8s  %8s  %8s  %8s\n", qname, results[[qname]]$N,
+                        "FAILED","","",""))
+        }
+    }
 }
 
 ############################################################
@@ -445,7 +638,7 @@ par(mfrow=c(3,2))
 image(z_bin_mids_fine, m_bin_mids, t(C_mz),
       col=colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
       xlab="Redshift", ylab=expression("log"[10]*"(M)"),
-      main="True completeness + envelope mlim(z)",
+      main=sprintf("True completeness + envelope mlim(z) [%s]", ADD_ERRORS_LABEL),
       xlim=c(zmin, zlimit), ylim=c(11, 15.5), zlim=c(0, 1))
 contour(z_bin_mids_fine, m_bin_mids, t(C_mz),
         levels=c(0.1, 0.25, 0.5, 0.75, 0.9),
@@ -497,63 +690,101 @@ for(s in 1:length(z_slices)) {
 }
 legend("bottomright", sprintf("z = %.2f", z_slices), col=cols_z, lwd=2, cex=0.7)
 
-# ---- Panel 3: HMF with all recovered curves ----
+# ---- Panel 3: HMF recovery — Simple model ----
 plot(h_am_true$mids[ok_am_true], log10(phi_am_true[ok_am_true]),
      pch=19, col="grey40", cex=1.3,
      xlim=c(10.5, 15.5), ylim=c(-8, -1),
      xlab=expression("log"[10]*"(M / M"["\u2299"]*")"),
      ylab=expression("log"[10]*"("*phi*")"),
-     main="HMF recovery by quantile")
+     main="Simple model (no error correction)")
 grid(col="gray80")
 
 points(h_gama_plot$mids[ok_gama_plot], log10(phi_gama_plot[ok_gama_plot]),
        pch=17, col="grey60", cex=1.0)
 
-# True MRP
 lines(xfit, log10(pmax(mrp_phi(xfit, tv[1], tv[2], tv[3], tv[4]), 1e-30)),
       col="blue", lwd=3)
 
-# Each quantile's MAP recovery
 for(qname in names(results)) {
-    r <- results[[qname]]$map
+    r <- results[[qname]]$simple$map
     lines(xfit, log10(pmax(mrp_phi(xfit, r[1], r[2], r[3], r[4]), 1e-30)),
           col=qcols[qname], lwd=2, lty=2)
 }
 
 legend("topright",
-       legend=c("True HMF (AM)", "GAMA-selected", "True MRP",
-                "q05 MAP", "q10 MAP", "q25 MAP", "q50 MAP", "turnover MAP"),
-       col=c("grey40","grey60","blue","red","orange","darkgreen","purple","cyan4"),
-       pch=c(19,17,NA,NA,NA,NA,NA,NA), lty=c(NA,NA,1,2,2,2,2,2),
-       lwd=c(NA,NA,3,2,2,2,2,2), bg="white", cex=0.5)
+       legend=c("True HMF", "GAMA-selected", "True MRP", names(results)),
+       col=c("grey40","grey60","blue", unname(qcols[names(results)])),
+       pch=c(19,17,NA,rep(NA,length(results))),
+       lty=c(NA,NA,1,rep(2,length(results))),
+       lwd=c(NA,NA,3,rep(2,length(results))),
+       bg="white", cex=0.45)
 
-# ---- Panel 4: Bias summary ----
-bias_mat <- sapply(results, function(r) r$bias)
+# ---- Panel 4: HMF recovery — Hierarchical model ----
+if(ADD_ERRORS) {
+    plot(h_am_true$mids[ok_am_true], log10(phi_am_true[ok_am_true]),
+         pch=19, col="grey40", cex=1.3,
+         xlim=c(10.5, 15.5), ylim=c(-8, -1),
+         xlab=expression("log"[10]*"(M / M"["\u2299"]*")"),
+         ylab=expression("log"[10]*"("*phi*")"),
+         main="Hierarchical model (with errors)")
+    grid(col="gray80")
+    
+    points(h_gama_plot$mids[ok_gama_plot], log10(phi_gama_plot[ok_gama_plot]),
+           pch=17, col="grey60", cex=1.0)
+    
+    lines(xfit, log10(pmax(mrp_phi(xfit, tv[1], tv[2], tv[3], tv[4]), 1e-30)),
+          col="blue", lwd=3)
+    
+    for(qname in names(results)) {
+        r <- results[[qname]]$hier$map
+        if(!any(is.na(r))) {
+            lines(xfit, log10(pmax(mrp_phi(xfit, r[1], r[2], r[3], r[4]), 1e-30)),
+                  col=qcols[qname], lwd=2, lty=2)
+        }
+    }
+    
+    legend("topright",
+           legend=c("True HMF", "GAMA-selected", "True MRP", names(results)),
+           col=c("grey40","grey60","blue", unname(qcols[names(results)])),
+           pch=c(19,17,NA,rep(NA,length(results))),
+           lty=c(NA,NA,1,rep(2,length(results))),
+           lwd=c(NA,NA,3,rep(2,length(results))),
+           bg="white", cex=0.45)
+} else {
+    plot.new()
+    text(0.5, 0.5, "Hierarchical model\nnot run (ADD_ERRORS=FALSE)", cex=1.2)
+}
 
+# ---- Panel 5: Bias comparison — both models ----
 plot(NA, xlim=c(0.5, 4.5), ylim=c(-8, 8),
-     xlab="", ylab="Bias (sigma)", main="Parameter bias by quantile", xaxt="n")
+     xlab="", ylab="Bias (sigma)", 
+     main="Bias: Simple (filled) vs Hier (open)", xaxt="n")
 grid(col="gray80")
 abline(h=0, col="black", lwd=2)
 abline(h=c(-2,2), col="grey50", lty=3)
 
 for(iq in 1:length(results)) {
     qname <- names(results)[iq]
-    offset <- (iq - 2.5) * 0.15
-    points(1:4 + offset, results[[qname]]$bias, pch=19, col=qcols[qname], cex=1.5)
-    for(j in 1:4) {
-        lines(c(j+offset, j+offset), c(0, results[[qname]]$bias[j]),
-              col=qcols[qname], lwd=2)
+    offset <- (iq - 3) * 0.12
+    
+    # Simple: filled circles
+    bs <- results[[qname]]$simple$bias
+    points(1:4 + offset, bs, pch=19, col=qcols[qname], cex=1.3)
+    for(j in 1:4) lines(c(j+offset, j+offset), c(0, bs[j]), col=qcols[qname], lwd=2)
+    
+    # Hierarchical: open circles, slightly offset
+    if(ADD_ERRORS && !any(is.na(results[[qname]]$hier$map))) {
+        bh <- results[[qname]]$hier$bias
+        points(1:4 + offset + 0.04, bh, pch=1, col=qcols[qname], cex=1.3, lwd=2)
+        for(j in 1:4) lines(c(j+offset+0.04, j+offset+0.04), c(0, bh[j]),
+                            col=qcols[qname], lwd=1, lty=3)
     }
 }
 
 axis(1, at=1:4, labels=plab)
-legend("topright", names(results), col=unname(qcols[names(results)]),
-       pch=19, cex=0.7)
-
-# ---- Panel 5: N groups used per quantile ----
-n_used <- sapply(results, function(r) r$N)
-barplot(n_used, col=unname(qcols[names(results)]),
-        main="N groups used", ylab="N", names.arg=names(results))
+legend("topright", c(names(results), "filled=Simple", "open=Hier"),
+       col=c(unname(qcols[names(results)]), "black", "black"),
+       pch=c(rep(19, length(results)), 19, 1), cex=0.55)
 
 # ---- Panel 6: Mass-redshift with mlim curves ----
 smoothScatter(z_gama, m_gama,
