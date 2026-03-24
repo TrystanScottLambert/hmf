@@ -10,6 +10,8 @@ library(Cairo)
 library(celestial)
 library(data.table)
 library(rstan)
+data_dir   <- Sys.getenv("DATA_DIR",   stop("DATA_DIR not set"))
+output_dir <- Sys.getenv("OUTPUT_DIR", stop("OUTPUT_DIR not set"))
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
 
@@ -30,9 +32,10 @@ cat("============================================\n\n")
 # 1. Read data (once)
 ############################################################
 
-data_dir <- "/Users/00115372/Desktop/masking_mock_cat"
+# data_dir <- "/Users/00115372/Desktop/masking_mock_cat"
 
-nessie <- as.data.table(read_parquet("nessie_groups.parquet"))
+nessie     <- as.data.table(read_parquet(file.path(data_dir, "nessie_groups.parquet")))
+
 
 zmin <- 0.01; zlimit <- 0.25; multi <- 5
 ho <- 67.37; omegam <- 0.3147
@@ -359,7 +362,7 @@ for(sn in names(results_list)) {
 xfit <- seq(10, 16, length.out=500)
 z_plot <- seq(zmin, zlimit, length.out=200)
 
-CairoPDF("nessie_scaling.pdf", 14, 10)
+CairoPDF(file.path(output_dir, "nessie_scaling.pdf"), 14, 10)
 par(mfrow=c(2,3))
 
 # ---- Panel 1: HMF recovery comparison ----
