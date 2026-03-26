@@ -225,7 +225,7 @@ for(si in 1:length(scale_factors)) {
     for(b in 1:nbin_z) {
         in_bin <- z_use >= z_be[b] & z_use < z_be[b+1]
         if(sum(in_bin) > 20) {
-            hh <- hist(m_use[in_bin], breaks=seq(8, 17, by=0.3), plot=FALSE)
+            hh <- hist(m_use[in_bin], breaks=seq(10, 16, by=0.3), plot=FALSE)
             turnover_bins[b] <- hh$mids[which.max(hh$counts)]
         } else {
             turnover_bins[b] <- NA
