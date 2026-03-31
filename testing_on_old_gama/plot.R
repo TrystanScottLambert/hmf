@@ -93,11 +93,27 @@ mrp_log10 <- function(x, ms, lp, al, be) {
     log10(pmax(mrp_phi(x, ms, lp, al, be), 1e-30))
 }
 
-# LCDM prediction from Murray+21 adjusted to z~0.1
-# (subtract 0.075 dex from M* and add 0.075 to phi* relative to z=0)
-# Murray+21 z=0 values: M*=14.19, phi*=-3.91, alpha=-1.89, beta=0.63
-# At z=0.1: M*=14.19-0.075=14.115, phi*=-3.91+0.075=-3.835
-LCDM_MS <- 14.115; LCDM_LP <- -3.835; LCDM_AL <- -1.89; LCDM_BE <- 0.63
+# LCDM prediction: exact computation from Driver+22 code
+# Uses Murray+21 MRP with amplitude A normalised to Omega_M
+parsec_cgs <- 3.0857E16
+G_cgs      <- 6.67408E-11
+msol_cgs   <- 1.988E30
+rhocrit <- 3*(1000*ho/(1E6*parsec_cgs))^2 / (8*pi*G_cgs)
+
+betamrp  <- 0.7097976
+A_raw    <- 1.727006E-19
+mstarmrp <- 14.42947
+alphamrp <- -1.864908
+
+lcdm_x <- seq(0, 17, 0.001) + log10(100/ho)
+lcdm_y <- A_raw * betamrp * 10^((alphamrp+1)*(lcdm_x - mstarmrp)) *
+           exp(-10^(betamrp*(lcdm_x - mstarmrp))) * (ho/100)^3
+lcdm_factor <- sum(10^lcdm_x * lcdm_y) * 0.001 * msol_cgs / (1E6*parsec_cgs)^3 / (omegam*rhocrit)
+lcdm_phi <- lcdm_y / lcdm_factor
+
+# Apply z=0.1 shift (same as Driver+22: -0.08 dex in mass, +0.08 dex in phi)
+lcdm_x_plot <- lcdm_x - 0.08
+lcdm_y_plot <- log10(lcdm_phi) + 0.08
 
 ############################################################
 # 4. Binned HMF with Poisson errors
@@ -288,9 +304,8 @@ plot(NA, xlim=c(12, 16), ylim=c(-8, -2),
      main="MRP Fit to GAMA", cex.lab=1.3, cex.axis=1.1)
 grid(col="gray85")
 
-# LCDM prediction
-lines(xfit, mrp_log10(xfit, LCDM_MS, LCDM_LP, LCDM_AL, LCDM_BE),
-      col="black", lwd=2, lty=2)
+# LCDM prediction (tabulated, from Driver+22 exact computation)
+lines(lcdm_x_plot, lcdm_y_plot, col="black", lwd=2, lty=2)
 
 # MCMC posterior draws
 idx <- sample(1:nrow(pmmc), min(300, nrow(pmmc)))
@@ -410,7 +425,7 @@ plot(shifts, shift_al, type="b", pch=19, col="blue", lwd=2,
      cex.lab=1.2)
 grid(col="gray80")
 abline(h=driver22[3], col="red", lwd=2, lty=2)
-abline(h=LCDM_AL, col="black", lwd=1, lty=3)
+abline(h=alphamrp, col="black", lwd=1, lty=3)
 abline(v=0, col="grey50", lty=3)
 
 legend("topright", c("MAP fit", "Driver+22", expression(Lambda*"CDM")),
