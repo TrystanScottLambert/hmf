@@ -24,16 +24,19 @@ set.seed(42)
 # 1. Setup (same as before)
 ############################################################
 
-TRUE_MS <- 13.51; TRUE_LP <- -3.19; TRUE_AL <- -1.27; TRUE_BE <- 0.47
-ADD_ERRORS <- TRUE  # Set FALSE for no-error comparison
+TRUE_MS <- 13.51
+TRUE_LP <- -3.19
+TRUE_AL <- -1.27
+TRUE_BE <- 0.47
+ADD_ERRORS <- TRUE # Set FALSE for no-error comparison
 
 mrp_phi <- function(x, ms, lp, al, be) {
-    be * log(10) * 10^lp * 10^((al+1)*(x-ms)) * exp(-10^(be*(x-ms)))
+  be * log(10) * 10^lp * 10^((al + 1) * (x - ms)) * exp(-10^(be * (x - ms)))
 }
 
 cat("============================================\n")
 cat("  QUANTILE COMPARISON FOR mlim(z)\n")
-if(exists("ADD_ERRORS") && ADD_ERRORS) cat("  WITH MASS ERRORS\n")
+if (exists("ADD_ERRORS") && ADD_ERRORS) cat("  WITH MASS ERRORS\n")
 cat("============================================\n\n")
 
 data_dir <- "/Users/00115372/Desktop/masking_mock_cat"
@@ -44,7 +47,10 @@ groups <- groups[dec > 0]
 galaxies <- as.data.table(read_parquet(file.path(data_dir, "galaxies_shark.parquet")))
 galaxies <- galaxies[dec > 0]
 
-zmin <- 0.01; zlimit <- 0.25; multi <- 5; mag_limit <- 19.8
+zmin <- 0.01
+zlimit <- 0.25
+multi <- 5
+mag_limit <- 19.8
 
 ############################################################
 # 2. Abundance matching
@@ -52,30 +58,34 @@ zmin <- 0.01; zlimit <- 0.25; multi <- 5; mag_limit <- 19.8
 
 cat("Abundance matching...\n")
 
-groups_vol <- groups[redshift_cosmological > zmin & 
-                     redshift_cosmological < zlimit & mass_virial > 0]
+groups_vol <- groups[redshift_cosmological > zmin &
+  redshift_cosmological < zlimit & mass_virial > 0]
 N_total <- nrow(groups_vol)
 
-ho <- 67.37; omegam <- 0.3147
+ho <- 67.37
+omegam <- 0.3147
 cosdist <- function(z) {
-    f <- function(zp) 1/sqrt(omegam*(1+zp)^3 + (1-omegam))
-    299792.458/ho * integrate(f, 0, z)$value
+  f <- function(zp) 1 / sqrt(omegam * (1 + zp)^3 + (1 - omegam))
+  299792.458 / ho * integrate(f, 0, z)$value
 }
 
-ra_range  <- range(groups_vol$ra, na.rm=TRUE)
-dec_range <- range(groups_vol$dec, na.rm=TRUE)
+ra_range <- range(groups_vol$ra, na.rm = TRUE)
+dec_range <- range(groups_vol$dec, na.rm = TRUE)
 sky_area_deg2 <- skyarea(ra_range, dec_range)["area"]
-sky_frac <- sky_area_deg2 * (pi/180)^2 / (4*pi)
-d_lo <- cosdist(zmin); d_hi <- cosdist(zlimit)
-Vsurvey <- (4/3) * pi * (d_hi^3 - d_lo^3) * sky_frac
+sky_frac <- sky_area_deg2 * (pi / 180)^2 / (4 * pi)
+d_lo <- cosdist(zmin)
+d_hi <- cosdist(zlimit)
+Vsurvey <- (4 / 3) * pi * (d_hi^3 - d_lo^3) * sky_frac
 
-m_grid <- seq(9, 16.5, by=0.001)
+m_grid <- seq(9, 16.5, by = 0.001)
 phi_grid <- mrp_phi(m_grid, TRUE_MS, TRUE_LP, TRUE_AL, TRUE_BE)
 cum_counts <- rev(cumsum(rev(phi_grid * 0.001))) * Vsurvey
 
-groups_vol[, rank := frankv(mass_virial, order=-1L)]
-groups_vol[, log_mass_am := approx(x=rev(cum_counts), y=rev(m_grid),
-                                    xout=rank, rule=2)$y]
+groups_vol[, rank := frankv(mass_virial, order = -1L)]
+groups_vol[, log_mass_am := approx(
+  x = rev(cum_counts), y = rev(m_grid),
+  xout = rank, rule = 2
+)$y]
 
 ############################################################
 # 3. GAMA selection
@@ -86,13 +96,13 @@ cat("GAMA selection...\n")
 gal_selected <- galaxies[id_fof != -1 & mass_stellar_total > 1e8 & mag_r_SDSS < mag_limit]
 gal_counts <- gal_selected[, .(n_gama = .N), by = id_group_sky]
 
-groups_vol <- merge(groups_vol, gal_counts, by="id_group_sky", all.x=TRUE)
+groups_vol <- merge(groups_vol, gal_counts, by = "id_group_sky", all.x = TRUE)
 groups_vol[is.na(n_gama), n_gama := 0L]
 groups_vol[, detected := n_gama >= multi]
 
 groups_gama <- groups_vol[detected == TRUE]
 z_gama <- groups_gama$redshift_cosmological
-m_gama_true <- groups_gama$log_mass_am  # true AM masses (for completeness calc)
+m_gama_true <- groups_gama$log_mass_am # true AM masses (for completeness calc)
 
 cat(sprintf("  Detected: %d / %d\n", nrow(groups_gama), N_total))
 
@@ -107,28 +117,32 @@ cat(sprintf("  Detected: %d / %d\n", nrow(groups_gama), N_total))
 
 ADD_ERRORS_LABEL <- ifelse(ADD_ERRORS, "WITH ERRORS", "NO ERRORS")
 
-if(ADD_ERRORS) {
-    cat("\nAdding mass measurement errors...\n")
-    
-    # Error model: sigma depends on n_gama (like GAMA)
-    xx_err <- seq(2, 22)
-    yy_err <- c(0.68, 0.39, 0.40, 0.33, 0.28, 0.24, 0.20, 0.19, 0.17,
-                0.14, 0.14, 0.13, 0.14, 0.12, 0.12, 0.10, 0.10, 0.10,
-                0.09, 0.08, 0.08)
-    
-    sigma_obs <- approx(xx_err, yy_err, groups_gama$n_gama, rule=2)$y
-    sigma_obs[sigma_obs < 0.10] <- 0.10  # floor at 0.1 dex
-    
-    # Observed = true + N(0, sigma)
-    m_gama <- m_gama_true + rnorm(length(m_gama_true), 0, sigma_obs)
-    
-    cat(sprintf("  Sigma range: %.2f -- %.2f (median %.2f)\n",
-                min(sigma_obs), max(sigma_obs), median(sigma_obs)))
-    cat(sprintf("  Median |error|: %.3f dex\n", median(abs(m_gama - m_gama_true))))
+if (ADD_ERRORS) {
+  cat("\nAdding mass measurement errors...\n")
+
+  # Error model: sigma depends on n_gama (like GAMA)
+  xx_err <- seq(2, 22)
+  yy_err <- c(
+    0.68, 0.39, 0.40, 0.33, 0.28, 0.24, 0.20, 0.19, 0.17,
+    0.14, 0.14, 0.13, 0.14, 0.12, 0.12, 0.10, 0.10, 0.10,
+    0.09, 0.08, 0.08
+  )
+
+  sigma_obs <- approx(xx_err, yy_err, groups_gama$n_gama, rule = 2)$y
+  sigma_obs[sigma_obs < 0.10] <- 0.10 # floor at 0.1 dex
+
+  # Observed = true + N(0, sigma)
+  m_gama <- m_gama_true + rnorm(length(m_gama_true), 0, sigma_obs)
+
+  cat(sprintf(
+    "  Sigma range: %.2f -- %.2f (median %.2f)\n",
+    min(sigma_obs), max(sigma_obs), median(sigma_obs)
+  ))
+  cat(sprintf("  Median |error|: %.3f dex\n", median(abs(m_gama - m_gama_true))))
 } else {
-    m_gama <- m_gama_true
-    sigma_obs <- rep(0, length(m_gama))
-    cat("\n  No mass errors (perfect masses)\n")
+  m_gama <- m_gama_true
+  sigma_obs <- rep(0, length(m_gama))
+  cat("\n  No mass errors (perfect masses)\n")
 }
 
 ############################################################
@@ -137,47 +151,48 @@ if(ADD_ERRORS) {
 
 cat("Computing true completeness...\n")
 
-m_bin_edges <- seq(10, 16, by=0.2)
-m_bin_mids  <- (m_bin_edges[-1] + m_bin_edges[-length(m_bin_edges)]) / 2
+m_bin_edges <- seq(10, 16, by = 0.2)
+m_bin_mids <- (m_bin_edges[-1] + m_bin_edges[-length(m_bin_edges)]) / 2
 n_m <- length(m_bin_mids)
 
-z_bin_edges_fine <- seq(zmin, zlimit, length.out=21)
-z_bin_mids_fine  <- (z_bin_edges_fine[-1] + z_bin_edges_fine[-length(z_bin_edges_fine)]) / 2
+z_bin_edges_fine <- seq(zmin, zlimit, length.out = 21)
+z_bin_mids_fine <- (z_bin_edges_fine[-1] + z_bin_edges_fine[-length(z_bin_edges_fine)]) / 2
 n_z_fine <- length(z_bin_mids_fine)
 
 C_mz <- matrix(NA, n_m, n_z_fine)
-for(im in 1:n_m) {
-    for(iz in 1:n_z_fine) {
-        in_bin <- groups_vol$log_mass_am >= m_bin_edges[im] & 
-                  groups_vol$log_mass_am <  m_bin_edges[im+1] &
-                  groups_vol$redshift_cosmological >= z_bin_edges_fine[iz] &
-                  groups_vol$redshift_cosmological <  z_bin_edges_fine[iz+1]
-        nt <- sum(in_bin)
-        nd <- sum(in_bin & groups_vol$detected)
-        if(nt >= 10) C_mz[im, iz] <- nd / nt
-    }
+for (im in 1:n_m) {
+  for (iz in 1:n_z_fine) {
+    in_bin <- groups_vol$log_mass_am >= m_bin_edges[im] &
+      groups_vol$log_mass_am < m_bin_edges[im + 1] &
+      groups_vol$redshift_cosmological >= z_bin_edges_fine[iz] &
+      groups_vol$redshift_cosmological < z_bin_edges_fine[iz + 1]
+    nt <- sum(in_bin)
+    nd <- sum(in_bin & groups_vol$detected)
+    if (nt >= 10) C_mz[im, iz] <- nd / nt
+  }
 }
 
 # True 50% completeness mlim
 mlim_true50 <- numeric(n_z_fine)
-for(iz in 1:n_z_fine) {
-    comp_col <- C_mz[, iz]
-    ok <- !is.na(comp_col)
-    if(sum(ok) >= 3) {
-        m_ok <- m_bin_mids[ok]; c_ok <- comp_col[ok]
-        above_50 <- which(c_ok >= 0.5)
-        if(length(above_50) > 0 && min(above_50) > 1) {
-            ic <- min(above_50)
-            mlim_true50[iz] <- m_ok[ic-1] + (0.5 - c_ok[ic-1]) * 
-                               (m_ok[ic] - m_ok[ic-1]) / (c_ok[ic] - c_ok[ic-1])
-        } else if(length(above_50) > 0) {
-            mlim_true50[iz] <- m_ok[1]
-        } else {
-            mlim_true50[iz] <- NA
-        }
+for (iz in 1:n_z_fine) {
+  comp_col <- C_mz[, iz]
+  ok <- !is.na(comp_col)
+  if (sum(ok) >= 3) {
+    m_ok <- m_bin_mids[ok]
+    c_ok <- comp_col[ok]
+    above_50 <- which(c_ok >= 0.5)
+    if (length(above_50) > 0 && min(above_50) > 1) {
+      ic <- min(above_50)
+      mlim_true50[iz] <- m_ok[ic - 1] + (0.5 - c_ok[ic - 1]) *
+        (m_ok[ic] - m_ok[ic - 1]) / (c_ok[ic] - c_ok[ic - 1])
+    } else if (length(above_50) > 0) {
+      mlim_true50[iz] <- m_ok[1]
     } else {
-        mlim_true50[iz] <- NA
+      mlim_true50[iz] <- NA
     }
+  } else {
+    mlim_true50[iz] <- NA
+  }
 }
 
 ############################################################
@@ -188,43 +203,47 @@ cat("Computing envelope mlim(z) at different quantiles...\n")
 
 quantiles_to_test <- c(0.05, 0.10, 0.25, 0.50)
 nbin_z <- 30
-z_be <- seq(zmin, zlimit, length.out=nbin_z+1)
-z_bm <- (z_be[-1] + z_be[-(nbin_z+1)]) / 2
+z_be <- seq(zmin, zlimit, length.out = nbin_z + 1)
+z_bm <- (z_be[-1] + z_be[-(nbin_z + 1)]) / 2
 
 mlim_envelope <- list()
-mlim_funcs    <- list()
+mlim_funcs <- list()
 
-for(q in quantiles_to_test) {
-    qname <- sprintf("q%02d", round(q*100))
-    bins <- numeric(nbin_z)
-    for(b in 1:nbin_z) {
-        in_bin <- z_gama >= z_be[b] & z_gama < z_be[b+1]
-        if(sum(in_bin) > 10) {
-            bins[b] <- quantile(m_gama[in_bin], q)
-        } else {
-            bins[b] <- NA
-        }
-    }
-    mlim_envelope[[qname]] <- bins
-    
-    # Fit smooth function
-    ok_q <- !is.na(bins)
-    fit_l <- lm(bins[ok_q] ~ z_bm[ok_q])
-    fit_q <- lm(bins[ok_q] ~ z_bm[ok_q] + I(z_bm[ok_q]^2))
-    
-    if(AIC(fit_q) < AIC(fit_l) - 2) {
-        cc <- coef(fit_q)
-        mlim_funcs[[qname]] <- function(z) cc[1] + cc[2]*z + cc[3]*z^2
-        environment(mlim_funcs[[qname]]) <- list2env(list(cc=cc))
-        cat(sprintf("  %s: mlim(z) = %.2f + %.2f*z + %.2f*z^2  [mlim(0.25)=%.2f]\n",
-                    qname, cc[1], cc[2], cc[3], cc[1]+cc[2]*0.25+cc[3]*0.25^2))
+for (q in quantiles_to_test) {
+  qname <- sprintf("q%02d", round(q * 100))
+  bins <- numeric(nbin_z)
+  for (b in 1:nbin_z) {
+    in_bin <- z_gama >= z_be[b] & z_gama < z_be[b + 1]
+    if (sum(in_bin) > 10) {
+      bins[b] <- quantile(m_gama[in_bin], q)
     } else {
-        cc <- coef(fit_l)
-        mlim_funcs[[qname]] <- function(z) cc[1] + cc[2]*z
-        environment(mlim_funcs[[qname]]) <- list2env(list(cc=cc))
-        cat(sprintf("  %s: mlim(z) = %.2f + %.2f*z  [mlim(0.25)=%.2f]\n",
-                    qname, cc[1], cc[2], cc[1]+cc[2]*0.25))
+      bins[b] <- NA
     }
+  }
+  mlim_envelope[[qname]] <- bins
+
+  # Fit smooth function
+  ok_q <- !is.na(bins)
+  fit_l <- lm(bins[ok_q] ~ z_bm[ok_q])
+  fit_q <- lm(bins[ok_q] ~ z_bm[ok_q] + I(z_bm[ok_q]^2))
+
+  if (AIC(fit_q) < AIC(fit_l) - 2) {
+    cc <- coef(fit_q)
+    mlim_funcs[[qname]] <- function(z) cc[1] + cc[2] * z + cc[3] * z^2
+    environment(mlim_funcs[[qname]]) <- list2env(list(cc = cc))
+    cat(sprintf(
+      "  %s: mlim(z) = %.2f + %.2f*z + %.2f*z^2  [mlim(0.25)=%.2f]\n",
+      qname, cc[1], cc[2], cc[3], cc[1] + cc[2] * 0.25 + cc[3] * 0.25^2
+    ))
+  } else {
+    cc <- coef(fit_l)
+    mlim_funcs[[qname]] <- function(z) cc[1] + cc[2] * z
+    environment(mlim_funcs[[qname]]) <- list2env(list(cc = cc))
+    cat(sprintf(
+      "  %s: mlim(z) = %.2f + %.2f*z  [mlim(0.25)=%.2f]\n",
+      qname, cc[1], cc[2], cc[1] + cc[2] * 0.25
+    ))
+  }
 }
 
 ############################################################
@@ -239,36 +258,36 @@ for(q in quantiles_to_test) {
 cat("\nComputing turnover-based mlim(z) (Wright+17 style)...\n")
 
 turnover_bins <- numeric(nbin_z)
-turnover_lo   <- numeric(nbin_z)
-turnover_hi   <- numeric(nbin_z)
+turnover_lo <- numeric(nbin_z)
+turnover_hi <- numeric(nbin_z)
 
 n_boot <- 200
-hist_bw <- 0.3  # bin width for the mass histogram within each z-bin
+hist_bw <- 0.3 # bin width for the mass histogram within each z-bin
 
-for(b in 1:nbin_z) {
-    in_bin <- z_gama >= z_be[b] & z_gama < z_be[b+1]
-    masses_in_bin <- m_gama[in_bin]
-    
-    if(sum(in_bin) > 20) {
-        # Find turnover: peak of the mass histogram
-        hh <- hist(masses_in_bin, breaks=seq(10, 16, by=hist_bw), plot=FALSE)
-        peak_idx <- which.max(hh$counts)
-        turnover_bins[b] <- hh$mids[peak_idx]
-        
-        # Bootstrap the turnover
-        boot_turnovers <- numeric(n_boot)
-        for(ib in 1:n_boot) {
-            boot_sample <- sample(masses_in_bin, replace=TRUE)
-            hb <- hist(boot_sample, breaks=seq(10, 16, by=hist_bw), plot=FALSE)
-            boot_turnovers[ib] <- hb$mids[which.max(hb$counts)]
-        }
-        turnover_lo[b] <- quantile(boot_turnovers, 0.16)
-        turnover_hi[b] <- quantile(boot_turnovers, 0.84)
-    } else {
-        turnover_bins[b] <- NA
-        turnover_lo[b] <- NA
-        turnover_hi[b] <- NA
+for (b in 1:nbin_z) {
+  in_bin <- z_gama >= z_be[b] & z_gama < z_be[b + 1]
+  masses_in_bin <- m_gama[in_bin]
+
+  if (sum(in_bin) > 20) {
+    # Find turnover: peak of the mass histogram
+    hh <- hist(masses_in_bin, breaks = seq(10, 16, by = hist_bw), plot = FALSE)
+    peak_idx <- which.max(hh$counts)
+    turnover_bins[b] <- hh$mids[peak_idx]
+
+    # Bootstrap the turnover
+    boot_turnovers <- numeric(n_boot)
+    for (ib in 1:n_boot) {
+      boot_sample <- sample(masses_in_bin, replace = TRUE)
+      hb <- hist(boot_sample, breaks = seq(10, 16, by = hist_bw), plot = FALSE)
+      boot_turnovers[ib] <- hb$mids[which.max(hb$counts)]
     }
+    turnover_lo[b] <- quantile(boot_turnovers, 0.16)
+    turnover_hi[b] <- quantile(boot_turnovers, 0.84)
+  } else {
+    turnover_bins[b] <- NA
+    turnover_lo[b] <- NA
+    turnover_hi[b] <- NA
+  }
 }
 
 ok_to <- !is.na(turnover_bins)
@@ -277,26 +296,30 @@ ok_to <- !is.na(turnover_bins)
 fit_to_l <- lm(turnover_bins[ok_to] ~ z_bm[ok_to])
 fit_to_q <- lm(turnover_bins[ok_to] ~ z_bm[ok_to] + I(z_bm[ok_to]^2))
 
-if(AIC(fit_to_q) < AIC(fit_to_l) - 2) {
-    cc_to <- coef(fit_to_q)
-    mlim_funcs[["turnover"]] <- function(z) cc_to[1] + cc_to[2]*z + cc_to[3]*z^2
-    environment(mlim_funcs[["turnover"]]) <- list2env(list(cc_to=cc_to))
-    cat(sprintf("  turnover: mlim(z) = %.2f + %.2f*z + %.2f*z^2  [mlim(0.25)=%.2f]\n",
-                cc_to[1], cc_to[2], cc_to[3], cc_to[1]+cc_to[2]*0.25+cc_to[3]*0.25^2))
+if (AIC(fit_to_q) < AIC(fit_to_l) - 2) {
+  cc_to <- coef(fit_to_q)
+  mlim_funcs[["turnover"]] <- function(z) cc_to[1] + cc_to[2] * z + cc_to[3] * z^2
+  environment(mlim_funcs[["turnover"]]) <- list2env(list(cc_to = cc_to))
+  cat(sprintf(
+    "  turnover: mlim(z) = %.2f + %.2f*z + %.2f*z^2  [mlim(0.25)=%.2f]\n",
+    cc_to[1], cc_to[2], cc_to[3], cc_to[1] + cc_to[2] * 0.25 + cc_to[3] * 0.25^2
+  ))
 } else {
-    cc_to <- coef(fit_to_l)
-    mlim_funcs[["turnover"]] <- function(z) cc_to[1] + cc_to[2]*z
-    environment(mlim_funcs[["turnover"]]) <- list2env(list(cc_to=cc_to))
-    cat(sprintf("  turnover: mlim(z) = %.2f + %.2f*z  [mlim(0.25)=%.2f]\n",
-                cc_to[1], cc_to[2], cc_to[1]+cc_to[2]*0.25))
+  cc_to <- coef(fit_to_l)
+  mlim_funcs[["turnover"]] <- function(z) cc_to[1] + cc_to[2] * z
+  environment(mlim_funcs[["turnover"]]) <- list2env(list(cc_to = cc_to))
+  cat(sprintf(
+    "  turnover: mlim(z) = %.2f + %.2f*z  [mlim(0.25)=%.2f]\n",
+    cc_to[1], cc_to[2], cc_to[1] + cc_to[2] * 0.25
+  ))
 }
 ############################################################
 
 nsh <- 20
-z_edges <- seq(zmin, zlimit, length.out=nsh+1)
-z_mids  <- (z_edges[-1] + z_edges[-(nsh+1)]) / 2
+z_edges <- seq(zmin, zlimit, length.out = nsh + 1)
+z_mids <- (z_edges[-1] + z_edges[-(nsh + 1)]) / 2
 d_edges <- sapply(z_edges, cosdist)
-V_sh <- (4/3) * pi * (d_edges[-1]^3 - d_edges[-(nsh+1)]^3) * sky_frac
+V_sh <- (4 / 3) * pi * (d_edges[-1]^3 - d_edges[-(nsh + 1)]^3) * sky_frac
 
 ############################################################
 # 7. Stan model
@@ -334,7 +357,7 @@ model {
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
   al ~ normal(-1.7, 1.0);
-  
+
   vector[Ng] pg;
   for(k in 1:Ng) {
     real u = xg[k] - ms;
@@ -346,7 +369,7 @@ model {
     int k = Ng - kr;
     cum[k] = cum[k+1] + 0.5*(pg[k]+pg[k+1])*dx;
   }
-  
+
   real Lambda = 0;
   for(j in 1:Nsh) {
     int k0 = 1;
@@ -355,7 +378,7 @@ model {
     Lambda += V_sh[j] * cum[k0];
   }
   target += -Lambda;
-  
+
   for(i in 1:N) {
     real u = x_obs[i] - ms;
     real phi_i = be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));
@@ -403,7 +426,7 @@ model {
   lp ~ normal(-4.0, 2.0);
   al ~ normal(-1.7, 1.0);
   z_raw ~ std_normal();
-  
+
   vector[Ng] pg;
   for(k in 1:Ng) {
     real u = xg[k] - ms;
@@ -415,7 +438,7 @@ model {
     int k = Ng - kr;
     cum[k] = cum[k+1] + 0.5*(pg[k]+pg[k+1])*dx;
   }
-  
+
   real Lambda = 0;
   for(j in 1:Nsh) {
     int k0 = 1;
@@ -424,7 +447,7 @@ model {
     Lambda += V_sh[j] * cum[k0];
   }
   target += -Lambda;
-  
+
   for(i in 1:N) {
     real u = mt[i] - ms;
     real phi_i = be*ln10*pow(10,lp)*pow(10,(al+1)*u)*exp(-pow(10,be*u));
@@ -437,9 +460,9 @@ model {
 "
 
 cat("\nCompiling Stan models...\n")
-sm_simple <- stan_model(model_code=stan_simple)
-if(ADD_ERRORS) {
-    sm_hier <- stan_model(model_code=stan_hier)
+sm_simple <- stan_model(model_code = stan_simple)
+if (ADD_ERRORS) {
+  sm_hier <- stan_model(model_code = stan_hier)
 }
 
 ############################################################
@@ -449,126 +472,173 @@ if(ADD_ERRORS) {
 results <- list()
 tv <- c(TRUE_MS, TRUE_LP, TRUE_AL, TRUE_BE)
 
-for(qname in names(mlim_funcs)) {
-    cat(sprintf("\n========== %s ==========\n", qname))
-    
-    this_mlim <- mlim_funcs[[qname]]
-    mlim_sh <- this_mlim(z_mids)
-    mlim_per <- this_mlim(z_gama)
-    above <- m_gama > mlim_per
-    x_fit <- m_gama[above]
-    sig_fit <- sigma_obs[above]
-    N_fit <- length(x_fit)
-    
-    cat(sprintf("  mlim_sh range: %.2f -- %.2f\n", min(mlim_sh), max(mlim_sh)))
-    cat(sprintf("  N above mlim: %d / %d (%.1f%%)\n", N_fit, length(m_gama), 100*N_fit/length(m_gama)))
-    
-    # ---- Model A: Simple (no errors) ----
-    stan_data_simple <- list(N=N_fit, x_obs=x_fit, Nsh=nsh, V_sh=V_sh,
-                             mlim_sh=mlim_sh, xhi=16.5, Ng=300)
-    
-    init_simple <- function() {
-        list(ms=rnorm(1,14,0.3), lp=rnorm(1,-3.5,0.3),
-             al=rnorm(1,-1.3,0.2), be=runif(1,0.3,0.7))
+for (qname in names(mlim_funcs)) {
+  cat(sprintf("\n========== %s ==========\n", qname))
+
+  this_mlim <- mlim_funcs[[qname]]
+  mlim_sh <- this_mlim(z_mids)
+  mlim_per <- this_mlim(z_gama)
+  above <- m_gama > mlim_per
+  x_fit <- m_gama[above]
+  sig_fit <- sigma_obs[above]
+  N_fit <- length(x_fit)
+
+  cat(sprintf("  mlim_sh range: %.2f -- %.2f\n", min(mlim_sh), max(mlim_sh)))
+  cat(sprintf("  N above mlim: %d / %d (%.1f%%)\n", N_fit, length(m_gama), 100 * N_fit / length(m_gama)))
+
+  # ---- Model A: Simple (no errors) ----
+  stan_data_simple <- list(
+    N = N_fit, x_obs = x_fit, Nsh = nsh, V_sh = V_sh,
+    mlim_sh = mlim_sh, xhi = 16.5, Ng = 300
+  )
+
+  init_simple <- function() {
+    list(
+      ms = rnorm(1, 14, 0.3), lp = rnorm(1, -3.5, 0.3),
+      al = rnorm(1, -1.3, 0.2), be = runif(1, 0.3, 0.7)
+    )
+  }
+
+  best_opt <- NULL
+  best_lp_val <- -Inf
+  for (trial in 1:5) {
+    this_opt <- tryCatch(
+      optimizing(sm_simple,
+        data = stan_data_simple, init = init_simple(),
+        hessian = FALSE, as_vector = FALSE,
+        iter = 20000, algorithm = "LBFGS"
+      ),
+      error = function(e) NULL
+    )
+    if (!is.null(this_opt) && this_opt$value > best_lp_val) {
+      best_lp_val <- this_opt$value
+      best_opt <- this_opt
     }
-    
-    best_opt <- NULL; best_lp_val <- -Inf
-    for(trial in 1:5) {
-        this_opt <- tryCatch(
-            optimizing(sm_simple, data=stan_data_simple, init=init_simple(),
-                       hessian=FALSE, as_vector=FALSE,
-                       iter=20000, algorithm="LBFGS"),
-            error=function(e) NULL)
-        if(!is.null(this_opt) && this_opt$value > best_lp_val) {
-            best_lp_val <- this_opt$value; best_opt <- this_opt
-        }
+  }
+
+  opt_s <- tryCatch(
+    optimizing(sm_simple,
+      data = stan_data_simple,
+      init = list(
+        ms = best_opt$par$ms, lp = best_opt$par$lp,
+        al = best_opt$par$al, be = best_opt$par$be
+      ),
+      hessian = TRUE, as_vector = FALSE, iter = 20000, algorithm = "LBFGS"
+    ),
+    error = function(e) best_opt
+  )
+
+  map_s <- c(opt_s$par$ms, opt_s$par$lp, opt_s$par$al, opt_s$par$be)
+  se_s <- rep(NA, 4)
+  if (!is.null(opt_s$hessian)) {
+    tryCatch(
+      {
+        se_s <- sqrt(diag(solve(-opt_s$hessian)))
+      },
+      error = function(e) {}
+    )
+  }
+  bias_s <- (map_s - tv) / se_s
+
+  cat(sprintf(
+    "  Simple MAP: ms=%.3f lp=%.3f al=%.3f be=%.3f\n",
+    map_s[1], map_s[2], map_s[3], map_s[4]
+  ))
+  cat(sprintf(
+    "  Bias(sig):  ms=%+.2f lp=%+.2f al=%+.2f be=%+.2f\n",
+    bias_s[1], bias_s[2], bias_s[3], bias_s[4]
+  ))
+
+  results[[qname]] <- list(simple = list(map = map_s, se = se_s, bias = bias_s), N = N_fit)
+
+  # ---- Model B: Hierarchical (with errors) ----
+  if (ADD_ERRORS) {
+    stan_data_hier <- list(
+      N = N_fit, x_obs = x_fit, sig = sig_fit,
+      mlim = mlim_per[above],
+      Nsh = nsh, V_sh = V_sh, mlim_sh = mlim_sh,
+      xhi = 16.5, Ng = 300
+    )
+
+    init_hier <- function() {
+      list(
+        ms = rnorm(1, 14, 0.3), lp = rnorm(1, -3.5, 0.3),
+        al = rnorm(1, -1.3, 0.2), be = runif(1, 0.3, 0.7),
+        z_raw = rnorm(N_fit, 0, 0.3)
+      )
     }
-    
-    opt_s <- tryCatch(
-        optimizing(sm_simple, data=stan_data_simple,
-                   init=list(ms=best_opt$par$ms, lp=best_opt$par$lp,
-                             al=best_opt$par$al, be=best_opt$par$be),
-                   hessian=TRUE, as_vector=FALSE, iter=20000, algorithm="LBFGS"),
-        error=function(e) best_opt)
-    
-    map_s <- c(opt_s$par$ms, opt_s$par$lp, opt_s$par$al, opt_s$par$be)
-    se_s <- rep(NA, 4)
-    if(!is.null(opt_s$hessian)) {
-        tryCatch({ se_s <- sqrt(diag(solve(-opt_s$hessian))) }, error=function(e) {})
+
+    best_opt_h <- NULL
+    best_lp_val_h <- -Inf
+    for (trial in 1:3) {
+      this_opt <- tryCatch(
+        optimizing(sm_hier,
+          data = stan_data_hier, init = init_hier(),
+          hessian = FALSE, as_vector = FALSE,
+          iter = 20000, algorithm = "LBFGS"
+        ),
+        error = function(e) NULL
+      )
+      if (!is.null(this_opt) && this_opt$value > best_lp_val_h) {
+        best_lp_val_h <- this_opt$value
+        best_opt_h <- this_opt
+      }
     }
-    bias_s <- (map_s - tv) / se_s
-    
-    cat(sprintf("  Simple MAP: ms=%.3f lp=%.3f al=%.3f be=%.3f\n",
-                map_s[1], map_s[2], map_s[3], map_s[4]))
-    cat(sprintf("  Bias(sig):  ms=%+.2f lp=%+.2f al=%+.2f be=%+.2f\n",
-                bias_s[1], bias_s[2], bias_s[3], bias_s[4]))
-    
-    results[[qname]] <- list(simple=list(map=map_s, se=se_s, bias=bias_s), N=N_fit)
-    
-    # ---- Model B: Hierarchical (with errors) ----
-    if(ADD_ERRORS) {
-        stan_data_hier <- list(N=N_fit, x_obs=x_fit, sig=sig_fit,
-                               mlim=mlim_per[above],
-                               Nsh=nsh, V_sh=V_sh, mlim_sh=mlim_sh,
-                               xhi=16.5, Ng=300)
-        
-        init_hier <- function() {
-            list(ms=rnorm(1,14,0.3), lp=rnorm(1,-3.5,0.3),
-                 al=rnorm(1,-1.3,0.2), be=runif(1,0.3,0.7),
-                 z_raw=rnorm(N_fit, 0, 0.3))
-        }
-        
-        best_opt_h <- NULL; best_lp_val_h <- -Inf
-        for(trial in 1:3) {
-            this_opt <- tryCatch(
-                optimizing(sm_hier, data=stan_data_hier, init=init_hier(),
-                           hessian=FALSE, as_vector=FALSE,
-                           iter=20000, algorithm="LBFGS"),
-                error=function(e) NULL)
-            if(!is.null(this_opt) && this_opt$value > best_lp_val_h) {
-                best_lp_val_h <- this_opt$value; best_opt_h <- this_opt
-            }
-        }
-        
-        if(!is.null(best_opt_h)) {
-            opt_h <- tryCatch(
-                optimizing(sm_hier, data=stan_data_hier,
-                           init=list(ms=best_opt_h$par$ms, lp=best_opt_h$par$lp,
-                                     al=best_opt_h$par$al, be=best_opt_h$par$be,
-                                     z_raw=best_opt_h$par$z_raw),
-                           hessian=TRUE, as_vector=FALSE, iter=20000, algorithm="LBFGS"),
-                error=function(e) best_opt_h)
-            
-            map_h <- c(opt_h$par$ms, opt_h$par$lp, opt_h$par$al, opt_h$par$be)
-            
-            # Laplace SE via Schur complement
-            se_h <- rep(NA, 4)
-            if(!is.null(opt_h$hessian)) {
-                tryCatch({
-                    H <- opt_h$hessian
-                    np <- 4; nz_h <- N_fit
-                    A <- -H[1:np, 1:np]
-                    B <- -H[1:np, (np+1):(np+nz_h)]
-                    D <- -H[(np+1):(np+nz_h), (np+1):(np+nz_h)]
-                    D_diag_inv <- diag(1/diag(D))
-                    Schur <- A - B %*% D_diag_inv %*% t(B)
-                    se_h <- sqrt(diag(solve(Schur)))
-                }, error=function(e) { cat(sprintf("  Hier Hessian failed: %s\n", e$message)) })
-            }
-            
-            bias_h <- (map_h - tv) / se_h
-            
-            cat(sprintf("  Hier MAP:   ms=%.3f lp=%.3f al=%.3f be=%.3f\n",
-                        map_h[1], map_h[2], map_h[3], map_h[4]))
-            cat(sprintf("  Bias(sig):  ms=%+.2f lp=%+.2f al=%+.2f be=%+.2f\n",
-                        bias_h[1], bias_h[2], bias_h[3], bias_h[4]))
-            
-            results[[qname]]$hier <- list(map=map_h, se=se_h, bias=bias_h)
-        } else {
-            cat("  Hier optimization failed for all trials\n")
-            results[[qname]]$hier <- list(map=rep(NA,4), se=rep(NA,4), bias=rep(NA,4))
-        }
+
+    if (!is.null(best_opt_h)) {
+      opt_h <- tryCatch(
+        optimizing(sm_hier,
+          data = stan_data_hier,
+          init = list(
+            ms = best_opt_h$par$ms, lp = best_opt_h$par$lp,
+            al = best_opt_h$par$al, be = best_opt_h$par$be,
+            z_raw = best_opt_h$par$z_raw
+          ),
+          hessian = TRUE, as_vector = FALSE, iter = 20000, algorithm = "LBFGS"
+        ),
+        error = function(e) best_opt_h
+      )
+
+      map_h <- c(opt_h$par$ms, opt_h$par$lp, opt_h$par$al, opt_h$par$be)
+
+      # Laplace SE via Schur complement
+      se_h <- rep(NA, 4)
+      if (!is.null(opt_h$hessian)) {
+        tryCatch(
+          {
+            H <- opt_h$hessian
+            np <- 4
+            nz_h <- N_fit
+            A <- -H[1:np, 1:np]
+            B <- -H[1:np, (np + 1):(np + nz_h)]
+            D <- -H[(np + 1):(np + nz_h), (np + 1):(np + nz_h)]
+            D_diag_inv <- diag(1 / diag(D))
+            Schur <- A - B %*% D_diag_inv %*% t(B)
+            se_h <- sqrt(diag(solve(Schur)))
+          },
+          error = function(e) {
+            cat(sprintf("  Hier Hessian failed: %s\n", e$message))
+          }
+        )
+      }
+
+      bias_h <- (map_h - tv) / se_h
+
+      cat(sprintf(
+        "  Hier MAP:   ms=%.3f lp=%.3f al=%.3f be=%.3f\n",
+        map_h[1], map_h[2], map_h[3], map_h[4]
+      ))
+      cat(sprintf(
+        "  Bias(sig):  ms=%+.2f lp=%+.2f al=%+.2f be=%+.2f\n",
+        bias_h[1], bias_h[2], bias_h[3], bias_h[4]
+      ))
+
+      results[[qname]]$hier <- list(map = map_h, se = se_h, bias = bias_h)
+    } else {
+      cat("  Hier optimization failed for all trials\n")
+      results[[qname]]$hier <- list(map = rep(NA, 4), se = rep(NA, 4), bias = rep(NA, 4))
     }
+  }
 }
 
 ############################################################
@@ -581,224 +651,260 @@ cat("============================================\n\n")
 
 cat(sprintf("  TRUE: M*=%.3f  lp=%.3f  al=%.3f  be=%.3f\n\n", tv[1], tv[2], tv[3], tv[4]))
 
-plab <- c("M*","log_phi*","alpha","beta")
+plab <- c("M*", "log_phi*", "alpha", "beta")
 
 cat("  --- SIMPLE MODEL (no error correction) ---\n")
-cat(sprintf("  %-10s  %5s  %8s  %8s  %8s  %8s  %6s  %6s  %6s  %6s\n",
-            "Method", "N", "M*", "lp", "al", "be", "dM*", "dlp", "dal", "dbe"))
-for(qname in names(results)) {
-    r <- results[[qname]]$simple
-    cat(sprintf("  %-10s  %5d  %8.3f  %8.3f  %8.3f  %8.3f  %+6.2f  %+6.2f  %+6.2f  %+6.2f\n",
-                qname, results[[qname]]$N,
-                r$map[1], r$map[2], r$map[3], r$map[4],
-                r$bias[1], r$bias[2], r$bias[3], r$bias[4]))
+cat(sprintf(
+  "  %-10s  %5s  %8s  %8s  %8s  %8s  %6s  %6s  %6s  %6s\n",
+  "Method", "N", "M*", "lp", "al", "be", "dM*", "dlp", "dal", "dbe"
+))
+for (qname in names(results)) {
+  r <- results[[qname]]$simple
+  cat(sprintf(
+    "  %-10s  %5d  %8.3f  %8.3f  %8.3f  %8.3f  %+6.2f  %+6.2f  %+6.2f  %+6.2f\n",
+    qname, results[[qname]]$N,
+    r$map[1], r$map[2], r$map[3], r$map[4],
+    r$bias[1], r$bias[2], r$bias[3], r$bias[4]
+  ))
 }
 
-if(ADD_ERRORS) {
-    cat("\n  --- HIERARCHICAL MODEL (with error correction) ---\n")
-    cat(sprintf("  %-10s  %5s  %8s  %8s  %8s  %8s  %6s  %6s  %6s  %6s\n",
-                "Method", "N", "M*", "lp", "al", "be", "dM*", "dlp", "dal", "dbe"))
-    for(qname in names(results)) {
-        r <- results[[qname]]$hier
-        if(!any(is.na(r$map))) {
-            cat(sprintf("  %-10s  %5d  %8.3f  %8.3f  %8.3f  %8.3f  %+6.2f  %+6.2f  %+6.2f  %+6.2f\n",
-                        qname, results[[qname]]$N,
-                        r$map[1], r$map[2], r$map[3], r$map[4],
-                        r$bias[1], r$bias[2], r$bias[3], r$bias[4]))
-        } else {
-            cat(sprintf("  %-10s  %5d  %8s  %8s  %8s  %8s\n", qname, results[[qname]]$N,
-                        "FAILED","","",""))
-        }
+if (ADD_ERRORS) {
+  cat("\n  --- HIERARCHICAL MODEL (with error correction) ---\n")
+  cat(sprintf(
+    "  %-10s  %5s  %8s  %8s  %8s  %8s  %6s  %6s  %6s  %6s\n",
+    "Method", "N", "M*", "lp", "al", "be", "dM*", "dlp", "dal", "dbe"
+  ))
+  for (qname in names(results)) {
+    r <- results[[qname]]$hier
+    if (!any(is.na(r$map))) {
+      cat(sprintf(
+        "  %-10s  %5d  %8.3f  %8.3f  %8.3f  %8.3f  %+6.2f  %+6.2f  %+6.2f  %+6.2f\n",
+        qname, results[[qname]]$N,
+        r$map[1], r$map[2], r$map[3], r$map[4],
+        r$bias[1], r$bias[2], r$bias[3], r$bias[4]
+      ))
+    } else {
+      cat(sprintf(
+        "  %-10s  %5d  %8s  %8s  %8s  %8s\n", qname, results[[qname]]$N,
+        "FAILED", "", "", ""
+      ))
     }
+  }
 }
 
 ############################################################
 # 10. Plot
 ############################################################
 
-xfit <- seq(10, 16, length.out=500)
-z_plot <- seq(zmin, zlimit, length.out=200)
+xfit <- seq(10, 16, length.out = 500)
+z_plot <- seq(zmin, zlimit, length.out = 200)
 
 bin_width <- 0.2
-breaks <- seq(9, 16, by=bin_width)
-h_am_true <- hist(groups_vol$log_mass_am, breaks=breaks, plot=FALSE)
+breaks <- seq(9, 16, by = bin_width)
+h_am_true <- hist(groups_vol$log_mass_am, breaks = breaks, plot = FALSE)
 phi_am_true <- h_am_true$counts / (Vsurvey * bin_width)
-ok_am_true  <- h_am_true$counts >= 5
+ok_am_true <- h_am_true$counts >= 5
 
-h_gama_plot <- hist(m_gama, breaks=breaks, plot=FALSE)
+h_gama_plot <- hist(m_gama, breaks = breaks, plot = FALSE)
 phi_gama_plot <- h_gama_plot$counts / (Vsurvey * bin_width)
-ok_gama_plot  <- h_gama_plot$counts >= 5
+ok_gama_plot <- h_gama_plot$counts >= 5
 
-qcols <- c(q05="red", q10="orange", q25="darkgreen", q50="purple", turnover="cyan4")
+qcols <- c(q05 = "red", q10 = "orange", q25 = "darkgreen", q50 = "purple", turnover = "cyan4")
 
 CairoPDF("shark_recovery.pdf", 14, 14)
-par(mfrow=c(3,2))
+par(mfrow = c(3, 2))
 
 # ---- Panel 1: Completeness heatmap with all mlim(z) curves ----
 image(z_bin_mids_fine, m_bin_mids, t(C_mz),
-      col=colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
-      xlab="Redshift", ylab=expression("log"[10]*"(M)"),
-      main=sprintf("True completeness + envelope mlim(z) [%s]", ADD_ERRORS_LABEL),
-      xlim=c(zmin, zlimit), ylim=c(11, 15.5), zlim=c(0, 1))
+  col = colorRampPalette(c("white", "yellow", "orange", "red", "darkred"))(100),
+  xlab = "Redshift", ylab = expression("log"[10] * "(M)"),
+  main = sprintf("True completeness + envelope mlim(z) [%s]", ADD_ERRORS_LABEL),
+  xlim = c(zmin, zlimit), ylim = c(11, 15.5), zlim = c(0, 1)
+)
 contour(z_bin_mids_fine, m_bin_mids, t(C_mz),
-        levels=c(0.1, 0.25, 0.5, 0.75, 0.9),
-        add=TRUE, col="black", labcex=0.7)
+  levels = c(0.1, 0.25, 0.5, 0.75, 0.9),
+  add = TRUE, col = "black", labcex = 0.7
+)
 
-for(qname in names(mlim_funcs)) {
-    lines(z_plot, mlim_funcs[[qname]](z_plot), col=qcols[qname], lwd=2.5)
+for (qname in names(mlim_funcs)) {
+  lines(z_plot, mlim_funcs[[qname]](z_plot), col = qcols[qname], lwd = 2.5)
 }
 
 # Turnover points with bootstrap error bars
-points(z_bm[ok_to], turnover_bins[ok_to], pch=15, col="cyan4", cex=1.2)
+points(z_bm[ok_to], turnover_bins[ok_to], pch = 15, col = "cyan4", cex = 1.2)
 arrows(z_bm[ok_to], turnover_lo[ok_to], z_bm[ok_to], turnover_hi[ok_to],
-       angle=90, code=3, length=0.02, col="cyan4")
+  angle = 90, code = 3, length = 0.02, col = "cyan4"
+)
 
 # True 50% line
 ok50 <- !is.na(mlim_true50)
 fit50_l <- lm(mlim_true50[ok50] ~ z_bin_mids_fine[ok50])
 fit50_q <- lm(mlim_true50[ok50] ~ z_bin_mids_fine[ok50] + I(z_bin_mids_fine[ok50]^2))
-if(AIC(fit50_q) < AIC(fit50_l) - 2) {
-    cc50 <- coef(fit50_q)
-    lines(z_plot, cc50[1]+cc50[2]*z_plot+cc50[3]*z_plot^2, col="blue", lwd=3, lty=2)
+if (AIC(fit50_q) < AIC(fit50_l) - 2) {
+  cc50 <- coef(fit50_q)
+  lines(z_plot, cc50[1] + cc50[2] * z_plot + cc50[3] * z_plot^2, col = "blue", lwd = 3, lty = 2)
 } else {
-    cc50 <- coef(fit50_l)
-    lines(z_plot, cc50[1]+cc50[2]*z_plot, col="blue", lwd=3, lty=2)
+  cc50 <- coef(fit50_l)
+  lines(z_plot, cc50[1] + cc50[2] * z_plot, col = "blue", lwd = 3, lty = 2)
 }
 
 legend("topleft",
-       legend=c("5th pctile", "10th pctile", "25th pctile", 
-                "50th pctile", "Turnover (Wright+17)", "True 50% comp."),
-       col=c("red","orange","darkgreen","purple","cyan4","blue"),
-       lty=c(1,1,1,1,1,2), lwd=c(2.5,2.5,2.5,2.5,2.5,3),
-       bg="white", cex=0.55)
+  legend = c(
+    "5th pctile", "10th pctile", "25th pctile",
+    "50th pctile", "Turnover (Wright+17)", "True 50% comp."
+  ),
+  col = c("red", "orange", "darkgreen", "purple", "cyan4", "blue"),
+  lty = c(1, 1, 1, 1, 1, 2), lwd = c(2.5, 2.5, 2.5, 2.5, 2.5, 3),
+  bg = "white", cex = 0.55
+)
 
 # ---- Panel 2: Completeness vs mass slices ----
 z_slices <- c(0.05, 0.10, 0.15, 0.20)
-cols_z <- c("blue","darkgreen","orange","red")
+cols_z <- c("blue", "darkgreen", "orange", "red")
 
-plot(NA, xlim=c(11, 15.5), ylim=c(0, 1.05),
-     xlab=expression("log"[10]*"(M)"),
-     ylab="Completeness", main="Completeness vs mass")
-grid(col="gray80")
-abline(h=0.5, col="grey50", lty=3)
+plot(NA,
+  xlim = c(11, 15.5), ylim = c(0, 1.05),
+  xlab = expression("log"[10] * "(M)"),
+  ylab = "Completeness", main = "Completeness vs mass"
+)
+grid(col = "gray80")
+abline(h = 0.5, col = "grey50", lty = 3)
 
-for(s in 1:length(z_slices)) {
-    iz <- which.min(abs(z_bin_mids_fine - z_slices[s]))
-    comp_slice <- C_mz[, iz]
-    ok_s <- !is.na(comp_slice)
-    lines(m_bin_mids[ok_s], comp_slice[ok_s], col=cols_z[s], lwd=2, type="b", pch=19, cex=0.8)
+for (s in 1:length(z_slices)) {
+  iz <- which.min(abs(z_bin_mids_fine - z_slices[s]))
+  comp_slice <- C_mz[, iz]
+  ok_s <- !is.na(comp_slice)
+  lines(m_bin_mids[ok_s], comp_slice[ok_s], col = cols_z[s], lwd = 2, type = "b", pch = 19, cex = 0.8)
 }
-legend("bottomright", sprintf("z = %.2f", z_slices), col=cols_z, lwd=2, cex=0.7)
+legend("bottomright", sprintf("z = %.2f", z_slices), col = cols_z, lwd = 2, cex = 0.7)
 
 # ---- Panel 3: HMF recovery — Simple model ----
 plot(h_am_true$mids[ok_am_true], log10(phi_am_true[ok_am_true]),
-     pch=19, col="grey40", cex=1.3,
-     xlim=c(10.5, 15.5), ylim=c(-8, -1),
-     xlab=expression("log"[10]*"(M / M"["\u2299"]*")"),
-     ylab=expression("log"[10]*"("*phi*")"),
-     main="Simple model (no error correction)")
-grid(col="gray80")
+  pch = 19, col = "grey40", cex = 1.3,
+  xlim = c(10.5, 15.5), ylim = c(-8, -1),
+  xlab = expression("log"[10] * "(M / M"["\u2299"] * ")"),
+  ylab = expression("log"[10] * "(" * phi * ")"),
+  main = "Simple model (no error correction)"
+)
+grid(col = "gray80")
 
 points(h_gama_plot$mids[ok_gama_plot], log10(phi_gama_plot[ok_gama_plot]),
-       pch=17, col="grey60", cex=1.0)
+  pch = 17, col = "grey60", cex = 1.0
+)
 
 lines(xfit, log10(pmax(mrp_phi(xfit, tv[1], tv[2], tv[3], tv[4]), 1e-30)),
-      col="blue", lwd=3)
+  col = "blue", lwd = 3
+)
 
-for(qname in names(results)) {
-    r <- results[[qname]]$simple$map
-    lines(xfit, log10(pmax(mrp_phi(xfit, r[1], r[2], r[3], r[4]), 1e-30)),
-          col=qcols[qname], lwd=2, lty=2)
+for (qname in names(results)) {
+  r <- results[[qname]]$simple$map
+  lines(xfit, log10(pmax(mrp_phi(xfit, r[1], r[2], r[3], r[4]), 1e-30)),
+    col = qcols[qname], lwd = 2, lty = 2
+  )
 }
 
 legend("topright",
-       legend=c("True HMF", "GAMA-selected", "True MRP", names(results)),
-       col=c("grey40","grey60","blue", unname(qcols[names(results)])),
-       pch=c(19,17,NA,rep(NA,length(results))),
-       lty=c(NA,NA,1,rep(2,length(results))),
-       lwd=c(NA,NA,3,rep(2,length(results))),
-       bg="white", cex=0.45)
+  legend = c("True HMF", "GAMA-selected", "True MRP", names(results)),
+  col = c("grey40", "grey60", "blue", unname(qcols[names(results)])),
+  pch = c(19, 17, NA, rep(NA, length(results))),
+  lty = c(NA, NA, 1, rep(2, length(results))),
+  lwd = c(NA, NA, 3, rep(2, length(results))),
+  bg = "white", cex = 0.45
+)
 
 # ---- Panel 4: HMF recovery — Hierarchical model ----
-if(ADD_ERRORS) {
-    plot(h_am_true$mids[ok_am_true], log10(phi_am_true[ok_am_true]),
-         pch=19, col="grey40", cex=1.3,
-         xlim=c(10.5, 15.5), ylim=c(-8, -1),
-         xlab=expression("log"[10]*"(M / M"["\u2299"]*")"),
-         ylab=expression("log"[10]*"("*phi*")"),
-         main="Hierarchical model (with errors)")
-    grid(col="gray80")
-    
-    points(h_gama_plot$mids[ok_gama_plot], log10(phi_gama_plot[ok_gama_plot]),
-           pch=17, col="grey60", cex=1.0)
-    
-    lines(xfit, log10(pmax(mrp_phi(xfit, tv[1], tv[2], tv[3], tv[4]), 1e-30)),
-          col="blue", lwd=3)
-    
-    for(qname in names(results)) {
-        r <- results[[qname]]$hier$map
-        if(!any(is.na(r))) {
-            lines(xfit, log10(pmax(mrp_phi(xfit, r[1], r[2], r[3], r[4]), 1e-30)),
-                  col=qcols[qname], lwd=2, lty=2)
-        }
+if (ADD_ERRORS) {
+  plot(h_am_true$mids[ok_am_true], log10(phi_am_true[ok_am_true]),
+    pch = 19, col = "grey40", cex = 1.3,
+    xlim = c(10.5, 15.5), ylim = c(-8, -1),
+    xlab = expression("log"[10] * "(M / M"["\u2299"] * ")"),
+    ylab = expression("log"[10] * "(" * phi * ")"),
+    main = "Hierarchical model (with errors)"
+  )
+  grid(col = "gray80")
+
+  points(h_gama_plot$mids[ok_gama_plot], log10(phi_gama_plot[ok_gama_plot]),
+    pch = 17, col = "grey60", cex = 1.0
+  )
+
+  lines(xfit, log10(pmax(mrp_phi(xfit, tv[1], tv[2], tv[3], tv[4]), 1e-30)),
+    col = "blue", lwd = 3
+  )
+
+  for (qname in names(results)) {
+    r <- results[[qname]]$hier$map
+    if (!any(is.na(r))) {
+      lines(xfit, log10(pmax(mrp_phi(xfit, r[1], r[2], r[3], r[4]), 1e-30)),
+        col = qcols[qname], lwd = 2, lty = 2
+      )
     }
-    
-    legend("topright",
-           legend=c("True HMF", "GAMA-selected", "True MRP", names(results)),
-           col=c("grey40","grey60","blue", unname(qcols[names(results)])),
-           pch=c(19,17,NA,rep(NA,length(results))),
-           lty=c(NA,NA,1,rep(2,length(results))),
-           lwd=c(NA,NA,3,rep(2,length(results))),
-           bg="white", cex=0.45)
+  }
+
+  legend("topright",
+    legend = c("True HMF", "GAMA-selected", "True MRP", names(results)),
+    col = c("grey40", "grey60", "blue", unname(qcols[names(results)])),
+    pch = c(19, 17, NA, rep(NA, length(results))),
+    lty = c(NA, NA, 1, rep(2, length(results))),
+    lwd = c(NA, NA, 3, rep(2, length(results))),
+    bg = "white", cex = 0.45
+  )
 } else {
-    plot.new()
-    text(0.5, 0.5, "Hierarchical model\nnot run (ADD_ERRORS=FALSE)", cex=1.2)
+  plot.new()
+  text(0.5, 0.5, "Hierarchical model\nnot run (ADD_ERRORS=FALSE)", cex = 1.2)
 }
 
 # ---- Panel 5: Bias comparison — both models ----
-plot(NA, xlim=c(0.5, 4.5), ylim=c(-8, 8),
-     xlab="", ylab="Bias (sigma)", 
-     main="Bias: Simple (filled) vs Hier (open)", xaxt="n")
-grid(col="gray80")
-abline(h=0, col="black", lwd=2)
-abline(h=c(-2,2), col="grey50", lty=3)
+plot(NA,
+  xlim = c(0.5, 4.5), ylim = c(-8, 8),
+  xlab = "", ylab = "Bias (sigma)",
+  main = "Bias: Simple (filled) vs Hier (open)", xaxt = "n"
+)
+grid(col = "gray80")
+abline(h = 0, col = "black", lwd = 2)
+abline(h = c(-2, 2), col = "grey50", lty = 3)
 
-for(iq in 1:length(results)) {
-    qname <- names(results)[iq]
-    offset <- (iq - 3) * 0.12
-    
-    # Simple: filled circles
-    bs <- results[[qname]]$simple$bias
-    points(1:4 + offset, bs, pch=19, col=qcols[qname], cex=1.3)
-    for(j in 1:4) lines(c(j+offset, j+offset), c(0, bs[j]), col=qcols[qname], lwd=2)
-    
-    # Hierarchical: open circles, slightly offset
-    if(ADD_ERRORS && !any(is.na(results[[qname]]$hier$map))) {
-        bh <- results[[qname]]$hier$bias
-        points(1:4 + offset + 0.04, bh, pch=1, col=qcols[qname], cex=1.3, lwd=2)
-        for(j in 1:4) lines(c(j+offset+0.04, j+offset+0.04), c(0, bh[j]),
-                            col=qcols[qname], lwd=1, lty=3)
+for (iq in 1:length(results)) {
+  qname <- names(results)[iq]
+  offset <- (iq - 3) * 0.12
+
+  # Simple: filled circles
+  bs <- results[[qname]]$simple$bias
+  points(1:4 + offset, bs, pch = 19, col = qcols[qname], cex = 1.3)
+  for (j in 1:4) lines(c(j + offset, j + offset), c(0, bs[j]), col = qcols[qname], lwd = 2)
+
+  # Hierarchical: open circles, slightly offset
+  if (ADD_ERRORS && !any(is.na(results[[qname]]$hier$map))) {
+    bh <- results[[qname]]$hier$bias
+    points(1:4 + offset + 0.04, bh, pch = 1, col = qcols[qname], cex = 1.3, lwd = 2)
+    for (j in 1:4) {
+      lines(c(j + offset + 0.04, j + offset + 0.04), c(0, bh[j]),
+        col = qcols[qname], lwd = 1, lty = 3
+      )
     }
+  }
 }
 
-axis(1, at=1:4, labels=plab)
+axis(1, at = 1:4, labels = plab)
 legend("topright", c(names(results), "filled=Simple", "open=Hier"),
-       col=c(unname(qcols[names(results)]), "black", "black"),
-       pch=c(rep(19, length(results)), 19, 1), cex=0.55)
+  col = c(unname(qcols[names(results)]), "black", "black"),
+  pch = c(rep(19, length(results)), 19, 1), cex = 0.55
+)
 
 # ---- Panel 6: Mass-redshift with mlim curves ----
 smoothScatter(z_gama, m_gama,
-              xlab="Redshift", ylab=expression("log"[10]*"(M)"),
-              main="GAMA-selected + mlim(z) curves",
-              xlim=c(zmin, zlimit), ylim=c(11, 15.5),
-              colramp=colorRampPalette(c("white","cornflowerblue","blue","darkblue")),
-              nbin=200)
-for(qname in names(mlim_funcs)) {
-    lines(z_plot, mlim_funcs[[qname]](z_plot), col=qcols[qname], lwd=2.5)
+  xlab = "Redshift", ylab = expression("log"[10] * "(M)"),
+  main = "GAMA-selected + mlim(z) curves",
+  xlim = c(zmin, zlimit), ylim = c(11, 15.5),
+  colramp = colorRampPalette(c("white", "cornflowerblue", "blue", "darkblue")),
+  nbin = 200
+)
+for (qname in names(mlim_funcs)) {
+  lines(z_plot, mlim_funcs[[qname]](z_plot), col = qcols[qname], lwd = 2.5)
 }
-grid(col="gray80")
+grid(col = "gray80")
 legend("bottomright", names(mlim_funcs),
-       col=unname(qcols[names(mlim_funcs)]), lwd=2.5, cex=0.7)
+  col = unname(qcols[names(mlim_funcs)]), lwd = 2.5, cex = 0.7
+)
 
 dev.off()
 cat("\nPlot saved: shark_recovery.pdf\n\nDone!\n")
