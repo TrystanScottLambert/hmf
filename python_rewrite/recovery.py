@@ -152,8 +152,9 @@ def gama_select(gv, galaxies):
     return gv
 
 
-def add_mass_errors(gv, rng):
-    """Multiplicity-dependent Gaussian errors on log-mass (GAMA-like)."""
+def sigma_from_nfof(n_gama):
+    """Multiplicity-dependent log-mass error model (GAMA-like).
+    Single source of truth used by both the single-run and coverage paths."""
     xx = np.arange(2, 23)
     yy = np.array(
         [
@@ -180,9 +181,13 @@ def add_mass_errors(gv, rng):
             0.08,
         ]
     )
+    return np.maximum(np.interp(np.asarray(n_gama, float), xx, yy), 0.10)
+
+
+def add_mass_errors(gv, rng):
+    """Add multiplicity-dependent Gaussian errors to the detected groups."""
     det = gv[gv["detected"]].copy()
-    sigma = np.interp(det["n_gama"].values, xx, yy)  # np.interp clamps at ends
-    sigma = np.maximum(sigma, 0.10)
+    sigma = sigma_from_nfof(det["n_gama"].values)
     if ADD_ERRORS:
         m_obs = det["log_mass_am"].values + rng.normal(0, sigma)
     else:
@@ -538,7 +543,181 @@ def plot_recovery(
 
 
 # ----------------------------------------------------------
-# 6. Drivers
+# 7. Coverage loop  (step 1 validation)
+# ----------------------------------------------------------
+# Wraps the GAMA-mock in N realisations to ask: are the credible intervals
+# honest?  The abundance-matched TRUTH and the detected-group set are fixed
+# (deterministic selection on one mock volume); what is re-drawn each
+# realisation is the Gaussian MASS ERROR, which then propagates through the
+# turnover mlim(z) and the above-mlim cut -- i.e. the model-relevant noise.
+#
+# LIMITATION (be honest about it): because there is a single mock volume,
+# the Poisson count of groups is NOT re-sampled, so logphi* coverage here is
+# CONDITIONAL on that fixed count.  Fuller coverage needs independent volumes
+# or an injected count/photometric-scatter term -- a later refinement.
+def _prepare_fixed():
+    """Deterministic part of the GAMA-mock, run once."""
+    groups, galaxies = load_catalogues(DATA_DIR)
+    sky_frac = (
+        sky_area_deg2(groups["ra"], groups["dec"]) * (np.pi / 180) ** 2 / (4 * np.pi)
+    )
+    gv, Vsurvey = abundance_match(groups, sky_frac)
+    gv = gama_select(gv, galaxies)
+    det = gv[gv["detected"]].copy()
+    z_mids, V_sh = shell_volumes(sky_frac)
+    print(f"  fixed detected-group set: {len(det)} groups")
+    return dict(
+        z=det["zcos"].values,
+        m_true=det["log_mass_am"].values,
+        n_gama=det["n_gama"].values,
+        sky_frac=sky_frac,
+        Vsurvey=Vsurvey,
+        z_mids=z_mids,
+        V_sh=V_sh,
+    )
+
+
+def run_coverage(
+    n_real=50,
+    seed0=1000,
+    chains=4,
+    warmup=1500,
+    sampling=1500,
+    checkpoint="coverage_results.csv",
+):
+    print("=" * 60)
+    print(f"  COVERAGE LOOP: {n_real} realisations")
+    print("=" * 60)
+    fixed = _prepare_fixed()
+    z, m_true, n_gama = fixed["z"], fixed["m_true"], fixed["n_gama"]
+    z_mids, V_sh = fixed["z_mids"], fixed["V_sh"]
+    sigma = sigma_from_nfof(n_gama)  # error SIZE fixed per group; the DRAW varies
+
+    # resume from checkpoint if present
+    rows, done = [], set()
+    if os.path.exists(checkpoint):
+        prev = pd.read_csv(checkpoint)
+        rows = prev.to_dict("records")
+        done = set(prev["real"].astype(int))
+        print(f"  resuming: {len(done)} realisations already on disk")
+
+    for r in range(n_real):
+        if r in done:
+            continue
+        rng = np.random.default_rng(seed0 + r)
+        m_obs = m_true + rng.normal(0, sigma)
+
+        try:
+            mlim_func, _, kind, _ = turnover_mlim(z, m_obs)
+        except RuntimeError as e:
+            print(f"  [real {r:02d}] mlim failed ({e}); skipped")
+            continue
+        mlim_sh = mlim_func(z_mids)
+        above = m_obs > mlim_func(z)
+        x_fit = m_obs[above]
+        print(
+            f"\n[real {r:02d}] N_fit={x_fit.size}  mlim[{kind}] "
+            f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
+        )
+
+        _, flat = run_stan(
+            x_fit,
+            mlim_sh,
+            V_sh,
+            chains=chains,
+            warmup=warmup,
+            sampling=sampling,
+            seed=seed0 + r,
+            show_progress=False,
+        )
+
+        med = np.median(flat, axis=0)
+        sd = np.std(flat, axis=0)
+        q025, q16, q84, q975 = np.percentile(flat, [2.5, 16, 84, 97.5], axis=0)
+        row = dict(real=r, N_fit=int(x_fit.size))
+        for i, p in enumerate(PARAMS):
+            row.update(
+                {
+                    f"{p}_med": med[i],
+                    f"{p}_sd": sd[i],
+                    f"{p}_q025": q025[i],
+                    f"{p}_q16": q16[i],
+                    f"{p}_q84": q84[i],
+                    f"{p}_q975": q975[i],
+                }
+            )
+        rows.append(row)
+        pd.DataFrame(rows).to_csv(checkpoint, index=False)  # checkpoint every iter
+
+    df = pd.DataFrame(rows).sort_values("real").reset_index(drop=True)
+    report_coverage(df)
+    plot_coverage(df, checkpoint.replace(".csv", ".pdf"))
+    return df
+
+
+def report_coverage(df):
+    print("\n" + "=" * 70)
+    print(f"  COVERAGE SUMMARY over {len(df)} realisations")
+    print("=" * 70)
+    print(
+        f"  {'param':6s} {'true':>8s} {'mean_med':>9s} {'bias_dex':>9s} "
+        f"{'bias_sd':>8s} {'scatter':>8s} {'cov68':>7s} {'cov95':>7s}"
+    )
+    for p in PARAMS:
+        t = TRUE[p]
+        med = df[f"{p}_med"].values
+        sd = df[f"{p}_sd"].values
+        cov68 = np.mean((df[f"{p}_q16"].values <= t) & (t <= df[f"{p}_q84"].values))
+        cov95 = np.mean((df[f"{p}_q025"].values <= t) & (t <= df[f"{p}_q975"].values))
+        print(
+            f"  {p:6s} {t:8.3f} {np.mean(med):9.3f} {np.mean(med - t):+9.3f} "
+            f"{np.mean((med - t) / sd):+8.2f} {np.std(med):8.3f} "
+            f"{cov68:7.0%} {cov95:7.0%}"
+        )
+    print("\n  Expect: cov68 ~ 68%, cov95 ~ 95%, |bias_sd| small.")
+    print("  Low coverage -> intervals too tight (bias and/or underestimated errors).")
+    print("  High coverage -> intervals too conservative.")
+
+
+def plot_coverage(df, fname="coverage_results.pdf"):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    labels = dict(ms=r"$M_*$", lp=r"$\log\phi_*$", al=r"$\alpha$", be=r"$\beta$")
+    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+    for a, p in zip(ax.flat, PARAMS):
+        t = TRUE[p]
+        x = df["real"].values
+        med = df[f"{p}_med"].values
+        lo = med - df[f"{p}_q16"].values
+        hi = df[f"{p}_q84"].values - med
+        inside = (df[f"{p}_q16"].values <= t) & (t <= df[f"{p}_q84"].values)
+        for xi, mi, loi, hii, ins in zip(x, med, lo, hi, inside):
+            a.errorbar(
+                xi,
+                mi,
+                yerr=[[loi], [hii]],
+                fmt="o",
+                ms=3,
+                capsize=2,
+                color="steelblue" if ins else "crimson",
+            )
+        a.axhline(t, color="k", ls="--", lw=1.5)
+        a.set(
+            title=f"{labels[p]}   68% coverage = {inside.mean():.0%}",
+            xlabel="realisation",
+            ylabel=labels[p],
+        )
+        a.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(fname)
+    print(f"  saved {fname}")
+
+
+# ----------------------------------------------------------
+# 9. Drivers
 # ----------------------------------------------------------
 def run_real_pipeline():
     print("Reading catalogues ...")
@@ -632,8 +811,21 @@ if __name__ == "__main__":
         action="store_true",
         help="run synthetic recovery without needing the parquet files",
     )
+    ap.add_argument(
+        "--coverage",
+        action="store_true",
+        help="run the N-realisation coverage loop on the GAMA-mock",
+    )
+    ap.add_argument(
+        "--nreal",
+        type=int,
+        default=50,
+        help="number of realisations for --coverage (default 50)",
+    )
     args = ap.parse_args()
     if args.selftest:
         run_selftest()
+    elif args.coverage:
+        run_coverage(n_real=args.nreal)
     else:
         run_real_pipeline()
