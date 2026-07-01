@@ -834,12 +834,15 @@ def run_coverage(
 
 
 def report_coverage(df):
-    print("\n" + "=" * 70)
+    # prior widths (must match the Stan model priors) -- to flag which
+    # parameters are data-constrained vs prior-driven on this sample.
+    prior_sd = {"ms": 1.5, "lp": 2.0, "al": 0.3, "be": 0.2}
+    print("\n" + "=" * 78)
     print(f"  COVERAGE SUMMARY over {len(df)} realisations")
-    print("=" * 70)
+    print("=" * 78)
     print(
         f"  {'param':6s} {'true':>8s} {'mean_med':>9s} {'bias_dex':>9s} "
-        f"{'bias_sd':>8s} {'scatter':>8s} {'cov68':>7s} {'cov95':>7s}"
+        f"{'bias_sd':>8s} {'cov68':>7s} {'cov95':>7s} {'post/prior':>10s} {'constrained':>12s}"
     )
     for p in PARAMS:
         t = TRUE[p]
@@ -847,14 +850,23 @@ def report_coverage(df):
         sd = df[f"{p}_sd"].values
         cov68 = np.mean((df[f"{p}_q16"].values <= t) & (t <= df[f"{p}_q84"].values))
         cov95 = np.mean((df[f"{p}_q025"].values <= t) & (t <= df[f"{p}_q975"].values))
+        ratio = np.mean(sd) / prior_sd[p]  # posterior width / prior width
+        tag = (
+            "data-driven"
+            if ratio < 0.6
+            else ("prior-driven" if ratio > 0.9 else "mixed")
+        )
         print(
             f"  {p:6s} {t:8.3f} {np.mean(med):9.3f} {np.mean(med - t):+9.3f} "
-            f"{np.mean((med - t) / sd):+8.2f} {np.std(med):8.3f} "
-            f"{cov68:7.0%} {cov95:7.0%}"
+            f"{np.mean((med - t) / sd):+8.2f} {cov68:7.0%} {cov95:7.0%} "
+            f"{ratio:10.2f} {tag:>12s}"
         )
-    print("\n  Expect: cov68 ~ 68%, cov95 ~ 95%, |bias_sd| small.")
-    print("  Low coverage -> intervals too tight (bias and/or underestimated errors).")
-    print("  High coverage -> intervals too conservative.")
+    print("\n  cov68 ~ 68%, cov95 ~ 95%, |bias_sd| small  ->  calibrated & usable.")
+    print("  'post/prior' ~ 1 (prior-driven): the data did NOT constrain that")
+    print("  parameter -- report it as prior-informed, not measured (expected for")
+    print("  M* and the knee, which this sample does not reach).  'data-driven'")
+    print("  with good coverage -> a genuine measurement (expect this for the")
+    print("  high-mass/cutoff behaviour).")
 
 
 def plot_coverage(df, fname="coverage_results.pdf"):
