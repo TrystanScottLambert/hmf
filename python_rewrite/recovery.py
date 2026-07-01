@@ -62,6 +62,7 @@ ADD_ERRORS = True
 # Likelihood grid / integration (passed to Stan as data)
 XHI = 16.5  # upper mass bound for the Lambda integral
 NG = 300  # grid points for the phi integral
+NINT = 60  # LOCAL per-object integration points (marginalised model)
 NSH = 20  # redshift shells for the Poisson normalisation
 
 
@@ -241,9 +242,10 @@ def turnover_mlim(z_obs, m_obs, nbin_z=30, hist_bw=0.3, min_in_bin=20):
 
 
 # ----------------------------------------------------------
-# 4. Stan model -- document-1 `stan_simple`, run via cmdstanpy
+# 4. Stan models -- simple (doc-1) and marginalised+boundary
 # ----------------------------------------------------------
-STAN_CODE = r"""
+# SIMPLE: observed mass treated as truth, sharp cut at mlim. Baseline.
+SIMPLE_CODE = r"""
 data {
   int<lower=1> N;
   vector[N] x_obs;
@@ -307,37 +309,125 @@ model {
 }
 """
 
-STAN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mrp_simple.stan")
-_MODEL = None
+# MARGINALISED + BOUNDARY: integrate out the latent true mass per object, and
+# replace the sharp mlim cut in Lambda with a Phi-weighted soft boundary.
+#
+#   per-object:  L_i = int phi(m_t) * Normal(x_obs_i | m_t, sig_i) dm_t   (all m_t)
+#   Lambda    :  sum_j V_sh[j] * int phi(m_t) * Phi((m_t - mlim_sh[j]) / sig_sh[j]) dm_t
+#
+# Both integrals use the same global grid xg (phi computed once). xlo extends
+# well below min(mlim) so down-scattered groups (m_t < mlim) are captured.
+MARG_CODE = r"""
+data {
+  int<lower=1> N;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;          // per-object log-mass error
+  int<lower=1> Nsh;
+  vector[Nsh] V_sh;
+  vector[Nsh] mlim_sh;
+  vector<lower=0>[Nsh] sig_sh;     // representative boundary sigma per shell
+  real xhi;
+  int<lower=2> Ng;        // global grid for the Lambda integral
+  int<lower=2> Nint;      // LOCAL grid points per object (per-object integral)
+}
+transformed data {
+  real ln10 = log(10.0);
+  real xlo = min(mlim_sh) - 1.0;   // Lambda grid; Phi kills the integrand below mlim
+  real dx = (xhi - xlo) / (Ng - 1.0);
+  real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+  vector[Ng] xg;
+  for (k in 1:Ng) xg[k] = xlo + (k - 1) * dx;
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+}
+model {
+  ms ~ normal(14.0, 1.5);
+  lp ~ normal(-4.0, 2.0);
+  al ~ normal(-1.7, 1.0);
+
+  // phi on the global grid (computed once)
+  vector[Ng] pg;
+  for (k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+  }
+
+  // ---- Lambda: boundary-consistent normalisation (soft Phi cut) ----
+  real Lambda = 0;
+  for (j in 1:Nsh) {
+    real acc = 0;
+    for (k in 1:Ng) {
+      real w = Phi((xg[k] - mlim_sh[j]) / sig_sh[j]);  // P(scatter above limit)
+      real term = pg[k] * w;
+      acc += (k == 1 || k == Ng) ? 0.5 * term : term;  // trapezoid
+    }
+    Lambda += V_sh[j] * acc * dx;
+  }
+  target += -Lambda;
+
+  // ---- per-object: marginalise latent true mass on a LOCAL grid (+-6 sigma) ----
+  // Only the object's own error kernel has support, so integrate a narrow window
+  // around x_obs (which still extends below mlim -> captures down-scatter). This
+  // is ~Ng/Nint times cheaper than looping the full grid for every object.
+  for (i in 1:N) {
+    real lo_i = x_obs[i] - 6 * sig[i];
+    real hi_i = x_obs[i] + 6 * sig[i];
+    real dmt = (hi_i - lo_i) / (Nint - 1.0);
+    real inv_s = 1.0 / sig[i];
+    real sm = 0;
+    for (g in 1:Nint) {
+      real mt = lo_i + (g - 1) * dmt;
+      real u = mt - ms;
+      real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+      real zsc = (x_obs[i] - mt) * inv_s;
+      real term = phi_g * exp(-0.5 * zsc * zsc);
+      sm += (g == 1 || g == Nint) ? 0.5 * term : term;  // trapezoid
+    }
+    sm *= dmt * inv_s * inv_sqrt2pi;   // fold in the Gaussian 1/(sig sqrt(2pi))
+    if (sm > 1e-300)
+      target += log(sm);
+    else
+      target += -300;
+  }
+}
+"""
+
+_STAN = {"simple": SIMPLE_CODE, "marg": MARG_CODE}
+_MODELS = {}
+
+# Compile OUTSIDE any iCloud-synced tree (e.g. ~/Desktop, ~/Documents).
+# A compiled Stan binary placed under a synced folder can be evicted mid-run,
+# which shows up as "No such file or directory: .../mrp_marg" and retcode -1.
+# Override with the HMF_STAN_DIR environment variable if you like.
+STAN_BUILD_DIR = os.environ.get(
+    "HMF_STAN_DIR", os.path.join(os.path.expanduser("~"), ".cache", "hmf_mrp_stan")
+)
+os.makedirs(STAN_BUILD_DIR, exist_ok=True)
 
 
-def get_model():
-    """Compile the Stan model once (cmdstanpy caches the binary)."""
-    global _MODEL
-    if _MODEL is None:
+def get_model(kind):
+    """Compile a Stan model once, in a non-synced build dir (cmdstanpy caches)."""
+    if kind not in _MODELS:
         from cmdstanpy import CmdStanModel
 
-        with open(STAN_PATH, "w") as f:
-            f.write(STAN_CODE)
-        _MODEL = CmdStanModel(stan_file=STAN_PATH)
-    return _MODEL
+        path = os.path.join(STAN_BUILD_DIR, f"mrp_{kind}.stan")
+        with open(path, "w") as f:
+            f.write(_STAN[kind])
+        model = CmdStanModel(stan_file=path)
+        exe = getattr(model, "exe_file", None)
+        if exe and not os.path.exists(exe):
+            raise RuntimeError(f"Stan exe missing right after compile: {exe}")
+        print(f"  [{kind}] compiled -> {STAN_BUILD_DIR}")
+        _MODELS[kind] = model
+    return _MODELS[kind]
 
 
-def run_stan(
-    x_fit,
-    mlim_sh,
-    V_sh,
-    chains=4,
-    warmup=2000,
-    sampling=2000,
-    adapt_delta=0.95,
-    max_treedepth=12,
-    seed=42,
-    show_progress=True,
-):
-    """MAP (optimize) + posterior (sample) for the simple model.
-    Returns (map_par, flat) where flat is an (Ndraws, 4) array in PARAMS order."""
-    model = get_model()
+def build_data(kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=None):
+    """Assemble the Stan data dict for the chosen model."""
     data = dict(
         N=int(np.asarray(x_fit).size),
         x_obs=np.asarray(x_fit, float),
@@ -347,6 +437,31 @@ def run_stan(
         xhi=float(XHI),
         Ng=int(NG),
     )
+    if kind == "marg":
+        if sig_fit is None or sig_sh is None:
+            raise ValueError(
+                "marg model needs sig_fit (per object) and sig_sh (per shell)"
+            )
+        data["sig"] = np.asarray(sig_fit, float)
+        data["sig_sh"] = np.asarray(sig_sh, float)
+        data["Nint"] = int(NINT)
+    return data
+
+
+def run_stan(
+    kind,
+    data,
+    chains=4,
+    warmup=1500,
+    sampling=1500,
+    adapt_delta=0.95,
+    max_treedepth=12,
+    seed=42,
+    show_progress=True,
+):
+    """MAP (optimize) + posterior (sample) for the chosen model.
+    Returns (map_par, flat) with flat an (Ndraws, 4) array in PARAMS order."""
+    model = get_model(kind)
 
     # ---- MAP: multi-start LBFGS (Stan = exact gradients, unconstrained scale) ----
     rng = np.random.default_rng(seed)
@@ -371,7 +486,7 @@ def run_stan(
         except Exception as e:
             print("  optimize trial failed:", e)
     map_par = best[1] if best is not None else np.array([14.0, -3.5, -1.3, 0.5])
-    print("  MAP:", dict(zip(PARAMS, np.round(map_par, 3))))
+    print(f"  [{kind}] MAP:", dict(zip(PARAMS, np.round(map_par, 3))))
 
     # ---- MCMC: NUTS, chains dispersed around the MAP ----
     inits = [
@@ -411,8 +526,25 @@ def run_stan(
         ndiv = int(np.sum(fit.method_variables()["divergent__"]))
     except Exception:
         ndiv = -1
-    print(f"  Rhat={rhat:.3f}  min ESS={ess:.0f}  divergences={ndiv}")
+    print(f"  [{kind}] Rhat={rhat:.3f}  min ESS={ess:.0f}  divergences={ndiv}")
     return map_par, flat
+
+
+def sigma_eff_per_shell(z, m_obs, sigma, mlim_sh, nsh=NSH, zmin=ZMIN, zmax=ZLIMIT):
+    """Representative boundary sigma per shell for the marginalised Lambda.
+    Uses the median sigma of detected groups NEAR the limit in each shell
+    (that is the scatter scale that smooths the cut), with fallbacks."""
+    z_edges = np.linspace(zmin, zmax, nsh + 1)
+    sig_global = float(np.median(sigma))
+    out = np.full(nsh, sig_global)
+    for j in range(nsh):
+        in_sh = (z >= z_edges[j]) & (z < z_edges[j + 1])
+        near = in_sh & (m_obs >= mlim_sh[j] - 0.25) & (m_obs <= mlim_sh[j] + 0.75)
+        if near.sum() >= 10:
+            out[j] = float(np.median(sigma[near]))
+        elif in_sh.sum() >= 5:
+            out[j] = float(np.median(sigma[in_sh]))
+    return out
 
 
 def summarise(flat):
@@ -578,15 +710,18 @@ def _prepare_fixed():
 
 
 def run_coverage(
+    model_kind="marg",
     n_real=50,
     seed0=1000,
     chains=4,
     warmup=1500,
     sampling=1500,
-    checkpoint="coverage_results.csv",
+    checkpoint=None,
 ):
+    if checkpoint is None:
+        checkpoint = f"coverage_{model_kind}.csv"
     print("=" * 60)
-    print(f"  COVERAGE LOOP: {n_real} realisations")
+    print(f"  COVERAGE LOOP [{model_kind}]: {n_real} realisations")
     print("=" * 60)
     fixed = _prepare_fixed()
     z, m_true, n_gama = fixed["z"], fixed["m_true"], fixed["n_gama"]
@@ -608,22 +743,28 @@ def run_coverage(
         m_obs = m_true + rng.normal(0, sigma)
 
         try:
-            mlim_func, _, kind, _ = turnover_mlim(z, m_obs)
+            mlim_func, _, tkind, _ = turnover_mlim(z, m_obs)
         except RuntimeError as e:
             print(f"  [real {r:02d}] mlim failed ({e}); skipped")
             continue
         mlim_sh = mlim_func(z_mids)
         above = m_obs > mlim_func(z)
         x_fit = m_obs[above]
+        sig_fit = sigma[above]
+        sig_sh = (
+            sigma_eff_per_shell(z, m_obs, sigma, mlim_sh)
+            if model_kind == "marg"
+            else None
+        )
         print(
-            f"\n[real {r:02d}] N_fit={x_fit.size}  mlim[{kind}] "
+            f"\n[real {r:02d}] N_fit={x_fit.size}  mlim[{tkind}] "
             f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
         )
 
+        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
         _, flat = run_stan(
-            x_fit,
-            mlim_sh,
-            V_sh,
+            model_kind,
+            data,
             chains=chains,
             warmup=warmup,
             sampling=sampling,
@@ -719,7 +860,7 @@ def plot_coverage(df, fname="coverage_results.pdf"):
 # ----------------------------------------------------------
 # 9. Drivers
 # ----------------------------------------------------------
-def run_real_pipeline():
+def run_real_pipeline(model_kind="marg"):
     print("Reading catalogues ...")
     groups, galaxies = load_catalogues(DATA_DIR)
     sky_frac = (
@@ -752,47 +893,99 @@ def run_real_pipeline():
 
     above = m_obs > mlim_func(z_obs)
     x_fit = m_obs[above]
+    sig_fit = sigma_obs[above]
     print(
         f"  N above mlim: {x_fit.size} / {m_obs.size} ({100 * x_fit.size / m_obs.size:.1f}%)"
     )
 
-    print("\nFitting (cmdstanpy) ...")
-    map_par, flat = run_stan(x_fit, mlim_sh, V_sh)
+    sig_sh = (
+        sigma_eff_per_shell(z_obs, m_obs, sigma_obs, mlim_sh)
+        if model_kind == "marg"
+        else None
+    )
+    data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
+
+    print(f"\nFitting [{model_kind}] (cmdstanpy) ...")
+    map_par, flat = run_stan(model_kind, data)
     res = summarise(flat)
-    plot_recovery(flat, z_obs, m_obs, x_fit, mlim_func, Vsurvey, turn_pts=turn_pts)
+    plot_recovery(
+        flat,
+        z_obs,
+        m_obs,
+        x_fit,
+        mlim_func,
+        Vsurvey,
+        turn_pts=turn_pts,
+        fname=f"recovery_{model_kind}.pdf",
+    )
     return res
 
 
-def run_selftest():
-    """Generate a sample DIRECTLY from the MRP under the model's own
-    generative assumptions and confirm the Stan model recovers it.
-    Isolates the statistical core from the data I/O."""
+def run_selftest(model_kind="marg"):
+    """Synthetic recovery, no data files. Confirms the chosen Stan model
+    recovers a known MRP.
+
+    simple: masses drawn from the MRP with a SHARP limit, no errors -> pure
+            likelihood/normalisation check (expected to PASS).
+    marg  : true masses from the MRP, Gaussian errors added, then selected on
+            the NOISY mass above the limit -> exercises the boundary + error
+            de-biasing. The simple model would be biased on this data; the
+            marginalised model should recover it.
+    """
     print("=" * 60)
-    print("  SELF-TEST: synthetic recovery (no data files)")
+    print(f"  SELF-TEST [{model_kind}]: synthetic recovery (no data files)")
     print("=" * 60)
     rng = np.random.default_rng(7)
 
-    sky_frac = 0.004
+    sky_frac = 0.001  # ~2k groups: enough to expose bias, fast to run
     z_mids, V_sh = shell_volumes(sky_frac)
     mlim_func = lambda z: 12.6 + 1.5 * z
     mlim_sh = mlim_func(z_mids)
 
-    mg = np.arange(10.0, XHI, 0.001)
-    phi_g = mrp_phi(mg, **TRUE)
-    x_list = []
-    for j in range(len(z_mids)):
-        mask = mg >= mlim_sh[j]
-        n_j = rng.poisson(V_sh[j] * _trapz(phi_g[mask], mg[mask]))
-        if n_j == 0:
-            continue
-        cdf = np.cumsum(phi_g[mask])
+    if model_kind == "simple":
+        # sharp limit, no errors
+        mg = np.arange(10.0, XHI, 0.001)
+        phi_g = mrp_phi(mg, **TRUE)
+        x_list = []
+        for j in range(len(z_mids)):
+            mask = mg >= mlim_sh[j]
+            n_j = rng.poisson(V_sh[j] * _trapz(phi_g[mask], mg[mask]))
+            if n_j == 0:
+                continue
+            cdf = np.cumsum(phi_g[mask])
+            cdf = cdf / cdf[-1]
+            x_list.append(np.interp(rng.random(n_j), cdf, mg[mask]))
+        x_fit = np.concatenate(x_list)
+        sig_fit = sig_sh = None
+    else:
+        # realistic: draw true masses well below the limit, add errors, select
+        # on the noisy mass. A constant sigma keeps the test clean and stresses
+        # the boundary.
+        sig0 = 0.30
+        m_floor = mlim_sh.min() - 5 * sig0  # generate below the limit too
+        mg = np.arange(m_floor, XHI, 0.001)
+        phi_g = mrp_phi(mg, **TRUE)
+        cdf = np.cumsum(phi_g)
         cdf = cdf / cdf[-1]
-        x_list.append(np.interp(rng.random(n_j), cdf, mg[mask]))
-    x_fit = np.concatenate(x_list)
-    print(f"  generated {x_fit.size} detected groups")
+        xt_list, z_list = [], []
+        for j in range(len(z_mids)):
+            n_j = rng.poisson(V_sh[j] * _trapz(phi_g, mg))
+            if n_j == 0:
+                continue
+            xt_list.append(np.interp(rng.random(n_j), cdf, mg))
+            z_list.append(np.full(n_j, z_mids[j]))
+        m_true = np.concatenate(xt_list)
+        z_all = np.concatenate(z_list)
+        m_obs = m_true + rng.normal(0, sig0, size=m_true.size)
+        above = m_obs > mlim_func(z_all)
+        x_fit = m_obs[above]
+        sig_fit = np.full(x_fit.size, sig0)
+        sig_sh = np.full(len(z_mids), sig0)
 
+    print(f"  generated {x_fit.size} groups above the limit")
+    data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
     map_par, flat = run_stan(
-        x_fit, mlim_sh, V_sh, warmup=1000, sampling=1000, show_progress=False
+        model_kind, data, warmup=600, sampling=600, show_progress=False
     )
     res = summarise(flat)
     tv = np.array([TRUE[p] for p in PARAMS])
@@ -806,6 +999,13 @@ def run_selftest():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--model",
+        choices=["simple", "marg"],
+        default="marg",
+        help="which likelihood: 'simple' (baseline) or 'marg' "
+        "(marginalised + boundary). Default marg.",
+    )
     ap.add_argument(
         "--selftest",
         action="store_true",
@@ -824,8 +1024,8 @@ if __name__ == "__main__":
     )
     args = ap.parse_args()
     if args.selftest:
-        run_selftest()
+        run_selftest(model_kind=args.model)
     elif args.coverage:
-        run_coverage(n_real=args.nreal)
+        run_coverage(model_kind=args.model, n_real=args.nreal)
     else:
-        run_real_pipeline()
+        run_real_pipeline(model_kind=args.model)
