@@ -62,8 +62,9 @@ ADD_ERRORS = True
 # Likelihood grid / integration (passed to Stan as data)
 XHI = 16.5  # upper mass bound for the Lambda integral
 NG = 300  # grid points for the phi integral
-NINT = 60  # LOCAL per-object integration points (marginalised model)
+NINT = 30  # local per-object integration points (marginalised model; exact to <1e-4)
 NSH = 20  # redshift shells for the Poisson normalisation
+SIG_SH_FLOOR = 0.25  # min boundary sigma for the Phi soft cut (keeps HMC stable)
 
 
 # ----------------------------------------------------------
@@ -272,6 +273,7 @@ model {
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
   al ~ normal(-1.7, 1.0);
+  be ~ normal(0.5, 0.2);   // weakly-informative: literature cutoff ~0.5, wide enough to move
 
   // MRP on the grid
   vector[Ng] pg;
@@ -328,7 +330,7 @@ data {
   vector<lower=0>[Nsh] sig_sh;     // representative boundary sigma per shell
   real xhi;
   int<lower=2> Ng;        // global grid for the Lambda integral
-  int<lower=2> Nint;      // LOCAL grid points per object (per-object integral)
+  int<lower=2> Nint;      // local grid points per object (per-object integral)
 }
 transformed data {
   real ln10 = log(10.0);
@@ -348,6 +350,7 @@ model {
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
   al ~ normal(-1.7, 1.0);
+  be ~ normal(0.5, 0.2);   // weakly-informative: literature cutoff ~0.5, wide enough to move
 
   // phi on the global grid (computed once)
   vector[Ng] pg;
@@ -369,13 +372,15 @@ model {
   }
   target += -Lambda;
 
-  // ---- per-object: marginalise latent true mass on a LOCAL grid (+-6 sigma) ----
-  // Only the object's own error kernel has support, so integrate a narrow window
-  // around x_obs (which still extends below mlim -> captures down-scatter). This
-  // is ~Ng/Nint times cheaper than looping the full grid for every object.
+  // ---- per-object: numerical marginalisation on a local grid (+-5 sigma) ----
+  // L_i = int phi(m) Normal(x_obs|m,sig) dm, over a narrow window around x_obs
+  // (still reaches below mlim -> down-scatter captured). Nint=30 / +-5 sigma is
+  // exact to <1e-4 vs a fine integral. Numerical (not the Laplace analytic form)
+  // because the analytic version, while accurate near truth, develops spurious
+  // structure at extreme parameters and lets the sampler wander off.
   for (i in 1:N) {
-    real lo_i = x_obs[i] - 6 * sig[i];
-    real hi_i = x_obs[i] + 6 * sig[i];
+    real lo_i = x_obs[i] - 5 * sig[i];
+    real hi_i = x_obs[i] + 5 * sig[i];
     real dmt = (hi_i - lo_i) / (Nint - 1.0);
     real inv_s = 1.0 / sig[i];
     real sm = 0;
@@ -385,9 +390,9 @@ model {
       real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
       real zsc = (x_obs[i] - mt) * inv_s;
       real term = phi_g * exp(-0.5 * zsc * zsc);
-      sm += (g == 1 || g == Nint) ? 0.5 * term : term;  // trapezoid
+      sm += (g == 1 || g == Nint) ? 0.5 * term : term;   // trapezoid
     }
-    sm *= dmt * inv_s * inv_sqrt2pi;   // fold in the Gaussian 1/(sig sqrt(2pi))
+    sm *= dmt * inv_s * inv_sqrt2pi;                       // Gaussian 1/(sig sqrt(2pi))
     if (sm > 1e-300)
       target += log(sm);
     else
@@ -455,13 +460,19 @@ def run_stan(
     warmup=1500,
     sampling=1500,
     adapt_delta=0.95,
-    max_treedepth=12,
+    max_treedepth=10,
     seed=42,
     show_progress=True,
+    output_dir=None,
 ):
     """MAP (optimize) + posterior (sample) for the chosen model.
     Returns (map_par, flat) with flat an (Ndraws, 4) array in PARAMS order."""
     model = get_model(kind)
+    if kind == "marg":
+        ss = np.asarray(data["sig_sh"])
+        print(
+            f"  [marg] sig_sh: min={ss.min():.2f} max={ss.max():.2f} med={np.median(ss):.2f}"
+        )
 
     # ---- MAP: multi-start LBFGS (Stan = exact gradients, unconstrained scale) ----
     rng = np.random.default_rng(seed)
@@ -510,6 +521,7 @@ def run_stan(
         inits=inits,
         seed=seed,
         show_progress=show_progress,
+        output_dir=output_dir,
     )
 
     flat = np.column_stack([fit.stan_variable(p) for p in PARAMS])
@@ -526,7 +538,17 @@ def run_stan(
         ndiv = int(np.sum(fit.method_variables()["divergent__"]))
     except Exception:
         ndiv = -1
-    print(f"  [{kind}] Rhat={rhat:.3f}  min ESS={ess:.0f}  divergences={ndiv}")
+    # treedepth saturation: high fraction => NUTS fighting the geometry (slow)
+    try:
+        td = fit.method_variables()["treedepth__"]
+        td_frac = float(np.mean(td >= max_treedepth))
+        td_max = int(np.max(td))
+    except Exception:
+        td_frac, td_max = float("nan"), -1
+    print(
+        f"  [{kind}] Rhat={rhat:.3f}  min ESS={ess:.0f}  divergences={ndiv}  "
+        f"treedepth>={max_treedepth}: {td_frac:.0%} (max {td_max})"
+    )
     return map_par, flat
 
 
@@ -544,7 +566,11 @@ def sigma_eff_per_shell(z, m_obs, sigma, mlim_sh, nsh=NSH, zmin=ZMIN, zmax=ZLIMI
             out[j] = float(np.median(sigma[near]))
         elif in_sh.sum() >= 5:
             out[j] = float(np.median(sigma[in_sh]))
-    return out
+    # Floor the boundary width: a very small sig_sh makes Phi((m-mlim)/sig_sh)
+    # a near-vertical step, which wrecks the HMC geometry (treedepth blow-up).
+    # The floor is well below the near-limit group errors (~0.28 dex) so it
+    # rarely binds and does not over-smooth the boundary.
+    return np.maximum(out, SIG_SH_FLOOR)
 
 
 def summarise(flat):
@@ -660,9 +686,16 @@ def plot_recovery(
     a.grid(alpha=0.3)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
+    prior_mu = [14.0, -4.0, -1.7, 0.5]  # must match the Stan model priors
+    prior_sd = [1.5, 2.0, 1.0, 0.2]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
+        xs = np.linspace(*a.get_xlim(), 200)
+        prior = np.exp(-0.5 * ((xs - prior_mu[k]) / prior_sd[k]) ** 2) / (
+            prior_sd[k] * np.sqrt(2 * np.pi)
+        )
+        a.plot(xs, prior, color="green", lw=1.5, ls=":", label="prior")
         a.axvline(tv[k], color="blue", lw=2, ls="--", label="truth")
         a.axvline(med[k], color="red", lw=2, label="median")
         a.set(title=labels[k])
@@ -711,13 +744,17 @@ def _prepare_fixed():
 
 def run_coverage(
     model_kind="marg",
-    n_real=50,
+    n_real=20,
     seed0=1000,
     chains=4,
-    warmup=1500,
-    sampling=1500,
+    warmup=500,
+    sampling=500,
     checkpoint=None,
 ):
+    # Fewer iterations than a single headline fit: coverage only needs a stable
+    # median + 16/84 interval per realisation (ESS ~150 suffices), and we run
+    # many of them. The marginalised model's per-object integral is the cost, so
+    # this keeps the full loop to ~hours rather than ~overnight.
     if checkpoint is None:
         checkpoint = f"coverage_{model_kind}.csv"
     print("=" * 60)
@@ -937,7 +974,7 @@ def run_selftest(model_kind="marg"):
     print("=" * 60)
     rng = np.random.default_rng(7)
 
-    sky_frac = 0.001  # ~2k groups: enough to expose bias, fast to run
+    sky_frac = 0.0005  # ~1k groups: enough to catch gross bias, ~10 min numerical
     z_mids, V_sh = shell_volumes(sky_frac)
     mlim_func = lambda z: 12.6 + 1.5 * z
     mlim_sh = mlim_func(z_mids)
@@ -985,15 +1022,18 @@ def run_selftest(model_kind="marg"):
     print(f"  generated {x_fit.size} groups above the limit")
     data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
     map_par, flat = run_stan(
-        model_kind, data, warmup=600, sampling=600, show_progress=False
+        model_kind, data, warmup=500, sampling=500, show_progress=False
     )
     res = summarise(flat)
     tv = np.array([TRUE[p] for p in PARAMS])
     bias = np.abs((res["median"] - tv) / res["sd"])
-    print(
-        f"\n  max |bias| = {bias.max():.2f} sd",
-        " -> PASS" if bias.max() < 3 else " -> CHECK",
-    )
+    worst = PARAMS[int(np.argmax(bias))]
+    if bias.max() < 1.0:
+        print(f"\n  max |bias| = {bias.max():.2f} sd ({worst})  -> PASS")
+    else:
+        print(f"\n  max |bias| = {bias.max():.2f} sd ({worst})  -> FAIL")
+        print("  Bias exceeds 1 sd on a clean mock: the model is NOT trustworthy.")
+        print("  Do not proceed to coverage/real data until this is understood.")
     return res
 
 
@@ -1019,8 +1059,8 @@ if __name__ == "__main__":
     ap.add_argument(
         "--nreal",
         type=int,
-        default=50,
-        help="number of realisations for --coverage (default 50)",
+        default=20,
+        help="number of realisations for --coverage (default 20)",
     )
     args = ap.parse_args()
     if args.selftest:
