@@ -47,7 +47,12 @@ def build():
     sig_sh = R.sigma_eff_per_shell(z_obs, m_obs, sigma_obs, mlim_sh)
     above = m_obs > mlim_func(z_obs)
     return dict(
-        x=m_obs[above], sig=sigma_obs[above], mlim_sh=mlim_sh, V_sh=V_sh, sig_sh=sig_sh
+        x=m_obs[above],
+        sig=sigma_obs[above],
+        z=z_obs[above],
+        mlim_sh=mlim_sh,
+        V_sh=V_sh,
+        sig_sh=sig_sh,
     )
 
 
@@ -77,6 +82,25 @@ def lam_sharp(th, D):
     )
 
 
+def lam_sigdist(th, D):
+    """Lambda with the boundary averaged over the REAL per-shell sigma
+    distribution: w(m) = mean_k Phi((m - mlim_j)/sig_k), no single sig_sh,
+    no floor. This is the candidate fix."""
+    ms, lp, al, be = th
+    mg = np.linspace(D["mlim_sh"].min() - 2, R.XHI, 1200)
+    pg = phi(mg, ms, lp, al, be)
+    z_edges = np.linspace(R.ZMIN, R.ZLIMIT, R.NSH + 1)
+    Lam = 0.0
+    for j in range(len(D["V_sh"])):
+        in_sh = (D["z"] >= z_edges[j]) & (D["z"] < z_edges[j + 1])
+        sigs = D["sig"][in_sh]
+        if sigs.size < 3:
+            sigs = D["sig"]  # fallback for sparse shells
+        w = norm.cdf((mg[:, None] - D["mlim_sh"][j]) / sigs[None, :]).mean(axis=1)
+        Lam += D["V_sh"][j] * np.trapezoid(pg * w, mg)
+    return Lam
+
+
 def sumL_marg(th, D, Nint=41):
     ms, lp, al, be = th
     x, sig = D["x"], D["sig"]
@@ -104,6 +128,12 @@ def negll_simple(th, D):
     if not (0.1 < th[3] < 2.0):
         return 1e12
     return -(-lam_sharp(th, D) + sumL_simple(th, D))
+
+
+def negll_marg_sigdist(th, D):
+    if not (0.1 < th[3] < 2.0):
+        return 1e12
+    return -(-lam_sigdist(th, D) + sumL_marg(th, D))
 
 
 def mle(negll, D, label):
@@ -146,6 +176,25 @@ def main():
     Dt["sig"] = np.full(D["x"].size, 0.05)
     Dt["sig_sh"] = np.full(len(D["sig_sh"]), 0.05)
     mle(negll_marg, Dt, "MARG (sigma->0)")
+
+    # KEY FIX TEST: keep the REAL mass-dependent per-object sigma, but set sig_sh
+    # to the real per-object median (~0.14) with NO 0.25 floor. If alpha recovers,
+    # the fix is simply: make sig_sh consistent with the per-object sigma.
+    Dm = dict(D)
+    Dm["sig_sh"] = np.full(len(D["sig_sh"]), float(np.median(D["sig"])))
+    mle(negll_marg, Dm, "MARG (sig_sh=med, no floor)")
+
+    # And: per-shell median of the actual near-limit sigma, still no floor
+    print(
+        f"\n  (for reference: per-object sig median={np.median(D['sig']):.3f}, "
+        f"current floored sig_sh={D['sig_sh'][0]:.2f})"
+    )
+
+    print("\n--- CANDIDATE FIX: Lambda averaged over the real sigma distribution ---")
+    mle(negll_marg_sigdist, D, "MARG (sig-dist avg, no floor)")
+    print(
+        "  If al ~ -1.27 here with NO tuning, this is the fix to put in the Stan model."
+    )
 
     print("\n  Reading it:")
     print(
