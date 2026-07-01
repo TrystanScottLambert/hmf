@@ -272,7 +272,7 @@ parameters {
 model {
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
-  al ~ normal(-1.7, 1.0);
+  al ~ normal(-1.3, 0.3);   // tightened: literature slope ~ -1.3, regularises the degeneracy
   be ~ normal(0.5, 0.2);   // weakly-informative: literature cutoff ~0.5, wide enough to move
 
   // MRP on the grid
@@ -349,7 +349,7 @@ parameters {
 model {
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
-  al ~ normal(-1.7, 1.0);
+  al ~ normal(-1.3, 0.3);   // tightened: literature slope ~ -1.3, regularises the degeneracy
   be ~ normal(0.5, 0.2);   // weakly-informative: literature cutoff ~0.5, wide enough to move
 
   // phi on the global grid (computed once)
@@ -686,8 +686,8 @@ def plot_recovery(
     a.grid(alpha=0.3)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu = [14.0, -4.0, -1.7, 0.5]  # must match the Stan model priors
-    prior_sd = [1.5, 2.0, 1.0, 0.2]
+    prior_mu = [14.0, -4.0, -1.3, 0.5]  # must match the Stan model priors
+    prior_sd = [1.5, 2.0, 0.3, 0.2]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
