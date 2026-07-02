@@ -410,7 +410,88 @@ model {
 }
 """
 
-_STAN = {"simple": SIMPLE_CODE, "marg": MARG_CODE}
+# Verbatim port of the R production model (run.R stan_marg): wide priors
+# (al ~ N(-1.3,1.0), be unconstrained within [0.1,2]), per-object integral
+# from mlim upward, Lambda via a sharp cut on a cumulative grid. This exists
+# ONLY to reproduce the R fit on the same GAMA data (a port-consistency
+# check), NOT for the mock recovery -- do not confuse it with MARG_CODE.
+GAMA_CODE = r"""
+data {
+  int<lower=1> N;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;
+  vector[N] mlim;
+  int<lower=1> Nsh;
+  vector[Nsh] V_sh;
+  vector[Nsh] mlim_sh;
+  real xhi;
+  int<lower=2> Ng;
+  int<lower=2> Nint;
+}
+transformed data {
+  real ln10 = log(10.0);
+  real xlo = min(mlim_sh) - 0.5;
+  real dx = (xhi - xlo) / (Ng - 1.0);
+  vector[Ng] xg;
+  for (k in 1:Ng) xg[k] = xlo + (k - 1) * dx;
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+}
+model {
+  ms ~ normal(14.0, 1.5);
+  lp ~ normal(-4.0, 2.0);
+  al ~ normal(-1.3, 1.0);
+
+  vector[Ng] pg;
+  for (k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+  }
+  vector[Ng] cum;
+  cum[Ng] = 0;
+  for (kr in 1:(Ng - 1)) {
+    int k = Ng - kr;
+    cum[k] = cum[k + 1] + 0.5 * (pg[k] + pg[k + 1]) * dx;
+  }
+  real Lambda = 0;
+  for (j in 1:Nsh) {
+    int k0 = 1;
+    for (k in 1:Ng) if (xg[k] <= mlim_sh[j]) k0 = k;
+    if (k0 >= Ng) k0 = Ng - 1;
+    Lambda += V_sh[j] * cum[k0];
+  }
+  target += -Lambda;
+
+  for (i in 1:N) {
+    real lo_i = mlim[i];
+    real hi_i = fmin(xhi, fmax(x_obs[i] + 5 * sig[i], mlim[i] + 8 * sig[i]));
+    real dmt = (hi_i - lo_i) / (Nint - 1.0);
+    if (dmt < 1e-6) {
+      target += -100;
+    } else {
+      real sum_trap = 0;
+      for (g in 1:Nint) {
+        real mt_g = lo_i + (g - 1) * dmt;
+        real u = mt_g - ms;
+        real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+        real gauss_g = exp(-0.5 * square((x_obs[i] - mt_g) / sig[i])) / (sig[i] * 2.5066283);
+        real integrand = phi_g * gauss_g;
+        if (g == 1 || g == Nint) sum_trap += 0.5 * integrand;
+        else sum_trap += integrand;
+      }
+      sum_trap *= dmt;
+      if (sum_trap > 1e-30) target += log(sum_trap);
+      else target += -100;
+    }
+  }
+}
+"""
+
+_STAN = {"simple": SIMPLE_CODE, "marg": MARG_CODE, "gama": GAMA_CODE}
 _MODELS = {}
 
 # Compile OUTSIDE any iCloud-synced tree (e.g. ~/Desktop, ~/Documents).
@@ -440,7 +521,7 @@ def get_model(kind):
     return _MODELS[kind]
 
 
-def build_data(kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=None):
+def build_data(kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=None, mlim_obj=None):
     """Assemble the Stan data dict for the chosen model."""
     data = dict(
         N=int(np.asarray(x_fit).size),
@@ -459,6 +540,13 @@ def build_data(kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=None):
         data["sig"] = np.asarray(sig_fit, float)
         data["sig_sh"] = np.asarray(sig_sh, float)
         data["Nint"] = int(NINT)
+    elif kind == "gama":
+        # verbatim R port: needs per-object sigma AND per-object mlim
+        if sig_fit is None or mlim_obj is None:
+            raise ValueError("gama model needs sig_fit and mlim_obj (per-object mlim)")
+        data["sig"] = np.asarray(sig_fit, float)
+        data["mlim"] = np.asarray(mlim_obj, float)
+        data["Nint"] = 100  # match run.R
     return data
 
 
@@ -979,6 +1067,161 @@ def run_real_pipeline(model_kind="marg"):
     return res
 
 
+def load_real_gama(fits_path):
+    """Read the GAMA G3C group catalogue and build observed log-masses exactly
+    as run.R does: A=13.9 dynamical mass, multiplicity error model, and the
+    empirical masscorr(Nfof) calibration. Returns (log_mass, sigma, z, Nfof).
+    Column names/units follow run.R; adjust here if the FITS schema differs."""
+    from astropy.io import fits as afits
+
+    parsec, Gnewton, msol = 3.0857e16, 6.67408e-11, 1.988e30
+    with afits.open(fits_path) as hdul:
+        t = hdul[1].data
+    Nfof = np.asarray(t["Nfof"], float)
+    Zfof = np.asarray(t["Zfof"], float)
+    MassAfunc = np.asarray(t["MassAfunc"], float)
+    VelDisp = np.asarray(t["VelDisp"], float)
+    Rad50 = np.asarray(t["Rad50"], float)
+    IterCenDec = np.asarray(t["IterCenDec"], float)
+
+    sel = (
+        (Nfof > MULTI - 1)
+        & (Zfof < ZLIMIT)
+        & (Zfof > ZMIN)
+        & (MassAfunc > 1e1)
+        & (IterCenDec > -3.5)
+    )
+    Nfof, Zfof, VelDisp, Rad50 = Nfof[sel], Zfof[sel], VelDisp[sel], Rad50[sel]
+
+    # A=13.9 dynamical mass (Msun), h-scaled as in run.R
+    mymass = (
+        13.9
+        * (VelDisp * 1000) ** 2
+        * Rad50
+        * parsec
+        * 1e6
+        / (Gnewton * msol)
+        * (100 / H0)
+    )
+
+    # multiplicity error model (run.R table, xx = 3..22; NA -> 0.03; floor 0.1)
+    xx = np.arange(3, 23)
+    yy = np.array(
+        [
+            0.68389355,
+            0.38719116,
+            0.40325591,
+            0.32696735,
+            0.27680685,
+            0.24018684,
+            0.20226682,
+            0.18645475,
+            0.17437005,
+            0.14271506,
+            0.13922450,
+            0.13482418,
+            0.13741619,
+            0.11715141,
+            0.12134983,
+            0.10078830,
+            0.09944761,
+            0.09913166,
+            0.08590223,
+            0.07588408,
+        ]
+    )
+    err = np.interp(Nfof, xx, yy, left=np.nan, right=np.nan)
+    err = np.where(np.isfinite(err), err, 0.03)
+    err = np.where(err < 0.1, 0.1, err)
+
+    # empirical mass corrections indexed by Nfof (run.R, 1-based; out-of-range -> 0)
+    masscorr = np.array(
+        [
+            0.0,
+            0.0,
+            -2.672595e-01,
+            -1.513503e-01,
+            -1.259069e-01,
+            -9.006064e-02,
+            -5.466009e-02,
+            -6.666895e-02,
+            -1.988694e-02,
+            -2.439581e-02,
+            -2.067060e-02,
+            -1.812964e-02,
+            -1.556899e-02,
+            -1.313664e-02,
+            -1.743112e-02,
+            -7.965513e-03,
+            -1.257178e-02,
+            -7.064037e-03,
+            -3.963656e-03,
+            -1.271533e-02,
+            -2.664687e-03,
+            -1.691287e-03,
+        ]
+    )
+    idx = Nfof.astype(int) - 1
+    mc = np.where(
+        (idx >= 0) & (idx < masscorr.size),
+        masscorr[np.clip(idx, 0, masscorr.size - 1)],
+        0.0,
+    )
+    log_mass = np.log10(mymass / 10**mc)
+
+    good = np.isfinite(log_mass) & (log_mass > 10) & (log_mass < 17) & np.isfinite(err)
+    return log_mass[good], err[good], Zfof[good], Nfof[good].astype(int)
+
+
+def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="gama"):
+    """Fit the MRP to the REAL GAMA group catalogue, reproducing run.R with the
+    verbatim R-port model ('gama'). This is a port-consistency check against the
+    R fit, NOT a mock recovery -- 'bias vs truth' and the plot 'truth' lines are
+    Driver+22 values, so they read as 'offset from Driver+22'."""
+    print(f"Reading GAMA catalogue: {fits_path}")
+    log_mass, sigma, z, nfof = load_real_gama(fits_path)
+    sky_frac = sky_area_deg2_val * (np.pi / 180) ** 2 / (4 * np.pi)
+    print(
+        f"  N groups: {log_mass.size}   mass {log_mass.min():.2f}..{log_mass.max():.2f} "
+        f"(med {np.median(log_mass):.2f})   sigma med {np.median(sigma):.2f}"
+    )
+
+    print("Turnover mlim(z) ...")
+    mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass)
+    print(
+        f"  mlim(z) [{tkind}]: mlim({ZMIN})={mlim_func(ZMIN):.2f} "
+        f"mlim({ZLIMIT})={mlim_func(ZLIMIT):.2f}"
+    )
+
+    z_mids, V_sh = shell_volumes(sky_frac)
+    Vsurvey = float(V_sh.sum())
+    mlim_sh = mlim_func(z_mids)
+
+    mlim_per = mlim_func(z)
+    above = log_mass > mlim_per
+    x_fit, sig_fit, mlim_obj = log_mass[above], sigma[above], mlim_per[above]
+    print(
+        f"  N above mlim: {x_fit.size} / {log_mass.size} "
+        f"({100 * x_fit.size / log_mass.size:.1f}%)"
+    )
+
+    data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, mlim_obj=mlim_obj)
+    print(f"\nFitting [{model_kind}] on real GAMA (cmdstanpy) ...")
+    map_par, flat = run_stan(model_kind, data)
+    res = summarise(flat)  # 'bias vs truth' here = offset vs Driver+22
+    plot_recovery(
+        flat,
+        z,
+        log_mass,
+        x_fit,
+        mlim_func,
+        Vsurvey,
+        turn_pts=turn_pts,
+        fname="recovery_gama.pdf",
+    )
+    return res
+
+
 def run_selftest(model_kind="marg"):
     """Synthetic recovery, no data files. Confirms the chosen Stan model
     recovers a known MRP.
@@ -1083,10 +1326,29 @@ if __name__ == "__main__":
         default=20,
         help="number of realisations for --coverage (default 20)",
     )
+    ap.add_argument(
+        "--realgama",
+        action="store_true",
+        help="fit the REAL GAMA catalogue with the verbatim R-port model "
+        "(reproduces run.R; a port check, not a mock recovery)",
+    )
+    ap.add_argument(
+        "--gama-fits",
+        default="../data/G3CFoFGroupv10.fits",
+        help="path to the GAMA G3C group FITS file (for --realgama)",
+    )
+    ap.add_argument(
+        "--gama-area",
+        type=float,
+        default=179.92,
+        help="GAMA sky area in deg^2 (for --realgama; default 179.92)",
+    )
     args = ap.parse_args()
     if args.selftest:
         run_selftest(model_kind=args.model)
     elif args.coverage:
         run_coverage(model_kind=args.model, n_real=args.nreal)
+    elif args.realgama:
+        run_real_gama(args.gama_fits, sky_area_deg2_val=args.gama_area)
     else:
         run_real_pipeline(model_kind=args.model)
