@@ -273,7 +273,7 @@ model {
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
   al ~ normal(-1.3, 0.3);   // tightened: literature slope ~ -1.3, regularises the degeneracy
-  be ~ normal(0.47, 0.05);   // TIGHT: cutoff pinned near Driver+22 (0.47); reported as prior-set
+  be ~ normal(0.47, 0.02);   // EFFECTIVELY FIXED at Driver+22 cutoff (0.47); reported as fixed
 
   // MRP on the grid
   vector[Ng] pg;
@@ -350,7 +350,7 @@ model {
   ms ~ normal(14.0, 1.5);
   lp ~ normal(-4.0, 2.0);
   al ~ normal(-1.3, 0.3);   // tightened: literature slope ~ -1.3, regularises the degeneracy
-  be ~ normal(0.47, 0.05);   // TIGHT: cutoff pinned near Driver+22 (0.47); reported as prior-set
+  be ~ normal(0.47, 0.02);   // EFFECTIVELY FIXED at Driver+22 cutoff (0.47); reported as fixed
 
   // phi on the global grid (computed once)
   vector[Ng] pg;
@@ -687,7 +687,7 @@ def plot_recovery(
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
     prior_mu = [14.0, -4.0, -1.3, 0.47]  # must match the Stan model priors
-    prior_sd = [1.5, 2.0, 0.3, 0.05]
+    prior_sd = [1.5, 2.0, 0.3, 0.02]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
@@ -836,7 +836,7 @@ def run_coverage(
 def report_coverage(df):
     # prior widths (must match the Stan model priors) -- to flag which
     # parameters are data-constrained vs prior-driven on this sample.
-    prior_sd = {"ms": 1.5, "lp": 2.0, "al": 0.3, "be": 0.05}
+    prior_sd = {"ms": 1.5, "lp": 2.0, "al": 0.3, "be": 0.02}
     print("\n" + "=" * 78)
     print(f"  COVERAGE SUMMARY over {len(df)} realisations")
     print("=" * 78)
