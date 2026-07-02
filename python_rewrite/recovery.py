@@ -47,7 +47,9 @@ _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 DATA_DIR = "/Users/00115372/Desktop/mock_catalogs/offical_waves_mocks/v0.5.0"
 
 # Driver+22 MRP = injected truth
-TRUE = dict(ms=13.51, lp=-3.19, al=-1.27, be=0.47)
+TRUE = dict(
+    ms=14.13, lp=-3.96, al=-1.68, be=0.63
+)  # Driver+22 (2022) MRP abstract values
 PARAMS = ["ms", "lp", "al", "be"]
 
 # Cosmology
@@ -57,8 +59,8 @@ H0, OMEGA_M = 67.37, 0.3147
 ZMIN, ZLIMIT = 0.01, 0.25
 MULTI = 5  # min members for a detection
 # Selection band + limit. GAMA: r_SDSS < 19.8 ; WAVES: Z_VISTA < 21.1 (deeper NIR).
-SEL_COL = "total_ap_dust_Z_VISTA"
-MAG_LIMIT = 21.1
+SEL_COL = "total_ap_dust_r_SDSS"
+MAG_LIMIT = 19.8
 ADD_ERRORS = True
 
 # Likelihood grid / integration (passed to Stan as data)
@@ -279,10 +281,10 @@ parameters {
   real<lower=0.1, upper=2.0> be;
 }
 model {
-  ms ~ normal(14.0, 1.5);
-  lp ~ normal(-4.0, 2.0);
-  al ~ normal(-1.3, 0.3);   // tightened: literature slope ~ -1.3, regularises the degeneracy
-  be ~ normal(0.47, 0.02);   // EFFECTIVELY FIXED at Driver+22 cutoff (0.47); reported as fixed
+  ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
+  lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
+  al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
+  be ~ normal(0.63, 0.02);    // FIXED at Driver+22 cutoff (0.63)
 
   // MRP on the grid
   vector[Ng] pg;
@@ -356,10 +358,10 @@ parameters {
   real<lower=0.1, upper=2.0> be;
 }
 model {
-  ms ~ normal(14.0, 1.5);
-  lp ~ normal(-4.0, 2.0);
-  al ~ normal(-1.3, 0.3);   // tightened: literature slope ~ -1.3, regularises the degeneracy
-  be ~ normal(0.47, 0.02);   // EFFECTIVELY FIXED at Driver+22 cutoff (0.47); reported as fixed
+  ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
+  lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
+  al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
+  be ~ normal(0.63, 0.02);    // FIXED at Driver+22 cutoff (0.63)
 
   // phi on the global grid (computed once)
   vector[Ng] pg;
@@ -783,8 +785,8 @@ def plot_recovery(
     a.grid(alpha=0.3)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu = [14.0, -4.0, -1.3, 0.47]  # must match the Stan model priors
-    prior_sd = [1.5, 2.0, 0.3, 0.02]
+    prior_mu = [14.13, -3.96, -1.68, 0.63]  # must match the Stan model priors
+    prior_sd = [0.42, 0.69, 0.22, 0.02]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
@@ -933,7 +935,7 @@ def run_coverage(
 def report_coverage(df):
     # prior widths (must match the Stan model priors) -- to flag which
     # parameters are data-constrained vs prior-driven on this sample.
-    prior_sd = {"ms": 1.5, "lp": 2.0, "al": 0.3, "be": 0.02}
+    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.02}
     print("\n" + "=" * 78)
     print(f"  COVERAGE SUMMARY over {len(df)} realisations")
     print("=" * 78)
@@ -1173,11 +1175,14 @@ def load_real_gama(fits_path):
     return log_mass[good], err[good], Zfof[good], Nfof[good].astype(int)
 
 
-def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="gama"):
-    """Fit the MRP to the REAL GAMA group catalogue, reproducing run.R with the
-    verbatim R-port model ('gama'). This is a port-consistency check against the
-    R fit, NOT a mock recovery -- 'bias vs truth' and the plot 'truth' lines are
-    Driver+22 values, so they read as 'offset from Driver+22'."""
+def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
+    """Fit the MRP to the REAL GAMA group catalogue using OUR developed model
+    ('marg' by default, with the current tight cutoff/slope priors; 'gama' =
+    verbatim R port, kept only for a pure port-check). load_real_gama does the
+    run.R data prep (A=13.9 masses, multiplicity error model); the FIT is our
+    marginalised model. 'bias vs truth' and the plot 'truth' lines are Driver+22,
+    so read them as 'offset vs Driver+22' -- with tight priors, be/al are
+    prior-set near Driver by construction; M* and logphi* are the measurements."""
     print(f"Reading GAMA catalogue: {fits_path}")
     log_mass, sigma, z, nfof = load_real_gama(fits_path)
     sky_frac = sky_area_deg2_val * (np.pi / 180) ** 2 / (4 * np.pi)
@@ -1199,16 +1204,25 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="gama"):
 
     mlim_per = mlim_func(z)
     above = log_mass > mlim_per
-    x_fit, sig_fit, mlim_obj = log_mass[above], sigma[above], mlim_per[above]
+    x_fit, sig_fit = log_mass[above], sigma[above]
     print(
         f"  N above mlim: {x_fit.size} / {log_mass.size} "
         f"({100 * x_fit.size / log_mass.size:.1f}%)"
     )
 
-    data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, mlim_obj=mlim_obj)
+    if model_kind == "marg":
+        sig_sh = sigma_eff_per_shell(z, log_mass, sigma, mlim_sh)
+        data = build_data("marg", x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
+    elif model_kind == "gama":
+        data = build_data(
+            "gama", x_fit, sig_fit, mlim_sh, V_sh, mlim_obj=mlim_per[above]
+        )
+    else:
+        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh)
+
     print(f"\nFitting [{model_kind}] on real GAMA (cmdstanpy) ...")
     map_par, flat = run_stan(model_kind, data)
-    res = summarise(flat)  # 'bias vs truth' here = offset vs Driver+22
+    res = summarise(flat)  # 'bias vs truth' = offset vs Driver+22
     plot_recovery(
         flat,
         z,
@@ -1217,7 +1231,7 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="gama"):
         mlim_func,
         Vsurvey,
         turn_pts=turn_pts,
-        fname="recovery_gama.pdf",
+        fname=f"recovery_gama_{model_kind}.pdf",
     )
     return res
 
@@ -1329,8 +1343,7 @@ if __name__ == "__main__":
     ap.add_argument(
         "--realgama",
         action="store_true",
-        help="fit the REAL GAMA catalogue with the verbatim R-port model "
-        "(reproduces run.R; a port check, not a mock recovery)",
+        help="fit the REAL GAMA catalogue (our marg model by default)",
     )
     ap.add_argument(
         "--gama-fits",
@@ -1343,12 +1356,21 @@ if __name__ == "__main__":
         default=179.92,
         help="GAMA sky area in deg^2 (for --realgama; default 179.92)",
     )
+    ap.add_argument(
+        "--gama-model",
+        choices=["marg", "gama", "simple"],
+        default="marg",
+        help="model for --realgama: 'marg' (our developed model, default) "
+        "or 'gama' (verbatim R port, port-check only)",
+    )
     args = ap.parse_args()
     if args.selftest:
         run_selftest(model_kind=args.model)
     elif args.coverage:
         run_coverage(model_kind=args.model, n_real=args.nreal)
     elif args.realgama:
-        run_real_gama(args.gama_fits, sky_area_deg2_val=args.gama_area)
+        run_real_gama(
+            args.gama_fits, sky_area_deg2_val=args.gama_area, model_kind=args.gama_model
+        )
     else:
         run_real_pipeline(model_kind=args.model)
