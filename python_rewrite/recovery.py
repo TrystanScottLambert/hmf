@@ -56,7 +56,9 @@ H0, OMEGA_M = 67.37, 0.3147
 # Survey / selection
 ZMIN, ZLIMIT = 0.01, 0.25
 MULTI = 5  # min members for a detection
-MAG_LIMIT = 19.8  # r-band limit
+# Selection band + limit. GAMA: r_SDSS < 19.8 ; WAVES: Z_VISTA < 21.1 (deeper NIR).
+SEL_COL = "total_ap_dust_Z_VISTA"
+MAG_LIMIT = 21.1
 ADD_ERRORS = True
 
 # Likelihood grid / integration (passed to Stan as data)
@@ -138,14 +140,21 @@ def abundance_match(groups, sky_frac):
 
 
 def gama_select(gv, galaxies):
-    """Detection = >= MULTI galaxies brighter than MAG_LIMIT (log Mstar > 8).
+    """Detection = >= MULTI galaxies brighter than MAG_LIMIT in SEL_COL
+    (and log Mstar > 8).
 
     NOTE: log_mstar_total is log10(Mstar/Msun) (~8-12), so the stellar-mass
     floor is `> 8`, i.e. log10(1e8) -- NOT `> 1e8`."""
+    if SEL_COL not in galaxies.columns:
+        raise KeyError(
+            f"selection column {SEL_COL!r} not in galaxy catalogue; "
+            f"available magnitude-like columns: "
+            f"{[c for c in galaxies.columns if 'ap_dust' in c or 'mag' in c.lower()]}"
+        )
     gal = galaxies[
         (galaxies["id_fof"] != -1)
         & (galaxies["log_mstar_total"] > 8)
-        & (galaxies["total_ap_dust_r_SDSS"] < MAG_LIMIT)
+        & (galaxies[SEL_COL] < MAG_LIMIT)
     ]
     counts = gal.groupby("id_group_sky").size().rename("n_gama")
     gv = gv.merge(counts, left_on="id_group_sky", right_index=True, how="left")
@@ -919,7 +928,7 @@ def run_real_pipeline(model_kind="marg"):
     print("Abundance matching ...")
     gv, Vsurvey = abundance_match(groups, sky_frac)
 
-    print("GAMA selection ...")
+    print(f"Selection ... [{SEL_COL} < {MAG_LIMIT}, >= {MULTI} members]")
     gv = gama_select(gv, galaxies)
     n_det = int(gv["detected"].sum())
     print(f"  detected: {n_det} / {len(gv)}")
