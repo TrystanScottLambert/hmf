@@ -1097,7 +1097,7 @@ def load_real_gama(fits_path):
 
     # A=13.9 dynamical mass (Msun), h-scaled as in run.R
     mymass = (
-        13.9
+        10.0
         * (VelDisp * 1000) ** 2
         * Rad50
         * parsec
