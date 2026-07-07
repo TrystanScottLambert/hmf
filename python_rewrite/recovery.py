@@ -219,8 +219,10 @@ def _aic_ols(y, X):
     return n * np.log(rss / n) + 2 * k, beta
 
 
-def turnover_mlim(z_obs, m_obs, nbin_z=30, hist_bw=0.3, min_in_bin=20):
-    z_edges = np.linspace(ZMIN, ZLIMIT, nbin_z + 1)
+def turnover_mlim(
+    z_obs, m_obs, nbin_z=30, hist_bw=0.3, min_in_bin=20, zmin=ZMIN, zmax=ZLIMIT
+):
+    z_edges = np.linspace(zmin, zmax, nbin_z + 1)
     z_mids = 0.5 * (z_edges[1:] + z_edges[:-1])
     mass_edges = np.arange(10, 16 + 1e-9, hist_bw)
     mass_mids = 0.5 * (mass_edges[1:] + mass_edges[:-1])
@@ -493,7 +495,92 @@ model {
 }
 """
 
-_STAN = {"simple": SIMPLE_CODE, "marg": MARG_CODE, "gama": GAMA_CODE}
+# Combined two-survey model: one shared MRP, each survey contributes its own
+# -Lambda + Sum(per-object) with its own volumes/mlim/sig_sh. The per-survey
+# likelihood is written once as a Stan function and called for each survey.
+MARG_COMBINED_CODE = r"""
+functions {
+  real survey_contrib(vector x_obs, vector sig, vector V_sh, vector mlim_sh,
+                      vector sig_sh, real xhi, int Ng, int Nint,
+                      real ms, real lp, real al, real be) {
+    real ln10 = log(10.0);
+    real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+    int N = num_elements(x_obs);
+    int Nsh = num_elements(V_sh);
+    real xlo = min(mlim_sh) - 1.0;
+    real dx = (xhi - xlo) / (Ng - 1.0);
+    vector[Ng] xg;
+    vector[Ng] pg;
+    real Lambda = 0;
+    real out;
+    for (k in 1:Ng) xg[k] = xlo + (k - 1) * dx;
+    for (k in 1:Ng) {
+      real u = xg[k] - ms;
+      pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+    }
+    for (j in 1:Nsh) {
+      real acc = 0;
+      for (k in 1:Ng) {
+        real w = Phi((xg[k] - mlim_sh[j]) / sig_sh[j]);
+        real term = pg[k] * w;
+        acc += (k == 1 || k == Ng) ? 0.5 * term : term;
+      }
+      Lambda += V_sh[j] * acc * dx;
+    }
+    out = -Lambda;
+    for (i in 1:N) {
+      real lo_i = x_obs[i] - 5 * sig[i];
+      real hi_i = x_obs[i] + 5 * sig[i];
+      real dmt = (hi_i - lo_i) / (Nint - 1.0);
+      real inv_s = 1.0 / sig[i];
+      real sm = 0;
+      for (g in 1:Nint) {
+        real mt = lo_i + (g - 1) * dmt;
+        real u = mt - ms;
+        real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+        real zsc = (x_obs[i] - mt) * inv_s;
+        real term = phi_g * exp(-0.5 * zsc * zsc);
+        sm += (g == 1 || g == Nint) ? 0.5 * term : term;
+      }
+      sm *= dmt * inv_s * inv_sqrt2pi;
+      out += (sm > 1e-300) ? log(sm) : -300;
+    }
+    return out;
+  }
+}
+data {
+  int<lower=1> N_a; vector[N_a] x_obs_a; vector<lower=0>[N_a] sig_a;
+  int<lower=1> Nsh_a; vector[Nsh_a] V_sh_a; vector[Nsh_a] mlim_sh_a;
+  vector<lower=0>[Nsh_a] sig_sh_a;
+  int<lower=1> N_b; vector[N_b] x_obs_b; vector<lower=0>[N_b] sig_b;
+  int<lower=1> Nsh_b; vector[Nsh_b] V_sh_b; vector[Nsh_b] mlim_sh_b;
+  vector<lower=0>[Nsh_b] sig_sh_b;
+  real xhi; int<lower=2> Ng; int<lower=2> Nint;
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+}
+model {
+  ms ~ normal(14.13, 0.42);
+  lp ~ normal(-3.96, 0.69);
+  al ~ normal(-1.68, 0.22);
+  be ~ normal(0.63, 0.02);
+  target += survey_contrib(x_obs_a, sig_a, V_sh_a, mlim_sh_a, sig_sh_a,
+                           xhi, Ng, Nint, ms, lp, al, be);
+  target += survey_contrib(x_obs_b, sig_b, V_sh_b, mlim_sh_b, sig_sh_b,
+                           xhi, Ng, Nint, ms, lp, al, be);
+}
+"""
+
+_STAN = {
+    "simple": SIMPLE_CODE,
+    "marg": MARG_CODE,
+    "gama": GAMA_CODE,
+    "combined": MARG_COMBINED_CODE,
+}
 _MODELS = {}
 
 # Compile OUTSIDE any iCloud-synced tree (e.g. ~/Desktop, ~/Documents).
@@ -1327,6 +1414,150 @@ def run_real_sdss(parquet_path, sky_area_deg2_val=7221.0, model_kind="marg"):
     return res
 
 
+def _prep_survey(z, log_mass, sigma, sky_frac, zmin, zmax, label=""):
+    """Turnover mlim, shells, sig_sh, and the above-mlim cut for one survey,
+    over its own z-range and area. Returns everything the combined data needs."""
+    mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass, zmin=zmin, zmax=zmax)
+    z_mids, V_sh = shell_volumes(sky_frac, zmin=zmin, zmax=zmax)
+    mlim_sh = mlim_func(z_mids)
+    sig_sh = sigma_eff_per_shell(z, log_mass, sigma, mlim_sh, zmin=zmin, zmax=zmax)
+    mlim_per = mlim_func(z)
+    above = log_mass > mlim_per
+    x_fit, sig_fit = log_mass[above], sigma[above]
+    print(
+        f"  [{label}] mlim(z)[{tkind}] {mlim_func(zmin):.2f}->{mlim_func(zmax):.2f}"
+        f"   N above mlim: {x_fit.size}/{log_mass.size}  Vsurvey={V_sh.sum():.3e}"
+    )
+    return dict(
+        x_fit=x_fit,
+        sig_fit=sig_fit,
+        mlim_sh=mlim_sh,
+        V_sh=V_sh,
+        sig_sh=sig_sh,
+        mlim_func=mlim_func,
+        turn_pts=turn_pts,
+        Vsurvey=float(V_sh.sum()),
+    )
+
+
+def build_data_combined(a, b):
+    """Assemble the two-survey Stan data dict (survey a and b share the MRP)."""
+    f = lambda v: np.asarray(v, float)
+    return dict(
+        N_a=int(a["x_fit"].size),
+        x_obs_a=f(a["x_fit"]),
+        sig_a=f(a["sig_fit"]),
+        Nsh_a=int(a["V_sh"].size),
+        V_sh_a=f(a["V_sh"]),
+        mlim_sh_a=f(a["mlim_sh"]),
+        sig_sh_a=f(a["sig_sh"]),
+        N_b=int(b["x_fit"].size),
+        x_obs_b=f(b["x_fit"]),
+        sig_b=f(b["sig_fit"]),
+        Nsh_b=int(b["V_sh"].size),
+        V_sh_b=f(b["V_sh"]),
+        mlim_sh_b=f(b["mlim_sh"]),
+        sig_sh_b=f(b["sig_sh"]),
+        xhi=float(XHI),
+        Ng=int(NG),
+        Nint=int(NINT),
+    )
+
+
+def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    med = np.median(flat, axis=0)
+    tv = np.array([TRUE[p] for p in PARAMS])
+    mgrid = np.linspace(11, 16, 300)
+    fig, ax = plt.subplots(2, 3, figsize=(15, 8))
+
+    a = ax[0, 0]
+    idx = np.random.default_rng(0).choice(
+        flat.shape[0], size=min(300, flat.shape[0]), replace=False
+    )
+    for k in idx:
+        a.plot(mgrid, np.log10(mrp_phi(mgrid, *flat[k])), color="red", alpha=0.02)
+    a.plot(
+        mgrid, np.log10(mrp_phi(mgrid, *med)), color="red", lw=2, label="MCMC median"
+    )
+    a.plot(mgrid, np.log10(mrp_phi(mgrid, *tv)), "b--", lw=2, label="Driver+22 GSR")
+    for name, s in surveys.items():
+        edges = np.arange(12, 16, 0.2)
+        cen = 0.5 * (edges[:-1] + edges[1:])
+        cnt, _ = np.histogram(s["x_fit"], bins=edges)
+        with np.errstate(divide="ignore"):
+            phi = np.log10(cnt / (s["Vsurvey"] * 0.2))
+        a.scatter(cen, phi, s=25, label=name, zorder=5)
+    a.set(
+        xlim=(11, 16),
+        ylim=(-8, -1),
+        xlabel=r"$\log_{10} M$",
+        ylabel=r"$\log_{10}\phi$",
+        title="Combined HMF (GAMA + SDSS)",
+    )
+    a.legend(fontsize=8)
+
+    labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
+    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.02]
+    for i, (r, c) in enumerate([(0, 1), (0, 2), (1, 0), (1, 1)]):
+        aa = ax[r, c]
+        aa.hist(flat[:, i], bins=40, color="steelblue", density=True)
+        xs = np.linspace(*aa.get_xlim(), 200)
+        aa.plot(
+            xs,
+            np.exp(-0.5 * ((xs - prior_mu[i]) / prior_sd[i]) ** 2)
+            / (prior_sd[i] * np.sqrt(2 * np.pi)),
+            "g:",
+            label="prior",
+        )
+        aa.axvline(tv[i], color="blue", ls="--", label="Driver+22")
+        aa.axvline(med[i], color="red", label="median")
+        aa.set(title=labels[i])
+        aa.legend(fontsize=7)
+    ax[1, 2].axis("off")
+    fig.tight_layout()
+    fig.savefig(fname)
+    print(f"  saved {fname}")
+    return fname
+
+
+def run_combined(
+    gama_fits,
+    sdss_parquet,
+    gama_area=179.92,
+    sdss_frac=0.2126803,
+    sdss_zmin=0.01,
+    sdss_zmax=0.20,
+):
+    """Joint GAMA+SDSS fit: one shared MRP, each survey with its own volume,
+    z-range, mlim(z), and per-object errors. The valid multi-survey version of
+    the marginalised method (per-object, not binned)."""
+    print(f"Reading GAMA: {gama_fits}")
+    g_lm, g_sig, g_z, _ = load_real_gama(gama_fits)
+    print(f"Reading SDSS: {sdss_parquet}")
+    s_lm, s_sig, s_z, _ = load_sdss_groups(sdss_parquet, zmin=sdss_zmin, zmax=sdss_zmax)
+
+    gama_frac = gama_area * (np.pi / 180) ** 2 / (4 * np.pi)
+    print(f"  GAMA: {g_lm.size} groups (frac={gama_frac:.5f}, z {ZMIN}-{ZLIMIT})")
+    print(
+        f"  SDSS: {s_lm.size} groups (frac={sdss_frac:.5f}, z {sdss_zmin}-{sdss_zmax})"
+    )
+
+    A = _prep_survey(g_z, g_lm, g_sig, gama_frac, ZMIN, ZLIMIT, "GAMA")
+    B = _prep_survey(s_z, s_lm, s_sig, sdss_frac, sdss_zmin, sdss_zmax, "SDSS")
+
+    data = build_data_combined(A, B)
+    print("\nFitting [combined] GAMA + SDSS (cmdstanpy) ...")
+    map_par, flat = run_stan("combined", data)
+    res = summarise(flat)  # offset vs Driver+22 GSR
+    plot_combined(flat, {"GAMA": A, "SDSS": B})
+    return res
+
+
 def run_selftest(model_kind="marg"):
     """Synthetic recovery, no data files. Confirms the chosen Stan model
     recovers a known MRP.
@@ -1470,6 +1701,17 @@ if __name__ == "__main__":
         default=7221.0,
         help="SDSS sky area in deg^2 (for --realsdss; PLACEHOLDER, set to yours)",
     )
+    ap.add_argument(
+        "--combined",
+        action="store_true",
+        help="joint GAMA+SDSS fit with the shared-MRP two-survey model",
+    )
+    ap.add_argument(
+        "--sdss-frac",
+        type=float,
+        default=0.2126803,
+        help="SDSS fractional sky area (for --combined)",
+    )
     args = ap.parse_args()
     if args.selftest:
         run_selftest(model_kind=args.model)
@@ -1482,6 +1724,13 @@ if __name__ == "__main__":
     elif args.realsdss:
         run_real_sdss(
             args.sdss_parquet, sky_area_deg2_val=args.sdss_area, model_kind=args.model
+        )
+    elif args.combined:
+        run_combined(
+            args.gama_fits,
+            args.sdss_parquet,
+            gama_area=args.gama_area,
+            sdss_frac=args.sdss_frac,
         )
     else:
         run_real_pipeline(model_kind=args.model)
