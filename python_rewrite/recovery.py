@@ -1097,7 +1097,7 @@ def load_real_gama(fits_path):
 
     # A=13.9 dynamical mass (Msun), h-scaled as in run.R
     mymass = (
-        10.0
+        13.9
         * (VelDisp * 1000) ** 2
         * Rad50
         * parsec
@@ -1236,6 +1236,97 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
     return res
 
 
+def load_sdss_groups(parquet_path, zmin=ZMIN, zmax=ZLIMIT):
+    """Read a per-object SDSS group catalogue (sdss_groups.parquet).
+    estimated_mass is LINEAR Msun -> x_obs = log10(estimated_mass). Per-object
+    sigma reuses the GAMA multiplicity error model for now (assume-same-as-GAMA;
+    swap to the catalogue's velocity_dispersion_gap_err later). Returns
+    (log_mass, sigma, z, multiplicity)."""
+    import pandas as pd
+
+    df = pd.read_parquet(parquet_path)
+    z = df["median_redshift"].values.astype(float)
+    mult = df["multiplicity"].values.astype(float)
+    m_lin = df["estimated_mass"].values.astype(float)
+
+    good = (
+        np.isfinite(m_lin)
+        & (m_lin > 0)
+        & np.isfinite(z)
+        & (z > zmin)
+        & (z < zmax)
+        & (mult >= MULTI)
+    )
+    log_mass = np.log10(m_lin[good])
+    z = z[good]
+    mult = mult[good]
+    sigma = sigma_from_nfof(mult)  # GAMA-like multiplicity error model, for now
+    keep = np.isfinite(log_mass) & (log_mass > 10) & (log_mass < 17)
+    return log_mass[keep], sigma[keep], z[keep], mult[keep].astype(int)
+
+
+def run_real_sdss(parquet_path, sky_area_deg2_val=7221.0, model_kind="marg"):
+    """Fit the MRP to a REAL per-object SDSS group catalogue with OUR marginalised
+    model -- a genuine second dataset for the method (not a binned refit).
+    NOTE: sky area and z-range are placeholders (Driver used SDSS z<0.08 over
+    ~7221 deg^2); set --sdss-area / ZLIMIT to match YOUR sample. Per-object sigma
+    currently reuses the GAMA error model. 'truth' lines are Driver+22."""
+    print(f"Reading SDSS group catalogue: {parquet_path}")
+    log_mass, sigma, z, mult = load_sdss_groups(parquet_path)
+    sky_frac = sky_area_deg2_val * (np.pi / 180) ** 2 / (4 * np.pi)
+    print(
+        f"  N groups: {log_mass.size}   mass {log_mass.min():.2f}..{log_mass.max():.2f} "
+        f"(med {np.median(log_mass):.2f})   sigma med {np.median(sigma):.2f}"
+    )
+    print(
+        f"  z range {z.min():.3f}..{z.max():.3f}  (using ZMIN={ZMIN}, ZLIMIT={ZLIMIT})"
+    )
+
+    print("Turnover mlim(z) ...")
+    mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass)
+    print(
+        f"  mlim(z) [{tkind}]: mlim({ZMIN})={mlim_func(ZMIN):.2f} "
+        f"mlim({ZLIMIT})={mlim_func(ZLIMIT):.2f}"
+    )
+
+    z_mids, V_sh = shell_volumes(sky_frac)
+    Vsurvey = float(V_sh.sum())
+    mlim_sh = mlim_func(z_mids)
+
+    mlim_per = mlim_func(z)
+    above = log_mass > mlim_per
+    x_fit, sig_fit = log_mass[above], sigma[above]
+    print(
+        f"  N above mlim: {x_fit.size} / {log_mass.size} "
+        f"({100 * x_fit.size / log_mass.size:.1f}%)"
+    )
+
+    if model_kind == "marg":
+        sig_sh = sigma_eff_per_shell(z, log_mass, sigma, mlim_sh)
+        data = build_data("marg", x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
+    elif model_kind == "gama":
+        data = build_data(
+            "gama", x_fit, sig_fit, mlim_sh, V_sh, mlim_obj=mlim_per[above]
+        )
+    else:
+        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh)
+
+    print(f"\nFitting [{model_kind}] on real SDSS (cmdstanpy) ...")
+    map_par, flat = run_stan(model_kind, data)
+    res = summarise(flat)  # offset vs Driver+22
+    plot_recovery(
+        flat,
+        z,
+        log_mass,
+        x_fit,
+        mlim_func,
+        Vsurvey,
+        turn_pts=turn_pts,
+        fname=f"recovery_sdss_{model_kind}.pdf",
+    )
+    return res
+
+
 def run_selftest(model_kind="marg"):
     """Synthetic recovery, no data files. Confirms the chosen Stan model
     recovers a known MRP.
@@ -1363,6 +1454,22 @@ if __name__ == "__main__":
         help="model for --realgama: 'marg' (our developed model, default) "
         "or 'gama' (verbatim R port, port-check only)",
     )
+    ap.add_argument(
+        "--realsdss",
+        action="store_true",
+        help="fit a REAL per-object SDSS group catalogue (parquet) with our marg model",
+    )
+    ap.add_argument(
+        "--sdss-parquet",
+        default="sdss_groups.parquet",
+        help="path to the SDSS group parquet (for --realsdss)",
+    )
+    ap.add_argument(
+        "--sdss-area",
+        type=float,
+        default=7221.0,
+        help="SDSS sky area in deg^2 (for --realsdss; PLACEHOLDER, set to yours)",
+    )
     args = ap.parse_args()
     if args.selftest:
         run_selftest(model_kind=args.model)
@@ -1371,6 +1478,10 @@ if __name__ == "__main__":
     elif args.realgama:
         run_real_gama(
             args.gama_fits, sky_area_deg2_val=args.gama_area, model_kind=args.gama_model
+        )
+    elif args.realsdss:
+        run_real_sdss(
+            args.sdss_parquet, sky_area_deg2_val=args.sdss_area, model_kind=args.model
         )
     else:
         run_real_pipeline(model_kind=args.model)
