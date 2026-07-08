@@ -1352,31 +1352,44 @@ def load_sdss_groups(parquet_path, zmin=ZMIN, zmax=ZLIMIT):
     return log_mass[keep], sigma[keep], z[keep], mult[keep].astype(int)
 
 
-def run_real_sdss(parquet_path, sky_area_deg2_val=7221.0, model_kind="marg"):
+def run_real_sdss(
+    parquet_path,
+    sky_area_deg2_val=None,
+    sky_frac=None,
+    sdss_zmin=0.01,
+    sdss_zmax=0.08,
+    model_kind="marg",
+):
     """Fit the MRP to a REAL per-object SDSS group catalogue with OUR marginalised
-    model -- a genuine second dataset for the method (not a binned refit).
-    NOTE: sky area and z-range are placeholders (Driver used SDSS z<0.08 over
-    ~7221 deg^2); set --sdss-area / ZLIMIT to match YOUR sample. Per-object sigma
-    currently reuses the GAMA error model. 'truth' lines are Driver+22."""
+    model. z-range defaults to Driver's SDSS cut (0.01-0.08): beyond that the
+    turnover mlim runs away (only massive groups survive at high z). Pass either
+    sky_frac (fractional) or sky_area_deg2_val. Per-object sigma reuses the GAMA
+    error model for now. 'truth' lines are Driver+22."""
     print(f"Reading SDSS group catalogue: {parquet_path}")
-    log_mass, sigma, z, mult = load_sdss_groups(parquet_path)
-    sky_frac = sky_area_deg2_val * (np.pi / 180) ** 2 / (4 * np.pi)
+    log_mass, sigma, z, mult = load_sdss_groups(
+        parquet_path, zmin=sdss_zmin, zmax=sdss_zmax
+    )
+    if sky_frac is None:
+        sky_frac = sky_area_deg2_val * (np.pi / 180) ** 2 / (4 * np.pi)
     print(
         f"  N groups: {log_mass.size}   mass {log_mass.min():.2f}..{log_mass.max():.2f} "
         f"(med {np.median(log_mass):.2f})   sigma med {np.median(sigma):.2f}"
     )
     print(
-        f"  z range {z.min():.3f}..{z.max():.3f}  (using ZMIN={ZMIN}, ZLIMIT={ZLIMIT})"
+        f"  z range {z.min():.3f}..{z.max():.3f}  (fit z {sdss_zmin}-{sdss_zmax}, "
+        f"frac={sky_frac:.5f})"
     )
 
     print("Turnover mlim(z) ...")
-    mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass)
+    mlim_func, coefs, tkind, turn_pts = turnover_mlim(
+        z, log_mass, zmin=sdss_zmin, zmax=sdss_zmax
+    )
     print(
-        f"  mlim(z) [{tkind}]: mlim({ZMIN})={mlim_func(ZMIN):.2f} "
-        f"mlim({ZLIMIT})={mlim_func(ZLIMIT):.2f}"
+        f"  mlim(z) [{tkind}]: mlim({sdss_zmin})={mlim_func(sdss_zmin):.2f} "
+        f"mlim({sdss_zmax})={mlim_func(sdss_zmax):.2f}"
     )
 
-    z_mids, V_sh = shell_volumes(sky_frac)
+    z_mids, V_sh = shell_volumes(sky_frac, zmin=sdss_zmin, zmax=sdss_zmax)
     Vsurvey = float(V_sh.sum())
     mlim_sh = mlim_func(z_mids)
 
@@ -1389,7 +1402,9 @@ def run_real_sdss(parquet_path, sky_area_deg2_val=7221.0, model_kind="marg"):
     )
 
     if model_kind == "marg":
-        sig_sh = sigma_eff_per_shell(z, log_mass, sigma, mlim_sh)
+        sig_sh = sigma_eff_per_shell(
+            z, log_mass, sigma, mlim_sh, zmin=sdss_zmin, zmax=sdss_zmax
+        )
         data = build_data("marg", x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
     elif model_kind == "gama":
         data = build_data(
@@ -1698,8 +1713,8 @@ if __name__ == "__main__":
     ap.add_argument(
         "--sdss-area",
         type=float,
-        default=7221.0,
-        help="SDSS sky area in deg^2 (for --realsdss; PLACEHOLDER, set to yours)",
+        default=None,
+        help="SDSS sky area in deg^2 (for --realsdss; or use --sdss-frac)",
     )
     ap.add_argument(
         "--combined",
@@ -1710,7 +1725,19 @@ if __name__ == "__main__":
         "--sdss-frac",
         type=float,
         default=0.2126803,
-        help="SDSS fractional sky area (for --combined)",
+        help="SDSS fractional sky area (for --combined / --realsdss)",
+    )
+    ap.add_argument(
+        "--sdss-zmin",
+        type=float,
+        default=0.01,
+        help="SDSS lower z limit (default 0.01)",
+    )
+    ap.add_argument(
+        "--sdss-zmax",
+        type=float,
+        default=0.08,
+        help="SDSS upper z limit (default 0.08, Driver's SDSS cut)",
     )
     args = ap.parse_args()
     if args.selftest:
@@ -1723,7 +1750,12 @@ if __name__ == "__main__":
         )
     elif args.realsdss:
         run_real_sdss(
-            args.sdss_parquet, sky_area_deg2_val=args.sdss_area, model_kind=args.model
+            args.sdss_parquet,
+            sky_area_deg2_val=args.sdss_area,
+            sky_frac=(None if args.sdss_area else args.sdss_frac),
+            sdss_zmin=args.sdss_zmin,
+            sdss_zmax=args.sdss_zmax,
+            model_kind=args.model,
         )
     elif args.combined:
         run_combined(
@@ -1731,6 +1763,8 @@ if __name__ == "__main__":
             args.sdss_parquet,
             gama_area=args.gama_area,
             sdss_frac=args.sdss_frac,
+            sdss_zmin=args.sdss_zmin,
+            sdss_zmax=args.sdss_zmax,
         )
     else:
         run_real_pipeline(model_kind=args.model)
