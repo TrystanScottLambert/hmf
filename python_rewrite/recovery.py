@@ -1073,20 +1073,28 @@ def run_coverage(
             print(f"  [real {r:02d}] mlim failed ({e}); skipped")
             continue
         mlim_sh = mlim_func(z_mids)
-        above = m_obs > mlim_func(z)
-        x_fit = m_obs[above]
-        sig_fit = sigma[above]
-        sig_sh = (
-            sigma_eff_per_shell(z, m_obs, sigma, mlim_sh)
-            if model_kind == "marg"
-            else None
-        )
-        print(
-            f"\n[real {r:02d}] N_fit={x_fit.size}  mlim[{tkind}] "
-            f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
-        )
+        if model_kind == "marg_comp":
+            data, keep = prep_comp(z, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh)
+            x_fit = m_obs[keep]
+            print(
+                f"\n[real {r:02d}] N_kept={x_fit.size} (C>{CMIN})  mlim[{tkind}] "
+                f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
+            )
+        else:
+            above = m_obs > mlim_func(z)
+            x_fit = m_obs[above]
+            sig_fit = sigma[above]
+            sig_sh = (
+                sigma_eff_per_shell(z, m_obs, sigma, mlim_sh)
+                if model_kind == "marg"
+                else None
+            )
+            print(
+                f"\n[real {r:02d}] N_fit={x_fit.size}  mlim[{tkind}] "
+                f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
+            )
+            data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
 
-        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
         _, flat = run_stan(
             model_kind,
             data,
