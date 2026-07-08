@@ -1323,18 +1323,30 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
     return res
 
 
-def load_sdss_groups(parquet_path, zmin=ZMIN, zmax=ZLIMIT):
+def load_sdss_groups(
+    parquet_path, zmin=ZMIN, zmax=ZLIMIT, mass_col="mass_proxy", A=13.9
+):
     """Read a per-object SDSS group catalogue (sdss_groups.parquet).
-    estimated_mass is LINEAR Msun -> x_obs = log10(estimated_mass). Per-object
-    sigma reuses the GAMA multiplicity error model for now (assume-same-as-GAMA;
-    swap to the catalogue's velocity_dispersion_gap_err later). Returns
-    (log_mass, sigma, z, multiplicity)."""
+
+    mass_col='mass_proxy' (default): apply the SAME A-scaling as GAMA, i.e.
+      mass = A * mass_proxy, so both surveys share one mass definition. Assumes
+      mass_proxy is the sigma^2 R / G combination in Msun (the same quantity
+      GAMA scales). A scale-check is printed -- if log10 lands outside ~13-15,
+      the units differ and mass_proxy needs GAMA's unit conversion.
+    mass_col='estimated_mass': use the catalogue's own linear mass as-is.
+
+    Per-object sigma reuses the GAMA multiplicity error model for now.
+    Returns (log_mass, sigma, z, multiplicity)."""
     import pandas as pd
 
     df = pd.read_parquet(parquet_path)
     z = df["median_redshift"].values.astype(float)
     mult = df["multiplicity"].values.astype(float)
-    m_lin = df["estimated_mass"].values.astype(float)
+
+    if mass_col == "mass_proxy":
+        m_lin = A * df["mass_proxy"].values.astype(float)
+    else:
+        m_lin = df[mass_col].values.astype(float)
 
     good = (
         np.isfinite(m_lin)
@@ -1345,10 +1357,19 @@ def load_sdss_groups(parquet_path, zmin=ZMIN, zmax=ZLIMIT):
         & (mult >= MULTI)
     )
     log_mass = np.log10(m_lin[good])
-    z = z[good]
-    mult = mult[good]
-    sigma = sigma_from_nfof(mult)  # GAMA-like multiplicity error model, for now
+    z, mult = z[good], mult[good]
+    sigma = sigma_from_nfof(mult)
     keep = np.isfinite(log_mass) & (log_mass > 10) & (log_mass < 17)
+
+    # scale sanity check vs the catalogue's own estimated_mass
+    if mass_col == "mass_proxy" and "estimated_mass" in df.columns:
+        em = df["estimated_mass"].values.astype(float)[good][keep]
+        em = em[np.isfinite(em) & (em > 0)]
+        print(
+            f"  [mass] {A} x mass_proxy -> log10 med={np.median(log_mass[keep]):.2f} "
+            f"range {log_mass[keep].min():.2f}..{log_mass[keep].max():.2f}; "
+            f"catalogue estimated_mass log10 med={np.median(np.log10(em)):.2f}"
+        )
     return log_mass[keep], sigma[keep], z[keep], mult[keep].astype(int)
 
 
