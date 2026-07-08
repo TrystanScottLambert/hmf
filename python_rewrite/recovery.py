@@ -61,6 +61,19 @@ MULTI = 5  # min members for a detection
 # Selection band + limit. GAMA: r_SDSS < 19.8 ; WAVES: Z_VISTA < 21.1 (deeper NIR).
 SEL_COL = "total_ap_dust_r_SDSS"
 MAG_LIMIT = 19.8
+# Dynamical-mass calibration prefactor M = A * sigma^2 R / G. Driver's fiducial
+# is 13.9; A=10 is his variant (Fig. A2). Applied to BOTH surveys for a common
+# mass scale.
+A_SCALE = 10.0
+
+# Completeness ramp C(Delta) = 0.5(1+erf((Delta-D50)/(sqrt2 w))), Delta=m-mlim(z),
+# measured from the mock (measure_completeness.py). z-dependent: interpolate
+# (D50, w) from these per-z-bin values. CMIN = floor (drop groups below 20%
+# completeness; corrections below that are unreliable, cf. Driver+22).
+COMP_Z_PTS = [0.045, 0.115, 0.20]
+COMP_D50_PTS = [-0.148, -0.193, -0.232]
+COMP_W_PTS = [0.326, 0.256, 0.227]
+CMIN = 0.2
 ADD_ERRORS = True
 
 # Likelihood grid / integration (passed to Stan as data)
@@ -575,11 +588,100 @@ model {
 }
 """
 
+# Completeness forward-model: replaces the sharp mlim cut with the measured
+# erf ramp C(m,z), applied CONSISTENTLY in both the per-object term and Lambda.
+# z-dependent (d50/w passed per object and per shell), floored at cmin. Keeps
+# all detected groups above the floor (no mlim cut). This is the boundary fix.
+MARG_COMP_CODE = r"""
+data {
+  int<lower=1> N;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;
+  vector[N] mlim_obj;            // mlim(z_i) per object
+  vector[N] d50_obj;             // completeness D50(z_i)
+  vector<lower=0>[N] w_obj;      // completeness width w(z_i)
+  int<lower=1> Nsh;
+  vector[Nsh] V_sh;
+  vector[Nsh] mlim_sh;
+  vector[Nsh] d50_sh;
+  vector<lower=0>[Nsh] w_sh;
+  real xhi;
+  int<lower=2> Ng;
+  int<lower=2> Nint;
+  real cmin;
+}
+transformed data {
+  real ln10 = log(10.0);
+  real sqrt2 = sqrt(2.0);
+  real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+  real xlo = min(mlim_sh) - 2.5;
+  real dx = (xhi - xlo) / (Ng - 1.0);
+  vector[Ng] xg;
+  for (k in 1:Ng) xg[k] = xlo + (k - 1) * dx;
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+}
+model {
+  ms ~ normal(14.13, 0.42);
+  lp ~ normal(-3.96, 0.69);
+  al ~ normal(-1.68, 0.22);
+  be ~ normal(0.63, 0.02);
+
+  vector[Ng] pg;
+  for (k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+  }
+
+  // Lambda = sum_j V_sh int phi(m) C_j(m) dm, C floored at cmin
+  real Lambda = 0;
+  for (j in 1:Nsh) {
+    real acc = 0;
+    for (k in 1:Ng) {
+      real C = 0.5 * (1 + erf((xg[k] - mlim_sh[j] - d50_sh[j]) / (sqrt2 * w_sh[j])));
+      real Cf = C > cmin ? C : 0.0;
+      real term = pg[k] * Cf;
+      acc += (k == 1 || k == Ng) ? 0.5 * term : term;
+    }
+    Lambda += V_sh[j] * acc * dx;
+  }
+  target += -Lambda;
+
+  // per-object: int phi(m) C_i(m) N(x|m,sig) dm on a local +-6 sigma grid
+  for (i in 1:N) {
+    real lo_i = x_obs[i] - 6 * sig[i];
+    real hi_i = x_obs[i] + 6 * sig[i];
+    real dmt = (hi_i - lo_i) / (Nint - 1.0);
+    real inv_s = 1.0 / sig[i];
+    real sm = 0;
+    for (g in 1:Nint) {
+      real mt = lo_i + (g - 1) * dmt;
+      real u = mt - ms;
+      real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+      real C = 0.5 * (1 + erf((mt - mlim_obj[i] - d50_obj[i]) / (sqrt2 * w_obj[i])));
+      real zsc = (x_obs[i] - mt) * inv_s;
+      real term = phi_g * C * exp(-0.5 * zsc * zsc);
+      sm += (g == 1 || g == Nint) ? 0.5 * term : term;
+    }
+    sm *= dmt * inv_s * inv_sqrt2pi;
+    if (sm > 1e-300)
+      target += log(sm);
+    else
+      target += -300;
+  }
+}
+"""
+
 _STAN = {
     "simple": SIMPLE_CODE,
     "marg": MARG_CODE,
     "gama": GAMA_CODE,
     "combined": MARG_COMBINED_CODE,
+    "marg_comp": MARG_COMP_CODE,
 }
 _MODELS = {}
 
@@ -1095,6 +1197,58 @@ def plot_coverage(df, fname="coverage_results.pdf"):
 # ----------------------------------------------------------
 # 9. Drivers
 # ----------------------------------------------------------
+def build_comp_data(
+    x_fit, sig_fit, mlim_obj, d50_obj, w_obj, mlim_sh, V_sh, d50_sh, w_sh, Nint=61
+):
+    """Stan data dict for the completeness (marg_comp) model."""
+    f = lambda v: np.asarray(v, float)
+    return dict(
+        N=int(f(x_fit).size),
+        x_obs=f(x_fit),
+        sig=f(sig_fit),
+        mlim_obj=f(mlim_obj),
+        d50_obj=f(d50_obj),
+        w_obj=f(w_obj),
+        Nsh=int(f(V_sh).size),
+        V_sh=f(V_sh),
+        mlim_sh=f(mlim_sh),
+        d50_sh=f(d50_sh),
+        w_sh=f(w_sh),
+        xhi=float(XHI),
+        Ng=int(NG),
+        Nint=int(Nint),
+        cmin=float(CMIN),
+    )
+
+
+def prep_comp(z_obs, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh):
+    """Build the completeness-model data: z-dependent ramp (D50(z), w(z)
+    interpolated from the mock measurement) per object and per shell, keep all
+    detected groups whose own completeness exceeds CMIN (no mlim cut). Returns
+    (data, keep_mask)."""
+    from scipy.stats import norm
+
+    mlim_obj = mlim_func(z_obs)
+    d50_obj = np.interp(z_obs, COMP_Z_PTS, COMP_D50_PTS)
+    w_obj = np.interp(z_obs, COMP_Z_PTS, COMP_W_PTS)
+    C_obj = norm.cdf((m_obs - mlim_obj - d50_obj) / w_obj)  # = 0.5(1+erf(./sqrt2 w))
+    keep = C_obj > CMIN
+    d50_sh = np.interp(z_mids, COMP_Z_PTS, COMP_D50_PTS)
+    w_sh = np.interp(z_mids, COMP_Z_PTS, COMP_W_PTS)
+    data = build_comp_data(
+        m_obs[keep],
+        sigma[keep],
+        mlim_obj[keep],
+        d50_obj[keep],
+        w_obj[keep],
+        mlim_sh,
+        V_sh,
+        d50_sh,
+        w_sh,
+    )
+    return data, keep
+
+
 def run_real_pipeline(model_kind="marg"):
     print("Reading catalogues ...")
     groups, galaxies = load_catalogues(DATA_DIR)
@@ -1126,19 +1280,28 @@ def run_real_pipeline(model_kind="marg"):
     z_mids, V_sh = shell_volumes(sky_frac)
     mlim_sh = mlim_func(z_mids)
 
-    above = m_obs > mlim_func(z_obs)
-    x_fit = m_obs[above]
-    sig_fit = sigma_obs[above]
-    print(
-        f"  N above mlim: {x_fit.size} / {m_obs.size} ({100 * x_fit.size / m_obs.size:.1f}%)"
-    )
-
-    sig_sh = (
-        sigma_eff_per_shell(z_obs, m_obs, sigma_obs, mlim_sh)
-        if model_kind == "marg"
-        else None
-    )
-    data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
+    if model_kind == "marg_comp":
+        data, keep = prep_comp(
+            z_obs, m_obs, sigma_obs, mlim_func, z_mids, mlim_sh, V_sh
+        )
+        x_fit = m_obs[keep]
+        print(
+            f"  completeness model: kept {x_fit.size} / {m_obs.size} "
+            f"(C > {CMIN}); no mlim cut"
+        )
+    else:
+        above = m_obs > mlim_func(z_obs)
+        x_fit = m_obs[above]
+        sig_fit = sigma_obs[above]
+        print(
+            f"  N above mlim: {x_fit.size} / {m_obs.size} ({100 * x_fit.size / m_obs.size:.1f}%)"
+        )
+        sig_sh = (
+            sigma_eff_per_shell(z_obs, m_obs, sigma_obs, mlim_sh)
+            if model_kind == "marg"
+            else None
+        )
+        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
 
     print(f"\nFitting [{model_kind}] (cmdstanpy) ...")
     map_par, flat = run_stan(model_kind, data)
@@ -1184,7 +1347,7 @@ def load_real_gama(fits_path):
 
     # A=13.9 dynamical mass (Msun), h-scaled as in run.R
     mymass = (
-        13.9
+        A_SCALE
         * (VelDisp * 1000) ** 2
         * Rad50
         * parsec
@@ -1324,7 +1487,7 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
 
 
 def load_sdss_groups(
-    parquet_path, zmin=ZMIN, zmax=ZLIMIT, mass_col="mass_proxy", A=13.9
+    parquet_path, zmin=ZMIN, zmax=ZLIMIT, mass_col="mass_proxy", A=None
 ):
     """Read a per-object SDSS group catalogue (sdss_groups.parquet).
 
@@ -1344,6 +1507,8 @@ def load_sdss_groups(
     mult = df["multiplicity"].values.astype(float)
 
     if mass_col == "mass_proxy":
+        if A is None:
+            A = A_SCALE
         m_lin = A * df["mass_proxy"].values.astype(float)
     else:
         m_lin = df[mass_col].values.astype(float)
@@ -1677,7 +1842,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--model",
-        choices=["simple", "marg"],
+        choices=["simple", "marg", "marg_comp"],
         default="marg",
         help="which likelihood: 'simple' (baseline) or 'marg' "
         "(marginalised + boundary). Default marg.",
