@@ -61,6 +61,19 @@ MULTI = 5  # min members for a detection
 # Selection band + limit. GAMA: r_SDSS < 19.8 ; WAVES: Z_VISTA < 21.1 (deeper NIR).
 SEL_COL = "total_ap_dust_r_SDSS"
 MAG_LIMIT = 19.8
+# Dynamical-mass calibration prefactor M = A * sigma^2 R / G. Driver's fiducial
+# is 13.9; A=10 is his variant (Fig. A2). Applied to BOTH surveys for a common
+# mass scale.
+A_SCALE = 10
+
+# Completeness ramp C(Delta) = 0.5(1+erf((Delta-D50)/(sqrt2 w))), Delta=m-mlim(z),
+# measured from the mock (measure_completeness.py). z-dependent: interpolate
+# (D50, w) from these per-z-bin values. CMIN = floor (drop groups below 20%
+# completeness; corrections below that are unreliable, cf. Driver+22).
+COMP_Z_PTS = [0.045, 0.115, 0.20]
+COMP_D50_PTS = [-0.148, -0.193, -0.232]
+COMP_W_PTS = [0.326, 0.256, 0.227]
+CMIN = 0.2
 ADD_ERRORS = True
 
 # Likelihood grid / integration (passed to Stan as data)
@@ -575,11 +588,230 @@ model {
 }
 """
 
+# Completeness forward-model: replaces the sharp mlim cut with the measured
+# erf ramp C(m,z), applied CONSISTENTLY in both the per-object term and Lambda.
+# z-dependent (d50/w passed per object and per shell), floored at cmin. Keeps
+# all detected groups above the floor (no mlim cut). This is the boundary fix.
+MARG_COMP_CODE = r"""
+data {
+  int<lower=1> N;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;
+  vector[N] mlim_obj;            // mlim(z_i) per object
+  vector[N] d50_obj;             // completeness D50(z_i)
+  vector<lower=0>[N] w_obj;      // completeness width w(z_i)
+  int<lower=1> Nsh;
+  vector[Nsh] V_sh;
+  vector[Nsh] mlim_sh;
+  vector[Nsh] d50_sh;
+  vector<lower=0>[Nsh] w_sh;
+  real xhi;
+  int<lower=2> Ng;
+  int<lower=2> Nint;
+  real cmin;
+}
+transformed data {
+  real ln10 = log(10.0);
+  real sqrt2 = sqrt(2.0);
+  real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+  real xlo = min(mlim_sh) - 2.5;
+  real dx = (xhi - xlo) / (Ng - 1.0);
+  vector[Ng] xg;
+  for (k in 1:Ng) xg[k] = xlo + (k - 1) * dx;
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+}
+model {
+  ms ~ normal(14.13, 0.42);
+  lp ~ normal(-3.96, 0.69);
+  al ~ normal(-1.68, 0.22);
+  be ~ normal(0.63, 0.02);
+
+  vector[Ng] pg;
+  for (k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+  }
+
+  // Lambda = sum_j V_sh int phi(m) C_j(m) dm, C floored at cmin
+  real Lambda = 0;
+  for (j in 1:Nsh) {
+    real acc = 0;
+    for (k in 1:Ng) {
+      real C = 0.5 * (1 + erf((xg[k] - mlim_sh[j] - d50_sh[j]) / (sqrt2 * w_sh[j])));
+      real Cf = C > cmin ? C : 0.0;
+      real term = pg[k] * Cf;
+      acc += (k == 1 || k == Ng) ? 0.5 * term : term;
+    }
+    Lambda += V_sh[j] * acc * dx;
+  }
+  target += -Lambda;
+
+  // per-object: int phi(m) C_i(m) N(x|m,sig) dm on a local +-6 sigma grid
+  for (i in 1:N) {
+    real lo_i = x_obs[i] - 6 * sig[i];
+    real hi_i = x_obs[i] + 6 * sig[i];
+    real dmt = (hi_i - lo_i) / (Nint - 1.0);
+    real inv_s = 1.0 / sig[i];
+    real sm = 0;
+    for (g in 1:Nint) {
+      real mt = lo_i + (g - 1) * dmt;
+      real u = mt - ms;
+      real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+      real C = 0.5 * (1 + erf((mt - mlim_obj[i] - d50_obj[i]) / (sqrt2 * w_obj[i])));
+      real zsc = (x_obs[i] - mt) * inv_s;
+      real term = phi_g * C * exp(-0.5 * zsc * zsc);
+      sm += (g == 1 || g == Nint) ? 0.5 * term : term;
+    }
+    sm *= dmt * inv_s * inv_sqrt2pi;
+    if (sm > 1e-300)
+      target += log(sm);
+    else
+      target += -300;
+  }
+}
+"""
+
+# Combined GAMA+SDSS with completeness. One shared MRP. GAMA's ramp is FIXED
+# (measured from the GAMA-selected mock). SDSS's ramp (D50, w) is FITTED, with
+# priors informed by GAMA's measurement -- the WAVES lightcone is too small in
+# area to build an SDSS-like mock (71 groups), so we marginalise over the SDSS
+# selection rather than assume it. The ramp shape is imprinted on the observed
+# counts near SDSS's limit, and 4894 groups constrain it.
+COMBINED_COMP_CODE = r"""
+functions {
+  // Both surveys use FIXED, precomputed completeness (Cobj per-object grid,
+  // Csh per-shell grid) passed as data -- no completeness parameters, so no
+  // erf inside the sampler and no ramp/MRP degeneracy.
+  real survey_ll_fixC(vector x_obs, vector sig, matrix Cobj, matrix mt_obj,
+                      vector V_sh, matrix Csh, vector xg, real dx,
+                      int Nint, real ms, real lp, real al, real be) {
+    real ln10 = log(10.0);
+    real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+    int N = num_elements(x_obs);
+    int Nsh = num_elements(V_sh);
+    int Ng = num_elements(xg);
+    vector[Ng] pg;
+    real Lambda = 0;
+    real out;
+    for (k in 1:Ng) {
+      real u = xg[k] - ms;
+      pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+    }
+    for (j in 1:Nsh) {
+      real acc = 0;
+      for (k in 1:Ng) {
+        real term = pg[k] * Csh[j, k];
+        acc += (k == 1 || k == Ng) ? 0.5 * term : term;
+      }
+      Lambda += V_sh[j] * acc * dx;
+    }
+    out = -Lambda;
+    for (i in 1:N) {
+      real inv_s = 1.0 / sig[i];
+      real dmt = mt_obj[i, 2] - mt_obj[i, 1];
+      real sm = 0;
+      for (g in 1:Nint) {
+        real mt = mt_obj[i, g];
+        real u = mt - ms;
+        real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+        real zsc = (x_obs[i] - mt) * inv_s;
+        real term = phi_g * Cobj[i, g] * exp(-0.5 * zsc * zsc);
+        sm += (g == 1 || g == Nint) ? 0.5 * term : term;
+      }
+      sm *= dmt * inv_s * inv_sqrt2pi;
+      out += (sm > 1e-300) ? log(sm) : -300;
+    }
+    return out;
+  }
+}
+data {
+  // GAMA block (ramp FIXED, measured)
+  int<lower=1> N_a; vector[N_a] x_obs_a; vector<lower=0>[N_a] sig_a;
+  vector[N_a] mlim_obj_a; vector[N_a] d50_obj_a; vector<lower=0>[N_a] w_obj_a;
+  int<lower=1> Nsh_a; vector[Nsh_a] V_sh_a; vector[Nsh_a] mlim_sh_a;
+  vector[Nsh_a] d50_sh_a; vector<lower=0>[Nsh_a] w_sh_a;
+  // SDSS block (ramp FIXED too: d50/w passed as data, not fitted)
+  int<lower=1> N_b; vector[N_b] x_obs_b; vector<lower=0>[N_b] sig_b;
+  vector[N_b] mlim_obj_b; vector[N_b] d50_obj_b; vector<lower=0>[N_b] w_obj_b;
+  int<lower=1> Nsh_b; vector[Nsh_b] V_sh_b; vector[Nsh_b] mlim_sh_b;
+  vector[Nsh_b] d50_sh_b; vector<lower=0>[Nsh_b] w_sh_b;
+  real xhi; int<lower=2> Ng; int<lower=2> Nint; real cmin;
+}
+transformed data {
+  real sqrt2 = sqrt(2.0);
+  // ---- GAMA precompute ----
+  real xlo_a = min(mlim_sh_a) - 2.5;
+  real dx_a = (xhi - xlo_a) / (Ng - 1.0);
+  vector[Ng] xg_a;
+  matrix[Nsh_a, Ng] Csh_a;
+  matrix[N_a, Nint] mt_a;
+  matrix[N_a, Nint] Cobj_a;
+  // ---- SDSS precompute ----
+  real xlo_b = min(mlim_sh_b) - 2.5;
+  real dx_b = (xhi - xlo_b) / (Ng - 1.0);
+  vector[Ng] xg_b;
+  matrix[Nsh_b, Ng] Csh_b;
+  matrix[N_b, Nint] mt_b;
+  matrix[N_b, Nint] Cobj_b;
+  for (k in 1:Ng) xg_a[k] = xlo_a + (k - 1) * dx_a;
+  for (j in 1:Nsh_a) for (k in 1:Ng) {
+    real C = 0.5 * (1 + erf((xg_a[k] - mlim_sh_a[j] - d50_sh_a[j]) / (sqrt2 * w_sh_a[j])));
+    Csh_a[j, k] = C > cmin ? C : 0.0;
+  }
+  for (i in 1:N_a) {
+    real lo_i = x_obs_a[i] - 5 * sig_a[i];
+    real dmt = (10 * sig_a[i]) / (Nint - 1.0);
+    for (g in 1:Nint) {
+      mt_a[i, g] = lo_i + (g - 1) * dmt;
+      Cobj_a[i, g] = 0.5 * (1 + erf((mt_a[i, g] - mlim_obj_a[i] - d50_obj_a[i])
+                                    / (sqrt2 * w_obj_a[i])));
+    }
+  }
+  for (k in 1:Ng) xg_b[k] = xlo_b + (k - 1) * dx_b;
+  for (j in 1:Nsh_b) for (k in 1:Ng) {
+    real C = 0.5 * (1 + erf((xg_b[k] - mlim_sh_b[j] - d50_sh_b[j]) / (sqrt2 * w_sh_b[j])));
+    Csh_b[j, k] = C > cmin ? C : 0.0;
+  }
+  for (i in 1:N_b) {
+    real lo_i = x_obs_b[i] - 5 * sig_b[i];
+    real dmt = (10 * sig_b[i]) / (Nint - 1.0);
+    for (g in 1:Nint) {
+      mt_b[i, g] = lo_i + (g - 1) * dmt;
+      Cobj_b[i, g] = 0.5 * (1 + erf((mt_b[i, g] - mlim_obj_b[i] - d50_obj_b[i])
+                                    / (sqrt2 * w_obj_b[i])));
+    }
+  }
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+}
+model {
+  ms ~ normal(14.13, 0.42);
+  lp ~ normal(-3.96, 0.69);
+  al ~ normal(-1.68, 0.22);
+  be ~ normal(0.63, 0.02);
+  target += survey_ll_fixC(x_obs_a, sig_a, Cobj_a, mt_a, V_sh_a, Csh_a,
+                           xg_a, dx_a, Nint, ms, lp, al, be);
+  target += survey_ll_fixC(x_obs_b, sig_b, Cobj_b, mt_b, V_sh_b, Csh_b,
+                           xg_b, dx_b, Nint, ms, lp, al, be);
+}
+"""
+
 _STAN = {
     "simple": SIMPLE_CODE,
     "marg": MARG_CODE,
     "gama": GAMA_CODE,
     "combined": MARG_COMBINED_CODE,
+    "marg_comp": MARG_COMP_CODE,
+    "combined_comp": COMBINED_COMP_CODE,
 }
 _MODELS = {}
 
@@ -971,20 +1203,28 @@ def run_coverage(
             print(f"  [real {r:02d}] mlim failed ({e}); skipped")
             continue
         mlim_sh = mlim_func(z_mids)
-        above = m_obs > mlim_func(z)
-        x_fit = m_obs[above]
-        sig_fit = sigma[above]
-        sig_sh = (
-            sigma_eff_per_shell(z, m_obs, sigma, mlim_sh)
-            if model_kind == "marg"
-            else None
-        )
-        print(
-            f"\n[real {r:02d}] N_fit={x_fit.size}  mlim[{tkind}] "
-            f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
-        )
+        if model_kind == "marg_comp":
+            data, keep = prep_comp(z, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh)
+            x_fit = m_obs[keep]
+            print(
+                f"\n[real {r:02d}] N_kept={x_fit.size} (C>{CMIN})  mlim[{tkind}] "
+                f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
+            )
+        else:
+            above = m_obs > mlim_func(z)
+            x_fit = m_obs[above]
+            sig_fit = sigma[above]
+            sig_sh = (
+                sigma_eff_per_shell(z, m_obs, sigma, mlim_sh)
+                if model_kind == "marg"
+                else None
+            )
+            print(
+                f"\n[real {r:02d}] N_fit={x_fit.size}  mlim[{tkind}] "
+                f"{mlim_func(ZMIN):.2f}->{mlim_func(ZLIMIT):.2f}"
+            )
+            data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
 
-        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
         _, flat = run_stan(
             model_kind,
             data,
@@ -1095,6 +1335,58 @@ def plot_coverage(df, fname="coverage_results.pdf"):
 # ----------------------------------------------------------
 # 9. Drivers
 # ----------------------------------------------------------
+def build_comp_data(
+    x_fit, sig_fit, mlim_obj, d50_obj, w_obj, mlim_sh, V_sh, d50_sh, w_sh, Nint=61
+):
+    """Stan data dict for the completeness (marg_comp) model."""
+    f = lambda v: np.asarray(v, float)
+    return dict(
+        N=int(f(x_fit).size),
+        x_obs=f(x_fit),
+        sig=f(sig_fit),
+        mlim_obj=f(mlim_obj),
+        d50_obj=f(d50_obj),
+        w_obj=f(w_obj),
+        Nsh=int(f(V_sh).size),
+        V_sh=f(V_sh),
+        mlim_sh=f(mlim_sh),
+        d50_sh=f(d50_sh),
+        w_sh=f(w_sh),
+        xhi=float(XHI),
+        Ng=int(NG),
+        Nint=int(Nint),
+        cmin=float(CMIN),
+    )
+
+
+def prep_comp(z_obs, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh):
+    """Build the completeness-model data: z-dependent ramp (D50(z), w(z)
+    interpolated from the mock measurement) per object and per shell, keep all
+    detected groups whose own completeness exceeds CMIN (no mlim cut). Returns
+    (data, keep_mask)."""
+    from scipy.stats import norm
+
+    mlim_obj = mlim_func(z_obs)
+    d50_obj = np.interp(z_obs, COMP_Z_PTS, COMP_D50_PTS)
+    w_obj = np.interp(z_obs, COMP_Z_PTS, COMP_W_PTS)
+    C_obj = norm.cdf((m_obs - mlim_obj - d50_obj) / w_obj)  # = 0.5(1+erf(./sqrt2 w))
+    keep = C_obj > CMIN
+    d50_sh = np.interp(z_mids, COMP_Z_PTS, COMP_D50_PTS)
+    w_sh = np.interp(z_mids, COMP_Z_PTS, COMP_W_PTS)
+    data = build_comp_data(
+        m_obs[keep],
+        sigma[keep],
+        mlim_obj[keep],
+        d50_obj[keep],
+        w_obj[keep],
+        mlim_sh,
+        V_sh,
+        d50_sh,
+        w_sh,
+    )
+    return data, keep
+
+
 def run_real_pipeline(model_kind="marg"):
     print("Reading catalogues ...")
     groups, galaxies = load_catalogues(DATA_DIR)
@@ -1126,19 +1418,28 @@ def run_real_pipeline(model_kind="marg"):
     z_mids, V_sh = shell_volumes(sky_frac)
     mlim_sh = mlim_func(z_mids)
 
-    above = m_obs > mlim_func(z_obs)
-    x_fit = m_obs[above]
-    sig_fit = sigma_obs[above]
-    print(
-        f"  N above mlim: {x_fit.size} / {m_obs.size} ({100 * x_fit.size / m_obs.size:.1f}%)"
-    )
-
-    sig_sh = (
-        sigma_eff_per_shell(z_obs, m_obs, sigma_obs, mlim_sh)
-        if model_kind == "marg"
-        else None
-    )
-    data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
+    if model_kind == "marg_comp":
+        data, keep = prep_comp(
+            z_obs, m_obs, sigma_obs, mlim_func, z_mids, mlim_sh, V_sh
+        )
+        x_fit = m_obs[keep]
+        print(
+            f"  completeness model: kept {x_fit.size} / {m_obs.size} "
+            f"(C > {CMIN}); no mlim cut"
+        )
+    else:
+        above = m_obs > mlim_func(z_obs)
+        x_fit = m_obs[above]
+        sig_fit = sigma_obs[above]
+        print(
+            f"  N above mlim: {x_fit.size} / {m_obs.size} ({100 * x_fit.size / m_obs.size:.1f}%)"
+        )
+        sig_sh = (
+            sigma_eff_per_shell(z_obs, m_obs, sigma_obs, mlim_sh)
+            if model_kind == "marg"
+            else None
+        )
+        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
 
     print(f"\nFitting [{model_kind}] (cmdstanpy) ...")
     map_par, flat = run_stan(model_kind, data)
@@ -1184,7 +1485,7 @@ def load_real_gama(fits_path):
 
     # A=13.9 dynamical mass (Msun), h-scaled as in run.R
     mymass = (
-        13.9
+        A_SCALE
         * (VelDisp * 1000) ** 2
         * Rad50
         * parsec
@@ -1290,22 +1591,33 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
     mlim_sh = mlim_func(z_mids)
 
     mlim_per = mlim_func(z)
-    above = log_mass > mlim_per
-    x_fit, sig_fit = log_mass[above], sigma[above]
-    print(
-        f"  N above mlim: {x_fit.size} / {log_mass.size} "
-        f"({100 * x_fit.size / log_mass.size:.1f}%)"
-    )
 
-    if model_kind == "marg":
-        sig_sh = sigma_eff_per_shell(z, log_mass, sigma, mlim_sh)
-        data = build_data("marg", x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
-    elif model_kind == "gama":
-        data = build_data(
-            "gama", x_fit, sig_fit, mlim_sh, V_sh, mlim_obj=mlim_per[above]
+    if model_kind == "marg_comp":
+        # Completeness ramp from the GAMA-selected mock (same mag limit, same
+        # >=MULTI members, same group finder) -- i.e. injection-recovery applied
+        # to real GAMA. mlim(z) is derived from the REAL data above.
+        data, keep = prep_comp(z, log_mass, sigma, mlim_func, z_mids, mlim_sh, V_sh)
+        x_fit = log_mass[keep]
+        print(
+            f"  completeness model: kept {x_fit.size} / {log_mass.size} "
+            f"(C > {CMIN}); no mlim cut; ramp from GAMA mock"
         )
     else:
-        data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh)
+        above = log_mass > mlim_per
+        x_fit, sig_fit = log_mass[above], sigma[above]
+        print(
+            f"  N above mlim: {x_fit.size} / {log_mass.size} "
+            f"({100 * x_fit.size / log_mass.size:.1f}%)"
+        )
+        if model_kind == "marg":
+            sig_sh = sigma_eff_per_shell(z, log_mass, sigma, mlim_sh)
+            data = build_data("marg", x_fit, sig_fit, mlim_sh, V_sh, sig_sh=sig_sh)
+        elif model_kind == "gama":
+            data = build_data(
+                "gama", x_fit, sig_fit, mlim_sh, V_sh, mlim_obj=mlim_per[above]
+            )
+        else:
+            data = build_data(model_kind, x_fit, sig_fit, mlim_sh, V_sh)
 
     print(f"\nFitting [{model_kind}] on real GAMA (cmdstanpy) ...")
     map_par, flat = run_stan(model_kind, data)
@@ -1324,7 +1636,7 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
 
 
 def load_sdss_groups(
-    parquet_path, zmin=ZMIN, zmax=ZLIMIT, mass_col="mass_proxy", A=13.9
+    parquet_path, zmin=ZMIN, zmax=ZLIMIT, mass_col="mass_proxy", A=None
 ):
     """Read a per-object SDSS group catalogue (sdss_groups.parquet).
 
@@ -1344,6 +1656,8 @@ def load_sdss_groups(
     mult = df["multiplicity"].values.astype(float)
 
     if mass_col == "mass_proxy":
+        if A is None:
+            A = A_SCALE
         m_lin = A * df["mass_proxy"].values.astype(float)
     else:
         m_lin = df[mass_col].values.astype(float)
@@ -1594,6 +1908,145 @@ def run_combined(
     return res
 
 
+def run_combined_comp(
+    gama_fits,
+    sdss_parquet,
+    gama_area=179.92,
+    sdss_frac=0.2126803,
+    sdss_zmin=0.01,
+    sdss_zmax=0.08,
+    full_sample=False,
+):
+    """Joint GAMA+SDSS with completeness. GAMA's ramp is fixed (measured from the
+    GAMA-selected mock); SDSS's ramp (D50, w) is FITTED with GAMA-informed priors,
+    because the WAVES lightcone is too small in area to build an SDSS-like mock.
+    One shared MRP; per-survey volumes, z-ranges, mlim(z), and completeness."""
+    from scipy.stats import norm
+
+    print(f"Reading GAMA: {gama_fits}")
+    g_lm, g_sig, g_z, _ = load_real_gama(gama_fits)
+    print(f"Reading SDSS: {sdss_parquet}")
+    s_lm, s_sig, s_z, _ = load_sdss_groups(sdss_parquet, zmin=sdss_zmin, zmax=sdss_zmax)
+
+    gama_frac = gama_area * (np.pi / 180) ** 2 / (4 * np.pi)
+
+    # --- GAMA block: measured ramp, C>CMIN floor, no mlim cut ---
+    g_mlim_func, _, gk, _ = turnover_mlim(g_z, g_lm, zmin=ZMIN, zmax=ZLIMIT)
+    gz_mids, gV_sh = shell_volumes(gama_frac, zmin=ZMIN, zmax=ZLIMIT)
+    g_mlim_sh = g_mlim_func(gz_mids)
+    g_mlim_obj = g_mlim_func(g_z)
+    g_d50 = np.interp(g_z, COMP_Z_PTS, COMP_D50_PTS)
+    g_w = np.interp(g_z, COMP_Z_PTS, COMP_W_PTS)
+    g_keep = norm.cdf((g_lm - g_mlim_obj - g_d50) / g_w) > CMIN
+    print(
+        f"  [GAMA] mlim[{gk}] {g_mlim_func(ZMIN):.2f}->{g_mlim_func(ZLIMIT):.2f}  "
+        f"kept {int(g_keep.sum())}/{g_lm.size} (C>{CMIN})  V={gV_sh.sum():.3e}"
+    )
+
+    # --- SDSS block: ramp FIXED (adopted = GAMA-measured; the WAVES lightcone
+    #     is too small to measure an SDSS-specific ramp). C precomputed, C>CMIN. ---
+    s_mlim_func, _, sk, _ = turnover_mlim(s_z, s_lm, zmin=sdss_zmin, zmax=sdss_zmax)
+    sz_mids, sV_sh = shell_volumes(sdss_frac, zmin=sdss_zmin, zmax=sdss_zmax)
+    s_mlim_sh = s_mlim_func(sz_mids)
+    s_mlim_obj = s_mlim_func(s_z)
+    s_d50 = np.interp(s_z, COMP_Z_PTS, COMP_D50_PTS)  # adopted GAMA ramp
+    s_w = np.interp(s_z, COMP_Z_PTS, COMP_W_PTS)
+    s_keep = norm.cdf((s_lm - s_mlim_obj - s_d50) / s_w) > CMIN
+    print(
+        f"  [SDSS] mlim[{sk}] {s_mlim_func(sdss_zmin):.2f}->{s_mlim_func(sdss_zmax):.2f}  "
+        f"kept {int(s_keep.sum())}/{s_lm.size} (C>{CMIN}, ramp adopted from GAMA)  "
+        f"V={sV_sh.sum():.3e}"
+    )
+
+    f = lambda v: np.asarray(v, float)
+    data = dict(
+        N_a=int(g_keep.sum()),
+        x_obs_a=f(g_lm[g_keep]),
+        sig_a=f(g_sig[g_keep]),
+        mlim_obj_a=f(g_mlim_obj[g_keep]),
+        d50_obj_a=f(g_d50[g_keep]),
+        w_obj_a=f(g_w[g_keep]),
+        Nsh_a=int(gV_sh.size),
+        V_sh_a=f(gV_sh),
+        mlim_sh_a=f(g_mlim_sh),
+        d50_sh_a=f(np.interp(gz_mids, COMP_Z_PTS, COMP_D50_PTS)),
+        w_sh_a=f(np.interp(gz_mids, COMP_Z_PTS, COMP_W_PTS)),
+        N_b=int(s_keep.sum()),
+        x_obs_b=f(s_lm[s_keep]),
+        sig_b=f(s_sig[s_keep]),
+        mlim_obj_b=f(s_mlim_obj[s_keep]),
+        d50_obj_b=f(s_d50[s_keep]),
+        w_obj_b=f(s_w[s_keep]),
+        Nsh_b=int(sV_sh.size),
+        V_sh_b=f(sV_sh),
+        mlim_sh_b=f(s_mlim_sh),
+        d50_sh_b=f(np.interp(sz_mids, COMP_Z_PTS, COMP_D50_PTS)),
+        w_sh_b=f(np.interp(sz_mids, COMP_Z_PTS, COMP_W_PTS)),
+        xhi=float(XHI),
+        Ng=int(NG),
+        Nint=31,
+        cmin=float(CMIN),
+    )
+
+    print("\nFitting [combined_comp] GAMA + SDSS (cmdstanpy) ...")
+    model = get_model("combined_comp")
+
+    # --- Stan MAP first (same model, L-BFGS): a fast point result + a sane init ---
+    print("  MAP (Stan optimize, L-BFGS) ...")
+    init0 = dict(ms=14.13, lp=-3.96, al=-1.68, be=0.63)
+    opt = model.optimize(
+        data=data, inits=init0, algorithm="lbfgs", iter=20000, show_console=False
+    )
+    mp = {p: float(opt.optimized_params_dict[p]) for p in PARAMS}
+    print(
+        f"  MAP:  ms={mp['ms']:.3f}  lp={mp['lp']:.3f}  al={mp['al']:.3f}  be={mp['be']:.3f}"
+    )
+    print(f"        vs Driver GSR 14.13 / -3.96 / -1.68 / 0.63")
+    print(
+        f"  SDSS ramp adopted from GAMA: D50 ~ {np.mean(COMP_D50_PTS):+.3f}, "
+        f"w ~ {np.mean(COMP_W_PTS):.3f} (fixed, not fitted)"
+    )
+
+    if not full_sample:
+        print("  (MAP only; pass full_sample=True to also run MCMC)")
+        return mp
+
+    fit = model.sample(
+        data=data,
+        chains=4,
+        iter_warmup=1500,
+        iter_sampling=1500,
+        adapt_delta=0.95,
+        max_treedepth=10,
+        seed=42,
+        show_progress=True,
+        inits=init0,
+    )
+    flat = np.column_stack([fit.stan_variable(p) for p in PARAMS])
+    np.savetxt(
+        "combined_comp_draws.csv",
+        flat,
+        delimiter=",",
+        header="ms,lp,al,be",
+        comments="",
+    )
+    print("  saved draws -> combined_comp_draws.csv")
+    try:
+        print(
+            f"  Rhat/ESS: {fit.diagnose().splitlines()[0] if hasattr(fit, 'diagnose') else 'n/a'}"
+        )
+    except Exception:
+        pass
+    res = summarise(flat)
+    A = dict(x_fit=g_lm[g_keep], Vsurvey=float(gV_sh.sum()))
+    B = dict(x_fit=s_lm[s_keep], Vsurvey=float(sV_sh.sum()))
+    try:
+        plot_combined(flat, {"GAMA": A, "SDSS": B}, fname="recovery_combined_comp.pdf")
+    except Exception as e:
+        print(f"  [plot failed: {e}] draws are saved; re-plot from the CSV.")
+    return res
+
+
 def run_selftest(model_kind="marg"):
     """Synthetic recovery, no data files. Confirms the chosen Stan model
     recovers a known MRP.
@@ -1677,7 +2130,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--model",
-        choices=["simple", "marg"],
+        choices=["simple", "marg", "marg_comp"],
         default="marg",
         help="which likelihood: 'simple' (baseline) or 'marg' "
         "(marginalised + boundary). Default marg.",
@@ -1716,10 +2169,10 @@ if __name__ == "__main__":
     )
     ap.add_argument(
         "--gama-model",
-        choices=["marg", "gama", "simple"],
+        choices=["marg", "marg_comp", "gama", "simple"],
         default="marg",
-        help="model for --realgama: 'marg' (our developed model, default) "
-        "or 'gama' (verbatim R port, port-check only)",
+        help="model for --realgama: 'marg' (sharp cut), 'marg_comp' "
+        "(completeness forward-model), or 'gama' (R port, check only)",
     )
     ap.add_argument(
         "--realsdss",
@@ -1760,6 +2213,16 @@ if __name__ == "__main__":
         default=0.08,
         help="SDSS upper z limit (default 0.08, Driver's SDSS cut)",
     )
+    ap.add_argument(
+        "--combined-comp",
+        action="store_true",
+        help="joint GAMA+SDSS with completeness (GAMA ramp measured, SDSS ramp fitted)",
+    )
+    ap.add_argument(
+        "--full-sample",
+        action="store_true",
+        help="for --combined-comp: also run full MCMC after the MAP",
+    )
     args = ap.parse_args()
     if args.selftest:
         run_selftest(model_kind=args.model)
@@ -1777,6 +2240,16 @@ if __name__ == "__main__":
             sdss_zmin=args.sdss_zmin,
             sdss_zmax=args.sdss_zmax,
             model_kind=args.model,
+        )
+    elif args.combined_comp:
+        run_combined_comp(
+            args.gama_fits,
+            args.sdss_parquet,
+            gama_area=args.gama_area,
+            sdss_frac=args.sdss_frac,
+            sdss_zmin=args.sdss_zmin,
+            sdss_zmax=args.sdss_zmax,
+            full_sample=args.full_sample,
         )
     elif args.combined:
         run_combined(
