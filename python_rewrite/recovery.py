@@ -64,7 +64,7 @@ MAG_LIMIT = 19.8
 # Dynamical-mass calibration prefactor M = A * sigma^2 R / G. Driver's fiducial
 # is 13.9; A=10 is his variant (Fig. A2). Applied to BOTH surveys for a common
 # mass scale.
-A_SCALE = 5.0
+A_SCALE = 10
 
 # Completeness ramp C(Delta) = 0.5(1+erf((Delta-D50)/(sqrt2 w))), Delta=m-mlim(z),
 # measured from the mock (measure_completeness.py). z-dependent: interpolate
