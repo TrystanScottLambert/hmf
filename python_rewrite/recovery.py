@@ -64,7 +64,7 @@ MAG_LIMIT = 19.8
 # Dynamical-mass calibration prefactor M = A * sigma^2 R / G. Driver's fiducial
 # is 13.9; A=10 is his variant (Fig. A2). Applied to BOTH surveys for a common
 # mass scale.
-A_SCALE = 10
+A_SCALE = 10.0
 
 # Completeness ramp C(Delta) = 0.5(1+erf((Delta-D50)/(sqrt2 w))), Delta=m-mlim(z),
 # measured from the mock (measure_completeness.py). z-dependent: interpolate
@@ -299,7 +299,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.02);    // FIXED at Driver+22 cutoff (0.63)
+  be ~ normal(0.63, 0.18);    // Driver+22 beta with his published width (+0.25/-0.11)
 
   // MRP on the grid
   vector[Ng] pg;
@@ -376,7 +376,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.02);    // FIXED at Driver+22 cutoff (0.63)
+  be ~ normal(0.63, 0.18);    // Driver+22 beta with his published width (+0.25/-0.11)
 
   // phi on the global grid (computed once)
   vector[Ng] pg;
@@ -580,7 +580,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
   target += survey_contrib(x_obs_a, sig_a, V_sh_a, mlim_sh_a, sig_sh_a,
                            xhi, Ng, Nint, ms, lp, al, be);
   target += survey_contrib(x_obs_b, sig_b, V_sh_b, mlim_sh_b, sig_sh_b,
@@ -629,7 +629,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
 
   vector[Ng] pg;
   for (k in 1:Ng) {
@@ -797,7 +797,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
   target += survey_ll_fixC(x_obs_a, sig_a, Cobj_a, mt_a, V_sh_a, Csh_a,
                            xg_a, dx_a, Nint, ms, lp, al, be);
   target += survey_ll_fixC(x_obs_b, sig_b, Cobj_b, mt_b, V_sh_b, Csh_b,
@@ -1105,7 +1105,7 @@ def plot_recovery(
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
     prior_mu = [14.13, -3.96, -1.68, 0.63]  # must match the Stan model priors
-    prior_sd = [0.42, 0.69, 0.22, 0.02]
+    prior_sd = [0.42, 0.69, 0.22, 0.18]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
@@ -1262,7 +1262,7 @@ def run_coverage(
 def report_coverage(df):
     # prior widths (must match the Stan model priors) -- to flag which
     # parameters are data-constrained vs prior-driven on this sample.
-    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.02}
+    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.18}
     print("\n" + "=" * 78)
     print(f"  COVERAGE SUMMARY over {len(df)} realisations")
     print("=" * 78)
@@ -1852,7 +1852,7 @@ def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
     a.legend(fontsize=8)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.02]
+    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.18]
     for i, (r, c) in enumerate([(0, 1), (0, 2), (1, 0), (1, 1)]):
         aa = ax[r, c]
         aa.hist(flat[:, i], bins=40, color="steelblue", density=True)
