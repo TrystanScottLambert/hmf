@@ -813,6 +813,49 @@ _STAN = {
     "marg_comp": MARG_COMP_CODE,
     "combined_comp": COMBINED_COMP_CODE,
 }
+
+# GAMA+SDSS (per-object completeness) PLUS REFLEX II as binned chi^2 anchoring the
+# high-mass cutoff. Built from COMBINED_COMP_CODE by adding a REFLEX data block and
+# a Gaussian term: -0.5 * sum(((log10 phi_MRP(m_r + dX) - y_r)/sig_r)^2). dX is a
+# FIXED X-ray->dynamical mass offset (data, default 0) -- fitting it is degenerate
+# with M*, so it is asserted, not fitted (set it explicitly if you have a value).
+COMBINED_COMP_REFLEX_CODE = (
+    COMBINED_COMP_CODE.replace(
+        "  real xhi; int<lower=2> Ng; int<lower=2> Nint; real cmin;\n}",
+        "  real xhi; int<lower=2> Ng; int<lower=2> Nint; real cmin;\n"
+        "  int<lower=1> N_r; vector[N_r] m_r; vector[N_r] y_r;\n"
+        "  vector<lower=0>[N_r] sig_r;\n"
+        "  real dXa_mu; real dXa_sd; real dXb_mu; real dXb_sd;\n}",
+    )
+    .replace(
+        "  real<lower=0.1, upper=2.0> be;\n}",
+        "  real<lower=0.1, upper=2.0> be;\n"
+        "  real dXa;   // REFLEX mass offset at logM=14 (dex)\n"
+        "  real dXb;   // REFLEX offset slope d(offset)/d(logM) -- shallow M-sigma\n}",
+    )
+    .replace(
+        "                           xg_b, dx_b, Nint, ms, lp, al, be);\n}",
+        "                           xg_b, dx_b, Nint, ms, lp, al, be);\n\n"
+        "  // REFLEX II binned chi^2, with a MASS-DEPENDENT X-ray->dynamical offset\n"
+        "  // dX(M) = dXa + dXb*(m_r - 14): grounded in the shallow dynamical M-sigma\n"
+        "  // relation (Han+15, Viola+15), so massive clusters shift more than groups.\n"
+        "  dXa ~ normal(dXa_mu, dXa_sd);\n"
+        "  dXb ~ normal(dXb_mu, dXb_sd);\n"
+        "  {\n"
+        "    real ln10r = log(10.0);\n"
+        "    for (r in 1:N_r) {\n"
+        "      real dXr = dXa + dXb * (m_r[r] - 14.0);\n"
+        "      real u = (m_r[r] + dXr) - ms;\n"
+        "      real phir = be * ln10r * pow(10, lp) * pow(10, (al + 1) * u)\n"
+        "                  * exp(-pow(10, be * u));\n"
+        "      real logphi = log10(phir > 1e-300 ? phir : 1e-300);\n"
+        "      target += -0.5 * square((logphi - y_r[r]) / sig_r[r]);\n"
+        "    }\n"
+        "  }\n}",
+    )
+)
+
+_STAN["combined_comp_reflex"] = COMBINED_COMP_REFLEX_CODE
 _MODELS = {}
 
 # Compile OUTSIDE any iCloud-synced tree (e.g. ~/Desktop, ~/Documents).
@@ -2239,6 +2282,9 @@ def run_combined_comp(
     sdss_zmin=0.01,
     sdss_zmax=0.08,
     full_sample=False,
+    reflex=False,
+    reflex_dX=0.0,
+    data_dir="../data",
 ):
     """Joint GAMA+SDSS with completeness. GAMA's ramp is fixed (measured from the
     GAMA-selected mock); SDSS's ramp (D50, w) is FITTED with GAMA-informed priors,
@@ -2311,12 +2357,47 @@ def run_combined_comp(
         cmin=float(CMIN),
     )
 
-    print("\nFitting [combined_comp] GAMA + SDSS (cmdstanpy) ...")
-    model = get_model("combined_comp")
+    model_kind = "combined_comp"
+    if reflex:
+        comp = _load_comparison(data_dir)
+        rf = comp.get("REFLEX II (Böhringer+17)")
+        if rf is None:
+            print(
+                "  [reflex requested but reflex.csv not loaded -> running without it]"
+            )
+        else:
+            # symmetric log-error from the fractional errors (mean of elo/ehi)
+            sig_r = 0.5 * (np.abs(rf["elo"]) + np.abs(rf["ehi"]))
+            sig_r = np.clip(sig_r, 0.03, None)
+            data.update(
+                N_r=int(rf["x"].size),
+                m_r=f(rf["x"]),
+                y_r=f(rf["y"]),
+                sig_r=f(sig_r),
+                dXa_mu=float(reflex_dX),
+                dXa_sd=0.25,
+                dXb_mu=0.0,
+                dXb_sd=0.3,
+            )
+            model_kind = "combined_comp_reflex"
+            print(
+                f"  [REFLEX] {rf['x'].size} binned points, "
+                f"logM {rf['x'].min():.2f}-{rf['x'].max():.2f}, "
+                f"dX(M)=a+b(M-14): a~N({reflex_dX:+.2f},0.25), b~N(0,0.3) (fitted)"
+            )
+
+    print(
+        f"\nFitting [{model_kind}] GAMA + SDSS"
+        f"{' + REFLEX' if model_kind.endswith('reflex') else ''} (cmdstanpy) ..."
+    )
+    model = get_model(model_kind)
 
     # --- Stan MAP first (same model, L-BFGS): a fast point result + a sane init ---
     print("  MAP (Stan optimize, L-BFGS) ...")
     init0 = dict(ms=14.13, lp=-3.96, al=-1.68, be=0.63)
+    if model_kind.endswith("reflex"):
+        init0["dXa"] = float(reflex_dX)
+        init0["dXb"] = 0.0
     opt = model.optimize(
         data=data, inits=init0, algorithm="lbfgs", iter=20000, show_console=False
     )
@@ -2324,6 +2405,13 @@ def run_combined_comp(
     print(
         f"  MAP:  ms={mp['ms']:.3f}  lp={mp['lp']:.3f}  al={mp['al']:.3f}  be={mp['be']:.3f}"
     )
+    if model_kind.endswith("reflex"):
+        da = float(opt.optimized_params_dict["dXa"])
+        db = float(opt.optimized_params_dict["dXb"])
+        print(
+            f"        REFLEX offset dX(M) = {da:+.3f} {db:+.3f}*(logM-14)  "
+            f"[at 10^14: {da:+.2f}, at 10^15: {da + db:+.2f} dex]"
+        )
     print(f"        vs Driver GSR 14.13 / -3.96 / -1.68 / 0.63")
     print(
         f"  SDSS ramp adopted from GAMA: D50 ~ {np.mean(COMP_D50_PTS):+.3f}, "
@@ -2346,14 +2434,19 @@ def run_combined_comp(
         inits=init0,
     )
     flat = np.column_stack([fit.stan_variable(p) for p in PARAMS])
+    otag = "combined_comp_reflex" if model_kind.endswith("reflex") else "combined_comp"
+    if model_kind.endswith("reflex"):
+        da, db = fit.stan_variable("dXa"), fit.stan_variable("dXb")
+        print(
+            f"  fitted REFLEX offset: a(10^14) = {np.median(da):+.3f}"
+            f"±{0.5 * (np.percentile(da, 84) - np.percentile(da, 16)):.3f}, "
+            f"slope b = {np.median(db):+.3f}"
+            f"±{0.5 * (np.percentile(db, 84) - np.percentile(db, 16)):.3f} dex/dex"
+        )
     np.savetxt(
-        "combined_comp_draws.csv",
-        flat,
-        delimiter=",",
-        header="ms,lp,al,be",
-        comments="",
+        f"{otag}_draws.csv", flat, delimiter=",", header="ms,lp,al,be", comments=""
     )
-    print("  saved draws -> combined_comp_draws.csv")
+    print(f"  saved draws -> {otag}_draws.csv")
     try:
         print(
             f"  Rhat/ESS: {fit.diagnose().splitlines()[0] if hasattr(fit, 'diagnose') else 'n/a'}"
@@ -2363,11 +2456,14 @@ def run_combined_comp(
     res = summarise(flat)
     A = dict(x_fit=g_lm[g_keep], Vsurvey=float(gV_sh.sum()))
     B = dict(x_fit=s_lm[s_keep], Vsurvey=float(sV_sh.sum()))
-    emit_publication(
-        flat, {"GAMA": A, "SDSS": B}, tag="combined_comp", title="GAMA + SDSS HMF"
+    ttl = (
+        "GAMA + SDSS + REFLEX HMF"
+        if model_kind.endswith("reflex")
+        else "GAMA + SDSS HMF"
     )
+    emit_publication(flat, {"GAMA": A, "SDSS": B}, tag=otag, title=ttl)
     try:
-        plot_combined(flat, {"GAMA": A, "SDSS": B}, fname="recovery_combined_comp.pdf")
+        plot_combined(flat, {"GAMA": A, "SDSS": B}, fname=f"recovery_{otag}.pdf")
     except Exception as e:
         print(f"  [plot failed: {e}] draws are saved; re-plot from the CSV.")
     return res
@@ -2549,6 +2645,17 @@ if __name__ == "__main__":
         action="store_true",
         help="for --combined-comp: also run full MCMC after the MAP",
     )
+    ap.add_argument(
+        "--reflex",
+        action="store_true",
+        help="for --combined-comp: add REFLEX II binned points to anchor the cutoff",
+    )
+    ap.add_argument(
+        "--reflex-dx",
+        type=float,
+        default=0.0,
+        help="fixed X-ray->dynamical mass offset applied to REFLEX (dex, default 0)",
+    )
     args = ap.parse_args()
     if args.selftest:
         run_selftest(model_kind=args.model)
@@ -2576,6 +2683,8 @@ if __name__ == "__main__":
             sdss_zmin=args.sdss_zmin,
             sdss_zmax=args.sdss_zmax,
             full_sample=args.full_sample,
+            reflex=args.reflex,
+            reflex_dX=args.reflex_dx,
         )
     elif args.combined:
         run_combined(
