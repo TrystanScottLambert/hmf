@@ -1454,6 +1454,12 @@ def run_real_pipeline(model_kind="marg"):
         turn_pts=turn_pts,
         fname=f"recovery_{model_kind}.pdf",
     )
+    emit_publication(
+        flat,
+        {"mock": dict(x_fit=x_fit, Vsurvey=Vsurvey)},
+        tag=f"mock_{model_kind}",
+        title="Mock HMF",
+    )
     return res
 
 
@@ -1644,6 +1650,12 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
         turn_pts=turn_pts,
         fname=f"recovery_gama_{model_kind}.pdf",
     )
+    emit_publication(
+        flat,
+        {"GAMA": dict(x_fit=x_fit, Vsurvey=Vsurvey)},
+        tag=f"gama_{model_kind}",
+        title="GAMA HMF",
+    )
     return res
 
 
@@ -1773,6 +1785,12 @@ def run_real_sdss(
         turn_pts=turn_pts,
         fname=f"recovery_sdss_{model_kind}.pdf",
     )
+    emit_publication(
+        flat,
+        {"SDSS": dict(x_fit=x_fit, Vsurvey=Vsurvey)},
+        tag=f"sdss_{model_kind}",
+        title="SDSS HMF",
+    )
     return res
 
 
@@ -1885,6 +1903,299 @@ def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
     fig.savefig(fname)
     print(f"  saved {fname}")
     return fname
+
+
+# ---------------------------------------------------------------------------
+# Publication plotting: LCDM curve (exact Murray+21, from Driver's allhmf.r),
+# a Driver-style multi-survey HMF figure, and a corner plot.
+# ---------------------------------------------------------------------------
+def lcdm_curve():
+    """Murray+21 LCDM MRP, Omega_M-normalised and z=0.1-shifted, exactly as
+    Driver+22 allhmf.r. Returns (x, log10 phi) for the curve plus the (M*, logphi*,
+    alpha, beta) reference point for the corner plot."""
+    parsec, Gn, msol = 3.0857e16, 6.67408e-11, 1.988e30
+    rhocrit = 3 * (1000 * H0 / (1e6 * parsec)) ** 2 / (8 * np.pi * Gn)
+    be, A, ms, al = 0.7097976, 1.727006e-19, 14.42947, -1.864908
+    mrpx = np.arange(0, 17, 0.001) + np.log10(100 / H0)
+    mrpy = (
+        A
+        * be
+        * 10 ** ((al + 1) * (mrpx - ms))
+        * np.exp(-(10 ** (be * (mrpx - ms))))
+        * (H0 / 100) ** 3
+    )
+    factor = (
+        np.sum(10**mrpx * mrpy)
+        * 0.001
+        * msol
+        / (1e6 * parsec) ** 3
+        / (OMEGA_M * rhocrit)
+    )
+    x = mrpx - 0.08
+    y = np.log10(mrpy) - np.log10(factor) + 0.08
+    ref = (ms - 0.075, np.log10(A / factor) + 0.075, al, be)  # Driver's corner refvals
+    return x, y, ref
+
+
+def _load_comparison(data_dir):
+    """Load REFLEX II, 2PIGG, and ELMO/Tempel binned HMFs from data_dir, with the
+    exact h-unit conversions from allhmf.r. Missing files are skipped."""
+    import os
+
+    out = {}
+    try:
+        import pandas as pd
+
+        rf = pd.read_csv(os.path.join(data_dir, "reflex.csv"))
+        rx = rf["x"].values + np.log10(70 / H0)
+        ry = rf["Curve1"].values + 4.0 * np.log10(H0 / 70) - 14.0 + rx + 1
+        f = np.full(rx.size, 1 / np.sqrt(20))
+        f[0] = f[-1] = 1 / np.sqrt(3)
+        f = np.clip(f, 0, 0.99)
+        elo = -np.log10(1 - f)  # positive distance below
+        ehi = np.log10(1 + f)  # positive distance above
+        out["REFLEX II (Böhringer+17)"] = dict(
+            x=rx, y=ry, elo=elo, ehi=ehi, c="forestgreen", m="D"
+        )
+    except Exception as e:
+        print(f"  [reflex.csv skipped: {e}]")
+    try:
+        tp = np.loadtxt(os.path.join(data_dir, "tpigg.dat"))
+        tx = tp[:, 0] + np.log10(100 / H0)
+        ty = tp[:, 1] + np.log10((H0 / 100) ** 3)
+        out["2PIGG (Eke+08)"] = dict(
+            x=tx, y=ty, elo=np.abs(tp[:, 3]), ehi=np.abs(tp[:, 2]), c="0.5", m="o"
+        )
+    except Exception as e:
+        print(f"  [tpigg.dat skipped: {e}]")
+    try:
+        import pandas as pd
+
+        el = pd.read_csv(os.path.join(data_dir, "elmo.csv"), header=None)
+        ex = el[0].values + 10.0 + np.log10(100 / H0)
+        v2, v3, v4 = (
+            el[1].values * (H0 / 100) ** 3,
+            el[2].values * (H0 / 100) ** 3,
+            el[3].values * (H0 / 100) ** 3,
+        )
+        out["_elmo"] = dict(
+            x=ex,
+            ycen=np.log10(v2),
+            ylo=np.log10(np.clip(v2 - v3, 1e-30, None)),
+            yhi=np.log10(v2 + v4),
+        )
+    except Exception as e:
+        print(f"  [elmo.csv skipped: {e}]")
+    return out
+
+
+def plot_publication(
+    flat,
+    my_surveys=None,
+    driver=(14.13, -3.96, -1.68, 0.63),
+    data_dir="../data",
+    fname="hmf_publication.pdf",
+    title="HMF",
+):
+    """Driver-style HMF: our MCMC band (highlighted), the LCDM curve, the Driver+22
+    MRP curve, our own survey binned points (grey, 'not fitted'), and external
+    comparison data (REFLEX/2PIGG/ELMO) from data_dir."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    med = np.median(flat, axis=0)
+    mgrid = np.linspace(12.5, 16, 400)
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # our posterior band
+    idx = np.random.default_rng(0).choice(
+        flat.shape[0], size=min(400, flat.shape[0]), replace=False
+    )
+    for k in idx:
+        ax.plot(
+            mgrid,
+            np.log10(mrp_phi(mgrid, *flat[k])),
+            color=(100 / 255, 149 / 255, 237 / 255),
+            alpha=0.02,
+        )
+    ax.plot(
+        mgrid,
+        np.log10(mrp_phi(mgrid, *med)),
+        color=(100 / 255, 149 / 255, 237 / 255),
+        lw=2,
+        ls="--",
+        label="Best-fit MRP (this work)",
+    )
+
+    # LCDM + Driver MRP curves
+    lx, ly, _ = lcdm_curve()
+    ax.plot(lx, ly, "k--", lw=2, label=r"$\Lambda$CDM (Murray+21, z=0.1)")
+    ax.plot(
+        mgrid,
+        np.log10(mrp_phi(mgrid, *driver)),
+        color="red",
+        lw=1.5,
+        ls=":",
+        label="Driver+22 MRP (GSR)",
+    )
+
+    # our own survey binned points (grey, not fitted)
+    if my_surveys:
+        edges = np.arange(12.5, 16, 0.2)
+        cen = 0.5 * (edges[:-1] + edges[1:])
+        for name, s in my_surveys.items():
+            cnt, _ = np.histogram(s["x_fit"], bins=edges)
+            ok = cnt >= 3
+            with np.errstate(divide="ignore"):
+                phi = np.log10(cnt / (s["Vsurvey"] * 0.2))
+                err = 0.4343 / np.sqrt(np.maximum(cnt, 1))
+            ax.errorbar(
+                cen[ok],
+                phi[ok],
+                yerr=err[ok],
+                fmt="s",
+                ms=4,
+                color="0.35",
+                alpha=0.7,
+                capsize=2,
+                label=f"{name} (this work, not fitted)",
+            )
+
+    # external comparison data
+    comp = _load_comparison(data_dir)
+    for name, d in comp.items():
+        if name == "_elmo":
+            ax.fill_between(d["x"], d["ylo"], d["yhi"], color="0.5", alpha=0.12, lw=0)
+            ax.plot(
+                d["x"], d["ycen"], color="cyan", lw=1, label="SDSS DR10 (Tempel+14)"
+            )
+        else:
+            elo = np.nan_to_num(np.abs(d["elo"]), nan=0.0)
+            ehi = np.nan_to_num(np.abs(d["ehi"]), nan=0.0)
+            ax.errorbar(
+                d["x"],
+                d["y"],
+                yerr=[elo, ehi],
+                fmt=d["m"],
+                ms=5,
+                color=d["c"],
+                capsize=2,
+                lw=1,
+                label=name,
+            )
+
+    ax.set(
+        xlim=(12.75, 16),
+        ylim=(-8, -2),
+        xlabel=r"$\log_{10}(M_{\rm halo}/M_\odot)$",
+        ylabel=r"$\log_{10}$ number density [Mpc$^{-3}$ dex$^{-1}$]",
+        title=title,
+    )
+    ax.legend(fontsize=7, loc="lower left")
+    fig.tight_layout()
+    fig.savefig(fname)
+    print(f"  saved {fname}")
+    return fname
+
+
+def _cred_levels(H):
+    """68/95% contour levels for a 2D histogram."""
+    Hs = np.sort(H.ravel())[::-1]
+    cs = np.cumsum(Hs)
+    cs = cs / cs[-1]
+    lv = []
+    for frac in (0.95, 0.68):
+        i = np.searchsorted(cs, frac)
+        lv.append(Hs[min(i, Hs.size - 1)])
+    return sorted(set(lv))
+
+
+def plot_corner(flat, driver=(14.13, -3.96, -1.68, 0.63), fname="corner.pdf"):
+    """Corner plot for (M*, logphi*, alpha, beta): 2D credible contours off the
+    diagonal, marginals on it, with the median (red) and Driver+22 (black)
+    reference points. (LCDM single-parameter markers are intentionally omitted:
+    comparing a theoretical curve's MRP parameters to a data fit is misleading --
+    LCDM consistency belongs on the HMF plot, not here.)"""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    try:
+        from scipy.ndimage import gaussian_filter
+
+        smooth = lambda H: gaussian_filter(H, 1.0)
+    except Exception:
+        smooth = lambda H: H
+
+    labels = [r"$\log_{10} M_*$", r"$\log_{10}\phi_*$", r"$\alpha$", r"$\beta$"]
+    med = np.median(flat, axis=0)
+    P = flat.shape[1]
+    fig, axes = plt.subplots(P, P, figsize=(9, 9))
+    for i in range(P):
+        for j in range(P):
+            ax = axes[i, j]
+            if j > i:
+                ax.axis("off")
+                continue
+            if i == j:
+                ax.hist(flat[:, i], bins=40, color="steelblue", density=True)
+                ax.axvline(med[i], color="red")
+                if driver[i] is not None:
+                    ax.axvline(driver[i], color="k", ls="--")
+                ax.set_yticks([])
+            else:
+                H, xe, ye = np.histogram2d(flat[:, j], flat[:, i], bins=40)
+                Hs = smooth(H.T)
+                xc, yc = 0.5 * (xe[:-1] + xe[1:]), 0.5 * (ye[:-1] + ye[1:])
+                lv = _cred_levels(Hs)
+                ax.contourf(
+                    xc,
+                    yc,
+                    Hs,
+                    levels=[lv[0], lv[-1], Hs.max()],
+                    colors=["#c6dbef", "#6baed6"],
+                )
+                ax.contour(xc, yc, Hs, levels=lv, colors="#2171b5", linewidths=0.6)
+                ax.plot(med[j], med[i], "r+", ms=8)
+                if driver[j] is not None and driver[i] is not None:
+                    ax.plot(driver[j], driver[i], "k*", ms=9)
+            if i == P - 1:
+                ax.set_xlabel(labels[j])
+            else:
+                ax.set_xticklabels([])
+            if j == 0 and i > 0:
+                ax.set_ylabel(labels[i])
+            elif j > 0:
+                ax.set_yticklabels([])
+    axes[0, 0].set_yticklabels([])
+    from matplotlib.lines import Line2D
+
+    proxies = [
+        Line2D([0], [0], color="red", marker="+", ls="", label="median (this work)"),
+        Line2D([0], [0], color="k", marker="*", ls="", label="Driver+22 GSR"),
+    ]
+    fig.legend(handles=proxies, loc="upper right", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(fname)
+    print(f"  saved {fname}")
+    return fname
+
+
+def emit_publication(flat, my_surveys, tag, title="HMF"):
+    """Always emit the corner + publication HMF plots for a fit."""
+    try:
+        plot_corner(flat, fname=f"corner_{tag}.pdf")
+    except Exception as e:
+        print(f"  [corner_{tag} failed: {e}]")
+    try:
+        plot_publication(
+            flat, my_surveys=my_surveys, fname=f"hmf_{tag}.pdf", title=title
+        )
+    except Exception as e:
+        print(f"  [hmf_{tag} failed: {e}]")
 
 
 def run_combined(
@@ -2052,6 +2363,9 @@ def run_combined_comp(
     res = summarise(flat)
     A = dict(x_fit=g_lm[g_keep], Vsurvey=float(gV_sh.sum()))
     B = dict(x_fit=s_lm[s_keep], Vsurvey=float(sV_sh.sum()))
+    emit_publication(
+        flat, {"GAMA": A, "SDSS": B}, tag="combined_comp", title="GAMA + SDSS HMF"
+    )
     try:
         plot_combined(flat, {"GAMA": A, "SDSS": B}, fname="recovery_combined_comp.pdf")
     except Exception as e:
