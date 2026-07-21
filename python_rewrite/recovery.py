@@ -1622,6 +1622,18 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
     print(f"\nFitting [{model_kind}] on real GAMA (cmdstanpy) ...")
     map_par, flat = run_stan(model_kind, data)
     res = summarise(flat)  # 'bias vs truth' = offset vs Driver+22
+    if model_kind == "marg_comp":
+        MSTAR_LCDM = 14.13  # anchor: Driver's M* (sits on the Murray+21 LCDM curve)
+        A_draws = A_SCALE * 10 ** (MSTAR_LCDM - flat[:, 0])  # flat[:,0] = ms draws
+        amed = np.median(A_draws)
+        print(f"\n  === fitted mass calibration A (M* fixed to LCDM {MSTAR_LCDM}) ===")
+        print(
+            f"  A = {amed:.2f}  +{np.percentile(A_draws, 84) - amed:.2f}"
+            f"/-{amed - np.percentile(A_draws, 16):.2f}   (A_assumed={A_SCALE})"
+        )
+        print(f"  vs Robotham+11 sim-calibrated 13.9, Driver variant 10, Zwicky 1.667")
+        print(f"  [caveat: M* has a mild informative prior N(14.13,0.42); data-driven")
+        print(f"   posterior ~0.1 dominates, so prior pull on A is small (~7%)]")
     plot_recovery(
         flat,
         z,
