@@ -32,6 +32,7 @@ Run:
 import argparse
 import os
 
+import re
 import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
@@ -74,6 +75,51 @@ COMP_Z_PTS = [0.045, 0.115, 0.20]
 COMP_D50_PTS = [-0.148, -0.193, -0.232]
 COMP_W_PTS = [0.326, 0.256, 0.227]
 CMIN = 0.2
+
+# Mock only: inject mass errors of SIGMA_INJECT_SCALE * sigma_reported while the
+# fit is still given sigma_reported. 1.0 -> the reported errors are correct
+# (s_scale truth = 1). Set to e.g. 1.5 to check marg_comp_serr recovers a scale
+# it was not handed, which is the real test of the hyperparameter.
+SIGMA_INJECT_SCALE = 1.0
+
+# Use Driver+22's GSR chains as a multivariate-normal prior (preserves the
+# rho ~ -0.97 parameter covariances that independent Gaussians discard).
+# Set via --driver-prior. DRIVER_PRIOR_INFLATE widens the covariance to soften
+# the double-counting (Driver's GSR posterior used the same GAMA+SDSS data).
+USE_DRIVER_PRIOR = False
+DRIVER_PRIOR_PATH = "../data/hmfparams_gsr.csv"
+DRIVER_PRIOR_INFLATE = 1.0
+
+# ---------------------------------------------------------------------------
+# alpha bias calibration (diagnose_pinned_mstar.py, mock with known truth).
+# The completeness model returns an alpha that is biased by an amount that
+# depends on where M* sits: fitting the mock (truth alpha = -1.68) gives
+#     M* = 14.130 (pinned)  ->  alpha = -1.516   bias = +0.164
+#     M* = 14.175 (free)    ->  alpha = -1.563   bias = +0.117
+#     M* = 14.600 (pinned)  ->  alpha = -1.894   bias = -0.214
+# i.e. bias falls ~linearly with M*. Correcting real fits by this removes the
+# apparent 0.39 dex spread between the REFLEX-anchored and unanchored results
+# (both -> alpha ~ -1.65).
+# CAVEAT: ONE mock realisation, so there is no uncertainty on the correction
+# yet. Run calibrate_alpha_bias() over many realisations before quoting it.
+ALPHA_BIAS_MS = [14.130, 14.175, 14.600]
+ALPHA_BIAS_DA = [0.164, 0.117, -0.214]
+
+
+def alpha_bias(ms):
+    """Fitted-minus-true alpha as a function of where M* sits (linear fit to
+    the mock calibration points; extrapolates linearly outside them)."""
+    ms = np.asarray(ms, float)
+    b, a = np.polyfit(ALPHA_BIAS_MS, ALPHA_BIAS_DA, 1)  # slope, intercept
+    return a + b * ms
+
+
+def corrected_alpha(flat):
+    """Per-draw bias-corrected alpha: alpha_i - bias(ms_i). Applying it draw by
+    draw propagates the M*-alpha covariance instead of correcting the median."""
+    return flat[:, 2] - alpha_bias(flat[:, 0])
+
+
 ADD_ERRORS = True
 
 # Likelihood grid / integration (passed to Stan as data)
@@ -215,7 +261,7 @@ def add_mass_errors(gv, rng):
     det = gv[gv["detected"]].copy()
     sigma = sigma_from_nfof(det["n_gama"].values)
     if ADD_ERRORS:
-        m_obs = det["log_mass_am"].values + rng.normal(0, sigma)
+        m_obs = det["log_mass_am"].values + rng.normal(0, sigma * SIGMA_INJECT_SCALE)
     else:
         m_obs = det["log_mass_am"].values.copy()
         sigma = np.zeros_like(sigma)
@@ -299,7 +345,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.18);    // Driver+22 beta with his published width (+0.25/-0.11)
+  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
 
   // MRP on the grid
   vector[Ng] pg;
@@ -376,7 +422,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.18);    // Driver+22 beta with his published width (+0.25/-0.11)
+  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
 
   // phi on the global grid (computed once)
   vector[Ng] pg;
@@ -580,7 +626,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
+  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
   target += survey_contrib(x_obs_a, sig_a, V_sh_a, mlim_sh_a, sig_sh_a,
                            xhi, Ng, Nint, ms, lp, al, be);
   target += survey_contrib(x_obs_b, sig_b, V_sh_b, mlim_sh_b, sig_sh_b,
@@ -629,7 +675,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
+  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
 
   vector[Ng] pg;
   for (k in 1:Ng) {
@@ -797,7 +843,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
+  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
   target += survey_ll_fixC(x_obs_a, sig_a, Cobj_a, mt_a, V_sh_a, Csh_a,
                            xg_a, dx_a, Nint, ms, lp, al, be);
   target += survey_ll_fixC(x_obs_b, sig_b, Cobj_b, mt_b, V_sh_b, Csh_b,
@@ -856,6 +902,186 @@ COMBINED_COMP_REFLEX_CODE = (
 )
 
 _STAN["combined_comp_reflex"] = COMBINED_COMP_REFLEX_CODE
+
+# Same, but the mass-dependent offset is FIXED DATA (dXa_fix, dXb_fix) rather than
+# a parameter. Pinning a parameter with a spike prior (sd~1e-6) destroys HMC's step
+# size; removing it from the parameter space entirely samples at normal speed.
+COMBINED_COMP_REFLEX_FIXED_CODE = COMBINED_COMP_CODE.replace(
+    "  real xhi; int<lower=2> Ng; int<lower=2> Nint; real cmin;\n}",
+    "  real xhi; int<lower=2> Ng; int<lower=2> Nint; real cmin;\n"
+    "  int<lower=1> N_r; vector[N_r] m_r; vector[N_r] y_r;\n"
+    "  vector<lower=0>[N_r] sig_r; real dXa_fix; real dXb_fix;\n}",
+).replace(
+    "                           xg_b, dx_b, Nint, ms, lp, al, be);\n}",
+    "                           xg_b, dx_b, Nint, ms, lp, al, be);\n\n"
+    "  // REFLEX II binned chi^2 with a FIXED mass offset dX(M)\n"
+    "  {\n"
+    "    real ln10r = log(10.0);\n"
+    "    for (r in 1:N_r) {\n"
+    "      real dXr = dXa_fix + dXb_fix * (m_r[r] - 14.0);\n"
+    "      real u = (m_r[r] + dXr) - ms;\n"
+    "      real phir = be * ln10r * pow(10, lp) * pow(10, (al + 1) * u)\n"
+    "                  * exp(-pow(10, be * u));\n"
+    "      real logphi = log10(phir > 1e-300 ? phir : 1e-300);\n"
+    "      target += -0.5 * square((logphi - y_r[r]) / sig_r[r]);\n"
+    "    }\n"
+    "  }\n}",
+)
+_STAN["combined_comp_reflex_fixed"] = COMBINED_COMP_REFLEX_FIXED_CODE
+
+# GAMA-only completeness model PLUS REFLEX II binned chi^2 with a mass-dependent
+# X-ray->dynamical offset dX(M)=dXa+dXb*(M-14). Same REFLEX treatment as the
+# combined model, but on the single-survey (marg_comp) likelihood -- for testing
+# GAMA + REFLEX without SDSS.
+MARG_COMP_REFLEX_CODE = MARG_COMP_CODE.replace(
+    "  real cmin;\n}",
+    "  real cmin;\n"
+    "  int<lower=1> N_r; vector[N_r] m_r; vector[N_r] y_r;\n"
+    "  vector<lower=0>[N_r] sig_r;\n"
+    "  real dXa_mu; real dXa_sd; real dXb_mu; real dXb_sd;\n}",
+).replace(
+    "  real<lower=0.1, upper=2.0> be;\n}",
+    "  real<lower=0.1, upper=2.0> be;\n"
+    "  real dXa;   // REFLEX mass offset at logM=14 (dex)\n"
+    "  real dXb;   // REFLEX offset slope d(offset)/d(logM)\n}",
+)
+# append the REFLEX chi^2 before the final closing brace of the model block
+_i = MARG_COMP_REFLEX_CODE.rfind("}")
+MARG_COMP_REFLEX_CODE = (
+    MARG_COMP_REFLEX_CODE[:_i]
+    + "\n  // REFLEX II binned chi^2 with mass-dependent X-ray->dynamical offset\n"
+    "  dXa ~ normal(dXa_mu, dXa_sd);\n"
+    "  dXb ~ normal(dXb_mu, dXb_sd);\n"
+    "  {\n"
+    "    real ln10r = log(10.0);\n"
+    "    for (r in 1:N_r) {\n"
+    "      real dXr = dXa + dXb * (m_r[r] - 14.0);\n"
+    "      real u = (m_r[r] + dXr) - ms;\n"
+    "      real phir = be * ln10r * pow(10, lp) * pow(10, (al + 1) * u)\n"
+    "                  * exp(-pow(10, be * u));\n"
+    "      real logphi = log10(phir > 1e-300 ? phir : 1e-300);\n"
+    "      target += -0.5 * square((logphi - y_r[r]) / sig_r[r]);\n"
+    "    }\n"
+    "  }\n" + MARG_COMP_REFLEX_CODE[_i:]
+)
+_STAN["marg_comp_reflex"] = MARG_COMP_REFLEX_CODE
+
+# marg_comp with the per-object mass errors scaled by a fitted hyperparameter
+# s_scale: sigma_i -> s_scale * sigma_i. The reported sigmas come from run.R's
+# multiplicity lookup and are asserted, not measured; since the Eddington
+# deconvolution is driven entirely by sigma, this tests whether the data
+# themselves prefer larger/smaller errors. Cobj/mt must be rebuilt inside the
+# model (they depend on sigma), so this is slower than marg_comp.
+MARG_COMP_SERR_CODE = r"""
+data {
+  int<lower=1> N;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;
+  vector[N] mlim_obj;
+  vector[N] d50_obj;
+  vector<lower=0>[N] w_obj;
+  int<lower=1> Nsh;
+  vector[Nsh] V_sh;
+  vector[Nsh] mlim_sh;
+  vector[Nsh] d50_sh;
+  vector<lower=0>[Nsh] w_sh;
+  real xhi;
+  int<lower=2> Ng;
+  int<lower=2> Nint;
+  real cmin;
+}
+transformed data {
+  real ln10 = log(10.0);
+  real sqrt2 = sqrt(2.0);
+  real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+  real xlo = min(mlim_sh) - 2.5;
+  real dx = (xhi - xlo) / (Ng - 1.0);
+  vector[Ng] xg;
+  matrix[Nsh, Ng] Csh;
+  for (k in 1:Ng) xg[k] = xlo + (k - 1) * dx;
+  for (j in 1:Nsh) {
+    for (k in 1:Ng) {
+      real C = 0.5 * (1 + erf((xg[k] - mlim_sh[j] - d50_sh[j]) / (sqrt2 * w_sh[j])));
+      Csh[j, k] = C > cmin ? C : 0.0;
+    }
+  }
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+  real<lower=0.2, upper=4.0> s_scale;   // multiplies every reported sigma
+}
+model {
+  ms ~ normal(14.13, 0.42);
+  lp ~ normal(-3.96, 0.69);
+  al ~ normal(-1.68, 0.22);
+  be ~ normal(0.63, 0.02);
+  s_scale ~ lognormal(0, 0.30);         // prior median 1, ~ +/-35 per cent
+
+  vector[Ng] pg;
+  for (k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+  }
+  real Lambda = 0;
+  for (j in 1:Nsh) {
+    real acc = 0;
+    for (k in 1:Ng) {
+      real term = pg[k] * Csh[j, k];
+      acc += (k == 1 || k == Ng) ? 0.5 * term : term;
+    }
+    Lambda += V_sh[j] * acc * dx;
+  }
+  target += -Lambda;
+
+  for (i in 1:N) {
+    real si = s_scale * sig[i];
+    real lo_i = x_obs[i] - 5 * si;
+    real dmt = (10 * si) / (Nint - 1.0);
+    real inv_s = 1.0 / si;
+    real sm = 0;
+    for (g in 1:Nint) {
+      real mt = lo_i + (g - 1) * dmt;
+      real u = mt - ms;
+      real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+      real C = 0.5 * (1 + erf((mt - mlim_obj[i] - d50_obj[i]) / (sqrt2 * w_obj[i])));
+      real zsc = (x_obs[i] - mt) * inv_s;
+      real term = phi_g * C * exp(-0.5 * zsc * zsc);
+      sm += (g == 1 || g == Nint) ? 0.5 * term : term;
+    }
+    sm *= dmt * inv_s * inv_sqrt2pi;
+    target += (sm > 1e-300) ? log(sm) : -300;
+  }
+}
+"""
+_STAN["marg_comp_serr"] = MARG_COMP_SERR_CODE
+
+# GAMA-only completeness + REFLEX with the offset as FIXED DATA (4 parameters).
+MARG_COMP_REFLEX_FIXED_CODE = MARG_COMP_CODE.replace(
+    "  real cmin;\n}",
+    "  real cmin;\n"
+    "  int<lower=1> N_r; vector[N_r] m_r; vector[N_r] y_r;\n"
+    "  vector<lower=0>[N_r] sig_r; real dXa_fix; real dXb_fix;\n}",
+)
+_i2 = MARG_COMP_REFLEX_FIXED_CODE.rfind("}")
+MARG_COMP_REFLEX_FIXED_CODE = (
+    MARG_COMP_REFLEX_FIXED_CODE[:_i2]
+    + "\n  // REFLEX II binned chi^2, fixed mass offset\n"
+    "  {\n"
+    "    real ln10r = log(10.0);\n"
+    "    for (r in 1:N_r) {\n"
+    "      real dXr = dXa_fix + dXb_fix * (m_r[r] - 14.0);\n"
+    "      real u = (m_r[r] + dXr) - ms;\n"
+    "      real phir = be * ln10r * pow(10, lp) * pow(10, (al + 1) * u)\n"
+    "                  * exp(-pow(10, be * u));\n"
+    "      real logphi = log10(phir > 1e-300 ? phir : 1e-300);\n"
+    "      target += -0.5 * square((logphi - y_r[r]) / sig_r[r]);\n"
+    "    }\n"
+    "  }\n" + MARG_COMP_REFLEX_FIXED_CODE[_i2:]
+)
+_STAN["marg_comp_reflex_fixed"] = MARG_COMP_REFLEX_FIXED_CODE
 _MODELS = {}
 
 # Compile OUTSIDE any iCloud-synced tree (e.g. ~/Desktop, ~/Documents).
@@ -868,8 +1094,73 @@ STAN_BUILD_DIR = os.environ.get(
 os.makedirs(STAN_BUILD_DIR, exist_ok=True)
 
 
+def driver_prior(path="../data/hmfparams_gsr.csv", inflate=1.0):
+    """Mean vector and covariance of Driver+22's GSR chains, for use as a
+    multivariate-normal prior that preserves the strong parameter covariances
+    (rho(M*,phi*) = -0.97) that independent Gaussians discard.
+
+    NOTE this prior is NOT independent of the data: Driver's GSR posterior was
+    derived from GAMA+SDSS+REFLEX. `inflate` widens the covariance (x inflate^2)
+    to partially offset double-counting."""
+    d = np.genfromtxt(path, delimiter=",", skip_header=1)
+    d = d[np.isfinite(d).all(axis=1)]
+    mu = d.mean(axis=0)
+    cov = np.cov(d.T) * float(inflate) ** 2
+    return mu, cov, d
+
+
+def _with_driver_prior(code):
+    """Swap a model's independent-Gaussian prior block for a multivariate normal."""
+    old = (
+        "  ms ~ normal(14.13, 0.42);\n"
+        "  lp ~ normal(-3.96, 0.69);\n"
+        "  al ~ normal(-1.68, 0.22);\n"
+    )
+    if old not in code:
+        raise ValueError("prior block not found")
+    code = code.replace(
+        old, "  [ms, lp, al, be]' ~ multi_normal(prior_mu, prior_Sigma);\n", 1
+    )
+    # drop the now-duplicated beta prior line that followed
+    code = re.sub(r"\n\s*be ~ normal\(0\.63, 0\.\d+\);[^\n]*", "", code, count=1)
+    # declare the prior data just before the close of the data block
+    i = code.index("data {")
+    j, depth = i + len("data {"), 1
+    while depth:
+        if code[j] == "{":
+            depth += 1
+        elif code[j] == "}":
+            depth -= 1
+        j += 1
+    code = (
+        code[: j - 1]
+        + "  vector[4] prior_mu;\n  matrix[4, 4] prior_Sigma;\n"
+        + code[j - 1 :]
+    )
+    return code
+
+
+def apply_driver_prior(kind, data):
+    """If enabled, switch to the multivariate-prior variant and attach its data."""
+    if not USE_DRIVER_PRIOR or kind.endswith("_dp"):
+        return kind, data
+    mu, cov, _ = driver_prior(DRIVER_PRIOR_PATH, DRIVER_PRIOR_INFLATE)
+    data = dict(
+        data,
+        prior_mu=[float(v) for v in mu],
+        prior_Sigma=[[float(v) for v in row] for row in cov],
+    )
+    print(
+        f"  [prior] Driver+22 GSR chains as multivariate normal "
+        f"(inflate={DRIVER_PRIOR_INFLATE}); mu={np.round(mu, 3).tolist()}"
+    )
+    return kind + "_dp", data
+
+
 def get_model(kind):
     """Compile a Stan model once, in a non-synced build dir (cmdstanpy caches)."""
+    if kind.endswith("_dp") and kind not in _STAN:
+        _STAN[kind] = _with_driver_prior(_STAN[kind[:-3]])
     if kind not in _MODELS:
         from cmdstanpy import CmdStanModel
 
@@ -928,6 +1219,7 @@ def run_stan(
 ):
     """MAP (optimize) + posterior (sample) for the chosen model.
     Returns (map_par, flat) with flat an (Ndraws, 4) array in PARAMS order."""
+    kind, data = apply_driver_prior(kind, data)
     model = get_model(kind)
     if kind == "marg":
         ss = np.asarray(data["sig_sh"])
@@ -1010,6 +1302,20 @@ def run_stan(
         f"  [{kind}] Rhat={rhat:.3f}  min ESS={ess:.0f}  divergences={ndiv}  "
         f"treedepth>={max_treedepth}: {td_frac:.0%} (max {td_max})"
     )
+    if "_serr" in kind:
+        try:
+            ss = fit.stan_variable("s_scale")
+            print(
+                f"  [{kind}] s_scale = {np.median(ss):.3f} "
+                f"+{np.percentile(ss, 84) - np.median(ss):.3f}/"
+                f"-{np.median(ss) - np.percentile(ss, 16):.3f}  "
+                f"(1.0 = reported sigmas correct; prior lognormal(0, 0.30))"
+            )
+            np.savetxt(
+                "s_scale_draws.csv", ss, delimiter=",", header="s_scale", comments=""
+            )
+        except Exception as e:
+            print(f"  [s_scale unavailable: {e}]")
     return map_par, flat
 
 
@@ -1049,7 +1355,20 @@ def summarise(flat):
             f"  {p:9s} {tv[i]:8.3f} {med[i]:9.3f} {sd[i]:7.3f} "
             f"{q16[i]:8.3f} {q84[i]:8.3f} {bias:+9.2f}"
         )
-    return dict(median=med, sd=sd, q16=q16, q84=q84)
+    ac = corrected_alpha(flat)
+    acm = float(np.median(ac))
+    print(
+        f"  {'al_corr':9s} {TRUE['al']:8.3f} {acm:9.3f} {np.std(ac):7.3f} "
+        f"{np.percentile(ac, 16):8.3f} {np.percentile(ac, 84):8.3f} "
+        f"{(acm - TRUE['al']) / np.std(ac):+9.2f}   <- mock bias-corrected"
+    )
+    print(
+        f"  [alpha bias at M*={med[0]:.2f} is {float(alpha_bias(med[0])):+.3f} dex; "
+        f"single-realisation calibration, no error bar yet]"
+    )
+    return dict(
+        median=med, sd=sd, q16=q16, q84=q84, al_corr=acm, al_corr_sd=float(np.std(ac))
+    )
 
 
 # ----------------------------------------------------------
@@ -1148,7 +1467,7 @@ def plot_recovery(
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
     prior_mu = [14.13, -3.96, -1.68, 0.63]  # must match the Stan model priors
-    prior_sd = [0.42, 0.69, 0.22, 0.18]
+    prior_sd = [0.42, 0.69, 0.22, 0.02]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
@@ -1246,7 +1565,7 @@ def run_coverage(
             print(f"  [real {r:02d}] mlim failed ({e}); skipped")
             continue
         mlim_sh = mlim_func(z_mids)
-        if model_kind == "marg_comp":
+        if model_kind in ("marg_comp", "marg_comp_serr"):
             data, keep = prep_comp(z, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh)
             x_fit = m_obs[keep]
             print(
@@ -1305,7 +1624,7 @@ def run_coverage(
 def report_coverage(df):
     # prior widths (must match the Stan model priors) -- to flag which
     # parameters are data-constrained vs prior-driven on this sample.
-    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.18}
+    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.02}
     print("\n" + "=" * 78)
     print(f"  COVERAGE SUMMARY over {len(df)} realisations")
     print("=" * 78)
@@ -1461,7 +1780,7 @@ def run_real_pipeline(model_kind="marg"):
     z_mids, V_sh = shell_volumes(sky_frac)
     mlim_sh = mlim_func(z_mids)
 
-    if model_kind == "marg_comp":
+    if model_kind in ("marg_comp", "marg_comp_serr"):
         data, keep = prep_comp(
             z_obs, m_obs, sigma_obs, mlim_func, z_mids, mlim_sh, V_sh
         )
@@ -1612,7 +1931,15 @@ def load_real_gama(fits_path):
     return log_mass[good], err[good], Zfof[good], Nfof[good].astype(int)
 
 
-def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
+def run_real_gama(
+    fits_path,
+    sky_area_deg2_val=179.92,
+    model_kind="marg",
+    reflex=False,
+    reflex_dX=0.0,
+    fix_offset=False,
+    reflex_mmin=None,
+):
     """Fit the MRP to the REAL GAMA group catalogue using OUR developed model
     ('marg' by default, with the current tight cutoff/slope priors; 'gama' =
     verbatim R port, kept only for a pure port-check). load_real_gama does the
@@ -1641,7 +1968,7 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
 
     mlim_per = mlim_func(z)
 
-    if model_kind == "marg_comp":
+    if model_kind in ("marg_comp", "marg_comp_serr"):
         # Completeness ramp from the GAMA-selected mock (same mag limit, same
         # >=MULTI members, same group finder) -- i.e. injection-recovery applied
         # to real GAMA. mlim(z) is derived from the REAL data above.
@@ -1651,6 +1978,37 @@ def run_real_gama(fits_path, sky_area_deg2_val=179.92, model_kind="marg"):
             f"  completeness model: kept {x_fit.size} / {log_mass.size} "
             f"(C > {CMIN}); no mlim cut; ramp from GAMA mock"
         )
+        if reflex:
+            comp = _load_comparison("../data")
+            rf = comp.get("REFLEX II (Böhringer+17)")
+            if rf is None:
+                print("  [reflex requested but reflex.csv not loaded -> without it]")
+            else:
+                sig_r = np.clip(
+                    0.5 * (np.abs(rf["elo"]) + np.abs(rf["ehi"])), 0.03, None
+                )
+                fa = lambda v: np.asarray(v, float)
+                rx, ry = fa(rf["x"]), fa(rf["y"])
+                if reflex_mmin is not None:
+                    kr = rx > float(reflex_mmin)
+                    print(
+                        f"  [REFLEX] mass cut logM > {reflex_mmin}: {int(kr.sum())}/{rx.size}"
+                    )
+                    rx, ry, sig_r = rx[kr], ry[kr], sig_r[kr]
+                data.update(N_r=int(rx.size), m_r=rx, y_r=ry, sig_r=fa(sig_r))
+                if fix_offset:
+                    data.update(dXa_fix=float(reflex_dX), dXb_fix=0.0)
+                    model_kind = "marg_comp_reflex_fixed"
+                    print(
+                        f"  [REFLEX] {rx.size} points, logM {rx.min():.2f}-{rx.max():.2f}, "
+                        f"dX fixed at {reflex_dX:+.2f}"
+                    )
+                else:
+                    data.update(
+                        dXa_mu=float(reflex_dX), dXa_sd=0.25, dXb_mu=0.0, dXb_sd=0.3
+                    )
+                    model_kind = "marg_comp_reflex"
+                    print(f"  [REFLEX] {rx.size} points, dX(M)=a+b(M-14) fitted")
     else:
         above = log_mass > mlim_per
         x_fit, sig_fit = log_mass[above], sigma[above]
@@ -1925,7 +2283,7 @@ def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
     a.legend(fontsize=8)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.18]
+    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.02]
     for i, (r, c) in enumerate([(0, 1), (0, 2), (1, 0), (1, 1)]):
         aa = ax[r, c]
         aa.hist(flat[:, i], bins=40, color="steelblue", density=True)
@@ -2039,6 +2397,8 @@ def plot_publication(
     data_dir="../data",
     fname="hmf_publication.pdf",
     title="HMF",
+    show_corrected=True,
+    corrected_band=False,
 ):
     """Driver-style HMF: our MCMC band (highlighted), the LCDM curve, the Driver+22
     MRP curve, our own survey binned points (grey, 'not fitted'), and external
@@ -2071,6 +2431,29 @@ def plot_publication(
         ls="--",
         label="Best-fit MRP (this work)",
     )
+
+    # alpha bias-corrected curve: alpha -> alpha - bias(M*), other params as fitted.
+    # NOTE this curve is NOT a fit to the data -- only alpha is corrected, while
+    # M*/phi*/beta keep their (also biased) fitted values, so it will sit off the
+    # points. It is shown to indicate the size of the alpha systematic.
+    if show_corrected:
+        if corrected_band:
+            for k in idx:
+                pc = flat[k].copy()
+                pc[2] = pc[2] - float(alpha_bias(pc[0]))
+                ax.plot(
+                    mgrid, np.log10(mrp_phi(mgrid, *pc)), color="darkorange", alpha=0.02
+                )
+        medc = med.copy()
+        medc[2] = float(np.median(corrected_alpha(flat)))
+        ax.plot(
+            mgrid,
+            np.log10(mrp_phi(mgrid, *medc)),
+            color="darkorange",
+            lw=2,
+            ls="-.",
+            label=r"$\alpha$ bias-corrected (not a fit)",
+        )
 
     # LCDM + Driver MRP curves
     lx, ly, _ = lcdm_curve()
@@ -2155,7 +2538,12 @@ def _cred_levels(H):
     return sorted(set(lv))
 
 
-def plot_corner(flat, driver=(14.13, -3.96, -1.68, 0.63), fname="corner.pdf"):
+def plot_corner(
+    flat,
+    driver=(14.13, -3.96, -1.68, 0.63),
+    fname="corner.pdf",
+    use_corrected_alpha=False,
+):
     """Corner plot for (M*, logphi*, alpha, beta): 2D credible contours off the
     diagonal, marginals on it, with the median (red) and Driver+22 (black)
     reference points. (LCDM single-parameter markers are intentionally omitted:
@@ -2174,6 +2562,10 @@ def plot_corner(flat, driver=(14.13, -3.96, -1.68, 0.63), fname="corner.pdf"):
         smooth = lambda H: H
 
     labels = [r"$\log_{10} M_*$", r"$\log_{10}\phi_*$", r"$\alpha$", r"$\beta$"]
+    if use_corrected_alpha:
+        flat = flat.copy()
+        flat[:, 2] = corrected_alpha(flat)
+        labels[2] = r"$\alpha_{\rm corr}$"
     med = np.median(flat, axis=0)
     P = flat.shape[1]
     fig, axes = plt.subplots(P, P, figsize=(9, 9))
@@ -2284,6 +2676,8 @@ def run_combined_comp(
     full_sample=False,
     reflex=False,
     reflex_dX=0.0,
+    fix_offset=False,
+    reflex_mmin=None,
     data_dir="../data",
 ):
     """Joint GAMA+SDSS with completeness. GAMA's ramp is fixed (measured from the
@@ -2369,26 +2763,37 @@ def run_combined_comp(
             # symmetric log-error from the fractional errors (mean of elo/ehi)
             sig_r = 0.5 * (np.abs(rf["elo"]) + np.abs(rf["ehi"]))
             sig_r = np.clip(sig_r, 0.03, None)
-            data.update(
-                N_r=int(rf["x"].size),
-                m_r=f(rf["x"]),
-                y_r=f(rf["y"]),
-                sig_r=f(sig_r),
-                dXa_mu=float(reflex_dX),
-                dXa_sd=0.25,
-                dXb_mu=0.0,
-                dXb_sd=0.3,
-            )
-            model_kind = "combined_comp_reflex"
+            rx, ry = np.asarray(rf["x"], float), np.asarray(rf["y"], float)
+            if reflex_mmin is not None:
+                keepr = rx > float(reflex_mmin)
+                print(
+                    f"  [REFLEX] mass cut logM > {reflex_mmin}: "
+                    f"{int(keepr.sum())}/{rx.size} points kept"
+                )
+                rx, ry, sig_r = rx[keepr], ry[keepr], sig_r[keepr]
+            base = dict(N_r=int(rx.size), m_r=f(rx), y_r=f(ry), sig_r=f(sig_r))
+            if fix_offset:
+                # offset as DATA -> parameter space stays 4D, samples normally
+                base.update(dXa_fix=float(reflex_dX), dXb_fix=0.0)
+                model_kind = "combined_comp_reflex_fixed"
+            else:
+                base.update(
+                    dXa_mu=float(reflex_dX), dXa_sd=0.25, dXb_mu=0.0, dXb_sd=0.3
+                )
+                model_kind = "combined_comp_reflex"
+            data.update(base)
             print(
-                f"  [REFLEX] {rf['x'].size} binned points, "
-                f"logM {rf['x'].min():.2f}-{rf['x'].max():.2f}, "
-                f"dX(M)=a+b(M-14): a~N({reflex_dX:+.2f},0.25), b~N(0,0.3) (fitted)"
+                f"  [REFLEX] {rx.size} binned points, "
+                f"logM {rx.min():.2f}-{rx.max():.2f}, "
+                f"dX(M) fixed at {reflex_dX:+.2f}"
+                if fix_offset
+                else f"dX(M)=a+b(M-14): a~N({reflex_dX:+.2f},0.25), b~N(0,0.3) (fitted)"
             )
 
+    model_kind, data = apply_driver_prior(model_kind, data)
     print(
         f"\nFitting [{model_kind}] GAMA + SDSS"
-        f"{' + REFLEX' if model_kind.endswith('reflex') else ''} (cmdstanpy) ..."
+        f"{' + REFLEX' if 'reflex' in model_kind else ''} (cmdstanpy) ..."
     )
     model = get_model(model_kind)
 
@@ -2434,7 +2839,8 @@ def run_combined_comp(
         inits=init0,
     )
     flat = np.column_stack([fit.stan_variable(p) for p in PARAMS])
-    otag = "combined_comp_reflex" if model_kind.endswith("reflex") else "combined_comp"
+    otag = "combined_comp_reflex" if "reflex" in model_kind else "combined_comp"
+    save_arr, save_hdr = flat, "ms,lp,al,be"
     if model_kind.endswith("reflex"):
         da, db = fit.stan_variable("dXa"), fit.stan_variable("dXb")
         print(
@@ -2443,8 +2849,15 @@ def run_combined_comp(
             f"slope b = {np.median(db):+.3f}"
             f"±{0.5 * (np.percentile(db, 84) - np.percentile(db, 16)):.3f} dex/dex"
         )
+        print(
+            f"  [prior was a~N({reflex_dX:+.2f},0.25), b~N(0,0.30) -- compare widths:"
+            f" posterior/prior = {0.5 * (np.percentile(db, 84) - np.percentile(db, 16)) / 0.30:.2f}"
+            f" (near 1 => prior-driven, << 1 => measured)]"
+        )
+        save_arr = np.column_stack([flat, da, db])
+        save_hdr = "ms,lp,al,be,dXa,dXb"
     np.savetxt(
-        f"{otag}_draws.csv", flat, delimiter=",", header="ms,lp,al,be", comments=""
+        f"{otag}_draws.csv", save_arr, delimiter=",", header=save_hdr, comments=""
     )
     print(f"  saved draws -> {otag}_draws.csv")
     try:
@@ -2456,17 +2869,107 @@ def run_combined_comp(
     res = summarise(flat)
     A = dict(x_fit=g_lm[g_keep], Vsurvey=float(gV_sh.sum()))
     B = dict(x_fit=s_lm[s_keep], Vsurvey=float(sV_sh.sum()))
-    ttl = (
-        "GAMA + SDSS + REFLEX HMF"
-        if model_kind.endswith("reflex")
-        else "GAMA + SDSS HMF"
-    )
+    ttl = "GAMA + SDSS + REFLEX HMF" if "reflex" in model_kind else "GAMA + SDSS HMF"
     emit_publication(flat, {"GAMA": A, "SDSS": B}, tag=otag, title=ttl)
     try:
         plot_combined(flat, {"GAMA": A, "SDSS": B}, fname=f"recovery_{otag}.pdf")
     except Exception as e:
         print(f"  [plot failed: {e}] draws are saved; re-plot from the CSV.")
     return res
+
+
+def calibrate_alpha_bias(n_real=20, ms_pins=(14.13, 14.35, 14.60), seed0=500):
+    """Measure the alpha bias vs M* over many mock realisations (numpy, no Stan).
+    For each realisation and each pinned M*, fit (logphi*, alpha) with the
+    production completeness likelihood and record alpha_fit - alpha_true.
+    Prints mean bias +/- scatter at each pin -> the error bar that
+    ALPHA_BIAS_DA currently lacks. Writes alpha_bias_calibration.csv."""
+    from scipy import optimize
+    from scipy.stats import norm
+
+    groups, galaxies = load_catalogues(DATA_DIR)
+    sky_frac = (
+        sky_area_deg2(groups["ra"], groups["dec"]) * (np.pi / 180) ** 2 / (4 * np.pi)
+    )
+    gv, _ = abundance_match(groups, sky_frac)
+    gv = gama_select(gv, galaxies)
+    z_mids, V_sh = shell_volumes(sky_frac, zmin=ZMIN, zmax=ZLIMIT)
+    ln10 = np.log(10.0)
+    tv_al, be = TRUE["al"], TRUE["be"]
+
+    def phi(m, ms, lp, al):
+        u = m - ms
+        return be * ln10 * 10**lp * 10 ** ((al + 1) * u) * np.exp(-(10 ** (be * u)))
+
+    out = np.full((n_real, len(ms_pins)), np.nan)
+    for r in range(n_real):
+        rng = np.random.default_rng(seed0 + r)
+        z, m_obs, sig, _ = add_mass_errors(gv, rng)
+        try:
+            mlim_func, _, _, _ = turnover_mlim(z, m_obs, zmin=ZMIN, zmax=ZLIMIT)
+        except Exception:
+            continue
+        mlim_sh, mlim_o = mlim_func(z_mids), mlim_func(z)
+        d50_o = np.interp(z, COMP_Z_PTS, COMP_D50_PTS)
+        w_o = np.interp(z, COMP_Z_PTS, COMP_W_PTS)
+        d50_s = np.interp(z_mids, COMP_Z_PTS, COMP_D50_PTS)
+        w_s = np.interp(z_mids, COMP_Z_PTS, COMP_W_PTS)
+        keep = norm.cdf((m_obs - mlim_o - d50_o) / w_o) > CMIN
+        x, sg = m_obs[keep], sig[keep]
+        ml_k, d50_k, w_k = mlim_o[keep], d50_o[keep], w_o[keep]
+        mg = np.linspace(mlim_sh.min() - 3.0, XHI, 1000)
+        gq = np.linspace(-5, 5, 41)
+
+        def nll(t, msf):
+            lp_, al_ = t
+            pg = phi(mg, msf, lp_, al_)
+            lam = 0.0
+            for j in range(len(V_sh)):
+                Cj = norm.cdf((mg - mlim_sh[j] - d50_s[j]) / w_s[j])
+                lam += V_sh[j] * np.trapezoid(pg * np.where(Cj > CMIN, Cj, 0.0), mg)
+            mt = x[:, None] + sg[:, None] * gq[None, :]
+            Cm = norm.cdf((mt - ml_k[:, None] - d50_k[:, None]) / w_k[:, None])
+            integ = (
+                phi(mt, msf, lp_, al_)
+                * Cm
+                * np.exp(-0.5 * gq[None, :] ** 2)
+                / (sg[:, None] * np.sqrt(2 * np.pi))
+            )
+            ll = np.sum(np.log(np.maximum(np.trapezoid(integ, mt, axis=1), 1e-300)))
+            return -(-lam + ll)
+
+        for k, msf in enumerate(ms_pins):
+            try:
+                res = optimize.minimize(
+                    nll,
+                    [-4.0, -1.6],
+                    args=(msf,),
+                    method="Nelder-Mead",
+                    options=dict(xatol=1e-4, fatol=1e-3, maxiter=4000),
+                )
+                out[r, k] = res.x[1] - tv_al
+            except Exception:
+                pass
+        done = np.isfinite(out[: r + 1]).all(axis=1).sum()
+        print(f"  [{r + 1}/{n_real}] complete realisations: {done}")
+
+    print(f"\n  alpha bias vs pinned M*  ({n_real} realisations)")
+    print(f"  {'M* pin':>8} {'mean bias':>10} {'scatter':>9} {'N':>4}")
+    for k, msf in enumerate(ms_pins):
+        col = out[:, k][np.isfinite(out[:, k])]
+        if col.size:
+            print(f"  {msf:8.2f} {col.mean():+10.3f} {col.std():9.3f} {col.size:4d}")
+    np.savetxt(
+        "alpha_bias_calibration.csv",
+        out,
+        delimiter=",",
+        header=",".join(f"ms_{m:.2f}" for m in ms_pins),
+        comments="",
+    )
+    print("  saved alpha_bias_calibration.csv")
+    print("  -> put the mean biases in ALPHA_BIAS_MS/ALPHA_BIAS_DA and add the")
+    print("     scatter in quadrature to alpha's error bar.")
+    return out
 
 
 def run_selftest(model_kind="marg"):
@@ -2552,10 +3055,26 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--model",
-        choices=["simple", "marg", "marg_comp"],
+        choices=["simple", "marg", "marg_comp", "marg_comp_serr"],
         default="marg",
         help="which likelihood: 'simple' (baseline) or 'marg' "
         "(marginalised + boundary). Default marg.",
+    )
+    ap.add_argument(
+        "--driver-prior",
+        action="store_true",
+        help="use Driver+22 GSR chains as a multivariate-normal prior",
+    )
+    ap.add_argument(
+        "--driver-prior-inflate",
+        type=float,
+        default=1.0,
+        help="widen the Driver prior covariance by this factor",
+    )
+    ap.add_argument(
+        "--calibrate-alpha",
+        action="store_true",
+        help="measure the alpha-vs-M* bias over many mock realisations",
     )
     ap.add_argument(
         "--selftest",
@@ -2591,7 +3110,7 @@ if __name__ == "__main__":
     )
     ap.add_argument(
         "--gama-model",
-        choices=["marg", "marg_comp", "gama", "simple"],
+        choices=["marg", "marg_comp", "marg_comp_serr", "gama", "simple"],
         default="marg",
         help="model for --realgama: 'marg' (sharp cut), 'marg_comp' "
         "(completeness forward-model), or 'gama' (R port, check only)",
@@ -2651,19 +3170,40 @@ if __name__ == "__main__":
         help="for --combined-comp: add REFLEX II binned points to anchor the cutoff",
     )
     ap.add_argument(
+        "--reflex-mmin",
+        type=float,
+        default=None,
+        help="only use REFLEX points above this logM (anchor the cutoff only)",
+    )
+    ap.add_argument(
+        "--fix-offset",
+        action="store_true",
+        help="pin the REFLEX mass offset at --reflex-dx instead of fitting it",
+    )
+    ap.add_argument(
         "--reflex-dx",
         type=float,
         default=0.0,
         help="fixed X-ray->dynamical mass offset applied to REFLEX (dex, default 0)",
     )
     args = ap.parse_args()
-    if args.selftest:
+    USE_DRIVER_PRIOR = args.driver_prior
+    DRIVER_PRIOR_INFLATE = args.driver_prior_inflate
+    if args.calibrate_alpha:
+        calibrate_alpha_bias(n_real=args.nreal)
+    elif args.selftest:
         run_selftest(model_kind=args.model)
     elif args.coverage:
         run_coverage(model_kind=args.model, n_real=args.nreal)
     elif args.realgama:
         run_real_gama(
-            args.gama_fits, sky_area_deg2_val=args.gama_area, model_kind=args.gama_model
+            args.gama_fits,
+            sky_area_deg2_val=args.gama_area,
+            model_kind=args.gama_model,
+            reflex=args.reflex,
+            reflex_dX=args.reflex_dx,
+            fix_offset=args.fix_offset,
+            reflex_mmin=args.reflex_mmin,
         )
     elif args.realsdss:
         run_real_sdss(
@@ -2685,6 +3225,8 @@ if __name__ == "__main__":
             full_sample=args.full_sample,
             reflex=args.reflex,
             reflex_dX=args.reflex_dx,
+            fix_offset=args.fix_offset,
+            reflex_mmin=args.reflex_mmin,
         )
     elif args.combined:
         run_combined(
