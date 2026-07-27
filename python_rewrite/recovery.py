@@ -74,7 +74,7 @@ A_SCALE = 10.0
 COMP_Z_PTS = [0.045, 0.115, 0.20]
 COMP_D50_PTS = [-0.148, -0.193, -0.232]
 COMP_W_PTS = [0.326, 0.256, 0.227]
-CMIN = 0.2
+CMIN = 0.0
 
 # Mock only: inject mass errors of SIGMA_INJECT_SCALE * sigma_reported while the
 # fit is still given sigma_reported. 1.0 -> the reported errors are correct
