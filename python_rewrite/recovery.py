@@ -74,7 +74,7 @@ A_SCALE = 10.0
 COMP_Z_PTS = [0.045, 0.115, 0.20]
 COMP_D50_PTS = [-0.148, -0.193, -0.232]
 COMP_W_PTS = [0.326, 0.256, 0.227]
-CMIN = 0.0
+CMIN = 0.2
 
 # Mock only: inject mass errors of SIGMA_INJECT_SCALE * sigma_reported while the
 # fit is still given sigma_reported. 1.0 -> the reported errors are correct
@@ -102,8 +102,9 @@ DRIVER_PRIOR_INFLATE = 1.0
 # (both -> alpha ~ -1.65).
 # CAVEAT: ONE mock realisation, so there is no uncertainty on the correction
 # yet. Run calibrate_alpha_bias() over many realisations before quoting it.
-ALPHA_BIAS_MS = [14.130, 14.175, 14.600]
-ALPHA_BIAS_DA = [0.164, 0.117, -0.214]
+ALPHA_BIAS_MS = [14.13, 14.35, 14.60]
+ALPHA_BIAS_DA = [0.189, 0.013, -0.136]
+ALPHA_BIAS_SCATTER = 0.073  # realisation-to-realisation rms (20 mocks)
 
 
 def alpha_bias(ms):
@@ -1357,14 +1358,15 @@ def summarise(flat):
         )
     ac = corrected_alpha(flat)
     acm = float(np.median(ac))
+    tot = float(np.hypot(np.std(ac), ALPHA_BIAS_SCATTER))
     print(
-        f"  {'al_corr':9s} {TRUE['al']:8.3f} {acm:9.3f} {np.std(ac):7.3f} "
+        f"  {'al_corr':9s} {TRUE['al']:8.3f} {acm:9.3f} {tot:7.3f} "
         f"{np.percentile(ac, 16):8.3f} {np.percentile(ac, 84):8.3f} "
         f"{(acm - TRUE['al']) / np.std(ac):+9.2f}   <- mock bias-corrected"
     )
     print(
         f"  [alpha bias at M*={med[0]:.2f} is {float(alpha_bias(med[0])):+.3f} dex; "
-        f"single-realisation calibration, no error bar yet]"
+        f"sd combines stat {np.std(ac):.3f} + calib {ALPHA_BIAS_SCATTER:.3f} (20 mocks)]"
     )
     return dict(
         median=med, sd=sd, q16=q16, q84=q84, al_corr=acm, al_corr_sd=float(np.std(ac))
