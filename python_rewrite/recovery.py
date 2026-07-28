@@ -111,6 +111,12 @@ ALPHA_BIAS_SCATTER = 0.073  # realisation-to-realisation rms (20 mocks)
 # default; enable with --alpha-correction if you want it reported/plotted.
 SHOW_ALPHA_CORRECTION = False
 
+# Our own binned points on the publication HMF are raw counts / total volume:
+# no 1/Vmax, no completeness correction. They roll over below the limit and sit
+# well under every other dataset, which reads as "our data disagrees with our
+# fit" when it is really just an uncorrected estimator. Off by default.
+SHOW_OWN_POINTS = False
+
 
 def alpha_bias(ms):
     """Fitted-minus-true alpha as a function of where M* sits (linear fit to
@@ -351,7 +357,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
   // MRP on the grid
   vector[Ng] pg;
@@ -428,7 +434,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
   // phi on the global grid (computed once)
   vector[Ng] pg;
@@ -632,7 +638,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
   target += survey_contrib(x_obs_a, sig_a, V_sh_a, mlim_sh_a, sig_sh_a,
                            xhi, Ng, Nint, ms, lp, al, be);
   target += survey_contrib(x_obs_b, sig_b, V_sh_b, mlim_sh_b, sig_sh_b,
@@ -681,7 +687,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
   vector[Ng] pg;
   for (k in 1:Ng) {
@@ -849,7 +855,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
   target += survey_ll_fixC(x_obs_a, sig_a, Cobj_a, mt_a, V_sh_a, Csh_a,
                            xg_a, dx_a, Nint, ms, lp, al, be);
   target += survey_ll_fixC(x_obs_b, sig_b, Cobj_b, mt_b, V_sh_b, Csh_b,
@@ -1023,7 +1029,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
   s_scale ~ lognormal(0, 0.30);         // prior median 1, ~ +/-35 per cent
 
   vector[Ng] pg;
@@ -1476,7 +1482,7 @@ def plot_recovery(
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
     prior_mu = [14.13, -3.96, -1.68, 0.63]  # must match the Stan model priors
-    prior_sd = [0.42, 0.69, 0.22, 0.02]
+    prior_sd = [0.42, 0.69, 0.22, 0.18]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
@@ -1633,7 +1639,7 @@ def run_coverage(
 def report_coverage(df):
     # prior widths (must match the Stan model priors) -- to flag which
     # parameters are data-constrained vs prior-driven on this sample.
-    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.02}
+    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.18}
     print("\n" + "=" * 78)
     print(f"  COVERAGE SUMMARY over {len(df)} realisations")
     print("=" * 78)
@@ -2292,7 +2298,7 @@ def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
     a.legend(fontsize=8)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.02]
+    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.18]
     for i, (r, c) in enumerate([(0, 1), (0, 2), (1, 0), (1, 1)]):
         aa = ax[r, c]
         aa.hist(flat[:, i], bins=40, color="steelblue", density=True)
@@ -2478,8 +2484,8 @@ def plot_publication(
         label="Driver+22 MRP (GSR)",
     )
 
-    # our own survey binned points (grey, not fitted)
-    if my_surveys:
+    # our own survey binned points (grey, not fitted) -- see SHOW_OWN_POINTS
+    if my_surveys and SHOW_OWN_POINTS:
         edges = np.arange(12.5, 16, 0.2)
         cen = 0.5 * (edges[:-1] + edges[1:])
         for name, s in my_surveys.items():
