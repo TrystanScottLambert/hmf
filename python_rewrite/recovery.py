@@ -106,6 +106,11 @@ ALPHA_BIAS_MS = [14.13, 14.35, 14.60]
 ALPHA_BIAS_DA = [0.189, 0.013, -0.136]
 ALPHA_BIAS_SCATTER = 0.073  # realisation-to-realisation rms (20 mocks)
 
+# The correction's zero-point is the alpha injected into Shark, so a corrected
+# value carries that input plus only the real-minus-mock deviation. Off by
+# default; enable with --alpha-correction if you want it reported/plotted.
+SHOW_ALPHA_CORRECTION = False
+
 
 def alpha_bias(ms):
     """Fitted-minus-true alpha as a function of where M* sits (linear fit to
@@ -1356,6 +1361,8 @@ def summarise(flat):
             f"  {p:9s} {tv[i]:8.3f} {med[i]:9.3f} {sd[i]:7.3f} "
             f"{q16[i]:8.3f} {q84[i]:8.3f} {bias:+9.2f}"
         )
+    if not SHOW_ALPHA_CORRECTION:
+        return dict(median=med, sd=sd, q16=q16, q84=q84)
     ac = corrected_alpha(flat)
     acm = float(np.median(ac))
     tot = float(np.hypot(np.std(ac), ALPHA_BIAS_SCATTER))
@@ -2399,7 +2406,7 @@ def plot_publication(
     data_dir="../data",
     fname="hmf_publication.pdf",
     title="HMF",
-    show_corrected=True,
+    show_corrected=None,
     corrected_band=False,
 ):
     """Driver-style HMF: our MCMC band (highlighted), the LCDM curve, the Driver+22
@@ -2410,6 +2417,8 @@ def plot_publication(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    if show_corrected is None:
+        show_corrected = SHOW_ALPHA_CORRECTION
     med = np.median(flat, axis=0)
     mgrid = np.linspace(12.5, 16, 400)
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -3063,6 +3072,11 @@ if __name__ == "__main__":
         "(marginalised + boundary). Default marg.",
     )
     ap.add_argument(
+        "--alpha-correction",
+        action="store_true",
+        help="report/plot the Shark-calibrated alpha bias correction",
+    )
+    ap.add_argument(
         "--driver-prior",
         action="store_true",
         help="use Driver+22 GSR chains as a multivariate-normal prior",
@@ -3189,6 +3203,7 @@ if __name__ == "__main__":
         help="fixed X-ray->dynamical mass offset applied to REFLEX (dex, default 0)",
     )
     args = ap.parse_args()
+    SHOW_ALPHA_CORRECTION = args.alpha_correction
     USE_DRIVER_PRIOR = args.driver_prior
     DRIVER_PRIOR_INFLATE = args.driver_prior_inflate
     if args.calibrate_alpha:
