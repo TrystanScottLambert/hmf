@@ -102,8 +102,20 @@ DRIVER_PRIOR_INFLATE = 1.0
 # (both -> alpha ~ -1.65).
 # CAVEAT: ONE mock realisation, so there is no uncertainty on the correction
 # yet. Run calibrate_alpha_bias() over many realisations before quoting it.
-ALPHA_BIAS_MS = [14.130, 14.175, 14.600]
-ALPHA_BIAS_DA = [0.164, 0.117, -0.214]
+ALPHA_BIAS_MS = [14.13, 14.35, 14.60]
+ALPHA_BIAS_DA = [0.189, 0.013, -0.136]
+ALPHA_BIAS_SCATTER = 0.073  # realisation-to-realisation rms (20 mocks)
+
+# The correction's zero-point is the alpha injected into Shark, so a corrected
+# value carries that input plus only the real-minus-mock deviation. Off by
+# default; enable with --alpha-correction if you want it reported/plotted.
+SHOW_ALPHA_CORRECTION = False
+
+# Our own binned points on the publication HMF are raw counts / total volume:
+# no 1/Vmax, no completeness correction. They roll over below the limit and sit
+# well under every other dataset, which reads as "our data disagrees with our
+# fit" when it is really just an uncorrected estimator. Off by default.
+SHOW_OWN_POINTS = False
 
 
 def alpha_bias(ms):
@@ -345,7 +357,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
   // MRP on the grid
   vector[Ng] pg;
@@ -422,7 +434,7 @@ model {
   ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
   lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
   // phi on the global grid (computed once)
   vector[Ng] pg;
@@ -626,7 +638,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
   target += survey_contrib(x_obs_a, sig_a, V_sh_a, mlim_sh_a, sig_sh_a,
                            xhi, Ng, Nint, ms, lp, al, be);
   target += survey_contrib(x_obs_b, sig_b, V_sh_b, mlim_sh_b, sig_sh_b,
@@ -675,7 +687,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
   vector[Ng] pg;
   for (k in 1:Ng) {
@@ -843,7 +855,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);    // beta pinned at Driver+22 value
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
   target += survey_ll_fixC(x_obs_a, sig_a, Cobj_a, mt_a, V_sh_a, Csh_a,
                            xg_a, dx_a, Nint, ms, lp, al, be);
   target += survey_ll_fixC(x_obs_b, sig_b, Cobj_b, mt_b, V_sh_b, Csh_b,
@@ -1017,7 +1029,7 @@ model {
   ms ~ normal(14.13, 0.42);
   lp ~ normal(-3.96, 0.69);
   al ~ normal(-1.68, 0.22);
-  be ~ normal(0.63, 0.02);
+  be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
   s_scale ~ lognormal(0, 0.30);         // prior median 1, ~ +/-35 per cent
 
   vector[Ng] pg;
@@ -1355,16 +1367,19 @@ def summarise(flat):
             f"  {p:9s} {tv[i]:8.3f} {med[i]:9.3f} {sd[i]:7.3f} "
             f"{q16[i]:8.3f} {q84[i]:8.3f} {bias:+9.2f}"
         )
+    if not SHOW_ALPHA_CORRECTION:
+        return dict(median=med, sd=sd, q16=q16, q84=q84)
     ac = corrected_alpha(flat)
     acm = float(np.median(ac))
+    tot = float(np.hypot(np.std(ac), ALPHA_BIAS_SCATTER))
     print(
-        f"  {'al_corr':9s} {TRUE['al']:8.3f} {acm:9.3f} {np.std(ac):7.3f} "
+        f"  {'al_corr':9s} {TRUE['al']:8.3f} {acm:9.3f} {tot:7.3f} "
         f"{np.percentile(ac, 16):8.3f} {np.percentile(ac, 84):8.3f} "
         f"{(acm - TRUE['al']) / np.std(ac):+9.2f}   <- mock bias-corrected"
     )
     print(
         f"  [alpha bias at M*={med[0]:.2f} is {float(alpha_bias(med[0])):+.3f} dex; "
-        f"single-realisation calibration, no error bar yet]"
+        f"sd combines stat {np.std(ac):.3f} + calib {ALPHA_BIAS_SCATTER:.3f} (20 mocks)]"
     )
     return dict(
         median=med, sd=sd, q16=q16, q84=q84, al_corr=acm, al_corr_sd=float(np.std(ac))
@@ -1467,7 +1482,7 @@ def plot_recovery(
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
     prior_mu = [14.13, -3.96, -1.68, 0.63]  # must match the Stan model priors
-    prior_sd = [0.42, 0.69, 0.22, 0.02]
+    prior_sd = [0.42, 0.69, 0.22, 0.18]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
         a.hist(flat[:, k], bins=40, color="steelblue", density=True)
@@ -1624,7 +1639,7 @@ def run_coverage(
 def report_coverage(df):
     # prior widths (must match the Stan model priors) -- to flag which
     # parameters are data-constrained vs prior-driven on this sample.
-    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.02}
+    prior_sd = {"ms": 0.42, "lp": 0.69, "al": 0.22, "be": 0.18}
     print("\n" + "=" * 78)
     print(f"  COVERAGE SUMMARY over {len(df)} realisations")
     print("=" * 78)
@@ -2283,7 +2298,7 @@ def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
     a.legend(fontsize=8)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.02]
+    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.18]
     for i, (r, c) in enumerate([(0, 1), (0, 2), (1, 0), (1, 1)]):
         aa = ax[r, c]
         aa.hist(flat[:, i], bins=40, color="steelblue", density=True)
@@ -2397,7 +2412,7 @@ def plot_publication(
     data_dir="../data",
     fname="hmf_publication.pdf",
     title="HMF",
-    show_corrected=True,
+    show_corrected=None,
     corrected_band=False,
 ):
     """Driver-style HMF: our MCMC band (highlighted), the LCDM curve, the Driver+22
@@ -2408,6 +2423,8 @@ def plot_publication(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    if show_corrected is None:
+        show_corrected = SHOW_ALPHA_CORRECTION
     med = np.median(flat, axis=0)
     mgrid = np.linspace(12.5, 16, 400)
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -2467,8 +2484,8 @@ def plot_publication(
         label="Driver+22 MRP (GSR)",
     )
 
-    # our own survey binned points (grey, not fitted)
-    if my_surveys:
+    # our own survey binned points (grey, not fitted) -- see SHOW_OWN_POINTS
+    if my_surveys and SHOW_OWN_POINTS:
         edges = np.arange(12.5, 16, 0.2)
         cen = 0.5 * (edges[:-1] + edges[1:])
         for name, s in my_surveys.items():
@@ -3061,6 +3078,11 @@ if __name__ == "__main__":
         "(marginalised + boundary). Default marg.",
     )
     ap.add_argument(
+        "--alpha-correction",
+        action="store_true",
+        help="report/plot the Shark-calibrated alpha bias correction",
+    )
+    ap.add_argument(
         "--driver-prior",
         action="store_true",
         help="use Driver+22 GSR chains as a multivariate-normal prior",
@@ -3187,6 +3209,7 @@ if __name__ == "__main__":
         help="fixed X-ray->dynamical mass offset applied to REFLEX (dex, default 0)",
     )
     args = ap.parse_args()
+    SHOW_ALPHA_CORRECTION = args.alpha_correction
     USE_DRIVER_PRIOR = args.driver_prior
     DRIVER_PRIOR_INFLATE = args.driver_prior_inflate
     if args.calibrate_alpha:
