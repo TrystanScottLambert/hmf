@@ -71,9 +71,18 @@ A_SCALE = 10.0
 # measured from the mock (measure_completeness.py). z-dependent: interpolate
 # (D50, w) from these per-z-bin values. CMIN = floor (drop groups below 20%
 # completeness; corrections below that are unreliable, cf. Driver+22).
+# Measured for r < 19.65 (measure_completeness.py, 1335 detected).
+# GLOBAL fit used, not the per-z one: with only ~1300 groups split three ways
+# the per-z D50 is noise-dominated -- it reversed sign (-0.148/-0.193/-0.232 ->
+# -0.236/-0.163/-0.063) under a 0.15 mag change, while mlim + D50, the mass at
+# which completeness is actually 50%, moved by <0.1 dex. The global fit uses
+# every group and is far more stable.
 COMP_Z_PTS = [0.045, 0.115, 0.20]
-COMP_D50_PTS = [-0.148, -0.193, -0.232]
-COMP_W_PTS = [0.326, 0.256, 0.227]
+COMP_D50_PTS = [-0.100, -0.100, -0.100]
+COMP_W_PTS = [0.256, 0.256, 0.256]
+# per-z alternative (r<19.65), for the systematic check:
+#   COMP_D50_PTS = [-0.236, -0.163, -0.063]
+#   COMP_W_PTS   = [0.314, 0.270, 0.223]
 CMIN = 0.0
 
 # Mock only: inject mass errors of SIGMA_INJECT_SCALE * sigma_reported while the
@@ -1840,7 +1849,7 @@ def run_real_pipeline(model_kind="marg"):
     return res
 
 
-def load_real_gama(fits_path):
+def load_real_gama(fits_path, regions=None, use_veldisp_err=False, dec_cut=None):
     """Read the GAMA G3C group catalogue and build observed log-masses exactly
     as run.R does: A=13.9 dynamical mass, multiplicity error model, and the
     empirical masscorr(Nfof) calibration. Returns (log_mass, sigma, z, Nfof).
@@ -1850,21 +1859,38 @@ def load_real_gama(fits_path):
     parsec, Gnewton, msol = 3.0857e16, 6.67408e-11, 1.988e30
     with afits.open(fits_path) as hdul:
         t = hdul[1].data
+    cols = set(t.columns.names)
     Nfof = np.asarray(t["Nfof"], float)
     Zfof = np.asarray(t["Zfof"], float)
     MassAfunc = np.asarray(t["MassAfunc"], float)
     VelDisp = np.asarray(t["VelDisp"], float)
     Rad50 = np.asarray(t["Rad50"], float)
     IterCenDec = np.asarray(t["IterCenDec"], float)
+    VelDispErr = np.asarray(t["VelDispErr"], float) if "VelDispErr" in cols else None
+    region = np.asarray(t["GAMARegion"]).astype(str) if "GAMARegion" in cols else None
 
-    sel = (
-        (Nfof > MULTI - 1)
-        & (Zfof < ZLIMIT)
-        & (Zfof > ZMIN)
-        & (MassAfunc > 1e1)
-        & (IterCenDec > -3.5)
-    )
+    sel = (Nfof > MULTI - 1) & (Zfof < ZLIMIT) & (Zfof > ZMIN) & (MassAfunc > 1e1)
+
+    # Region selection. The old hardcoded `IterCenDec > -3.5` picks out the
+    # equatorial fields (G09/G12/G15) and would DELETE G23 (Dec ~ -35..-30).
+    # Prefer an explicit GAMARegion cut when that column exists.
+    if regions is not None:
+        if region is None:
+            raise KeyError("regions= requested but no GAMARegion column in this file")
+        sel &= np.isin(region, [str(r) for r in regions])
+    elif dec_cut is not None:
+        sel &= IterCenDec > float(dec_cut)
+
+    if region is not None:
+        import collections
+
+        print(
+            f"  regions kept: {dict(sorted(collections.Counter(region[sel]).items()))}"
+        )
+
     Nfof, Zfof, VelDisp, Rad50 = Nfof[sel], Zfof[sel], VelDisp[sel], Rad50[sel]
+    if VelDispErr is not None:
+        VelDispErr = VelDispErr[sel]
 
     # A=13.9 dynamical mass (Msun), h-scaled as in run.R
     mymass = (
@@ -1906,6 +1932,24 @@ def load_real_gama(fits_path):
     err = np.interp(Nfof, xx, yy, left=np.nan, right=np.nan)
     err = np.where(np.isfinite(err), err, 0.03)
     err = np.where(err < 0.1, 0.1, err)
+
+    # Optional: propagate the catalogue's own velocity-dispersion error instead
+    # of the multiplicity lookup. M ~ A sigma^2 R / G, so ignoring the radius
+    # error, sigma_logM = (2/ln10) * (VelDispErr / VelDisp).
+    if use_veldisp_err:
+        if VelDispErr is None:
+            raise KeyError("use_veldisp_err=True but no VelDispErr column here")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            err_vd = (2.0 / np.log(10.0)) * (VelDispErr / VelDisp)
+        bad = ~np.isfinite(err_vd) | (err_vd <= 0)
+        err_vd = np.where(bad, err, err_vd)  # fall back to the table
+        err_vd = np.maximum(err_vd, 0.05)  # floor
+        print(
+            f"  [errors] VelDispErr -> med {np.median(err_vd):.3f} dex "
+            f"(lookup table med {np.median(err):.3f}); "
+            f"{int(bad.sum())}/{bad.size} fell back to the table"
+        )
+        err = err_vd
 
     # empirical mass corrections indexed by Nfof (run.R, 1-based; out-of-range -> 0)
     masscorr = np.array(
@@ -1954,6 +1998,9 @@ def run_real_gama(
     reflex_dX=0.0,
     fix_offset=False,
     reflex_mmin=None,
+    regions=None,
+    use_veldisp_err=False,
+    dec_cut=None,
 ):
     """Fit the MRP to the REAL GAMA group catalogue using OUR developed model
     ('marg' by default, with the current tight cutoff/slope priors; 'gama' =
@@ -1963,7 +2010,9 @@ def run_real_gama(
     so read them as 'offset vs Driver+22' -- with tight priors, be/al are
     prior-set near Driver by construction; M* and logphi* are the measurements."""
     print(f"Reading GAMA catalogue: {fits_path}")
-    log_mass, sigma, z, nfof = load_real_gama(fits_path)
+    log_mass, sigma, z, nfof = load_real_gama(
+        fits_path, regions=regions, use_veldisp_err=use_veldisp_err, dec_cut=dec_cut
+    )
     sky_frac = sky_area_deg2_val * (np.pi / 180) ** 2 / (4 * np.pi)
     print(
         f"  N groups: {log_mass.size}   mass {log_mass.min():.2f}..{log_mass.max():.2f} "
@@ -3131,6 +3180,24 @@ if __name__ == "__main__":
         help="GAMA sky area in deg^2 (for --realgama; default 179.92)",
     )
     ap.add_argument(
+        "--gama-regions",
+        nargs="+",
+        default=None,
+        help="GAMARegion values to keep, e.g. G09 G12 G15 G23 (default: all)",
+    )
+    ap.add_argument(
+        "--gama-dec-cut",
+        type=float,
+        default=None,
+        help="legacy Dec cut; Driver used -3.5, which EXCLUDES G23",
+    )
+    ap.add_argument(
+        "--veldisp-err",
+        action="store_true",
+        help="per-group mass errors from the catalogue VelDispErr "
+        "instead of the multiplicity lookup table",
+    )
+    ap.add_argument(
         "--gama-model",
         choices=["marg", "marg_comp", "marg_comp_serr", "gama", "simple"],
         default="marg",
@@ -3227,6 +3294,9 @@ if __name__ == "__main__":
             reflex_dX=args.reflex_dx,
             fix_offset=args.fix_offset,
             reflex_mmin=args.reflex_mmin,
+            regions=args.gama_regions,
+            use_veldisp_err=args.veldisp_err,
+            dec_cut=args.gama_dec_cut,
         )
     elif args.realsdss:
         run_real_sdss(
