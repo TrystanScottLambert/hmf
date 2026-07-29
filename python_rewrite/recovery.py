@@ -61,7 +61,7 @@ ZMIN, ZLIMIT = 0.01, 0.25
 MULTI = 5  # min members for a detection
 # Selection band + limit. GAMA: r_SDSS < 19.8 ; WAVES: Z_VISTA < 21.1 (deeper NIR).
 SEL_COL = "total_ap_dust_r_SDSS"
-MAG_LIMIT = 19.8
+MAG_LIMIT = 19.65
 # Dynamical-mass calibration prefactor M = A * sigma^2 R / G. Driver's fiducial
 # is 13.9; A=10 is his variant (Fig. A2). Applied to BOTH surveys for a common
 # mass scale.
