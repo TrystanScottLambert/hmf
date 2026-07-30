@@ -48,13 +48,22 @@ _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 DATA_DIR = "/Users/00115372/Desktop/mock_catalogs/offical_waves_mocks/v0.5.0"
 
 # Driver+22 MRP = injected truth
-TRUE = dict(
-    ms=14.13, lp=-3.96, al=-1.68, be=0.63
-)  # Driver+22 (2022) MRP abstract values
+# Driver+22 GSR, converted to the h=1 units this pipeline works in:
+#   log M*   14.13  - log10(1/h) = 13.958
+#   log phi* -3.96  - 3 log10(h) = -3.445
+#   alpha, beta unchanged (dimensionless)
+TRUE = dict(ms=13.958, lp=-3.445, al=-1.68, be=0.63)
+TRUE_DRIVER = dict(ms=14.13, lp=-3.96, al=-1.68, be=0.63)  # as published
 PARAMS = ["ms", "lp", "al", "be"]
 
-# Cosmology
-H0, OMEGA_M = 67.37, 0.3147
+# Cosmology. h=1, Om=0.25 is the Robotham+11 convention that the GAMA group
+# catalogue and Nessie are built in, so the fit is done in those units:
+# Rad50 is Mpc/h, masses come out Msun/h, volumes (Mpc/h)^3, phi* h^3 Mpc^-3.
+# Note the (100/H0) factor in load_real_gama then becomes exactly 1.
+# Driver+22 works at h=0.6737, Om=0.3147 -- use to_driver_cosmology() to
+# convert results for comparison rather than changing the fit.
+H0, OMEGA_M = 100.0, 0.25
+H_DRIVER = 0.6737
 
 # Survey / selection
 ZMIN, ZLIMIT = 0.01, 0.25
@@ -111,6 +120,7 @@ DRIVER_PRIOR_INFLATE = 1.0
 # (both -> alpha ~ -1.65).
 # CAVEAT: ONE mock realisation, so there is no uncertainty on the correction
 # yet. Run calibrate_alpha_bias() over many realisations before quoting it.
+# !! measured at h=0.674 -- INVALID at h=1. Re-run --calibrate-alpha.
 ALPHA_BIAS_MS = [14.13, 14.35, 14.60]
 ALPHA_BIAS_DA = [0.189, 0.013, -0.136]
 ALPHA_BIAS_SCATTER = 0.073  # realisation-to-realisation rms (20 mocks)
@@ -154,6 +164,22 @@ SIG_SH_FLOOR = 0.25  # min boundary sigma for the Phi soft cut (keeps HMC stable
 # ----------------------------------------------------------
 # 1. Physics helpers
 # ----------------------------------------------------------
+def to_driver_cosmology(ms, lp, al=None, be=None, h=H_DRIVER):
+    """Convert MRP parameters from h=1 units (this fit) to Driver+22's h=0.6737.
+
+        M[Msun]      = M[Msun/h] / h        ->  log10 M*  +0.1715
+        phi[Mpc^-3]  = phi[h^3 Mpc^-3] * h^3 ->  log10 phi* -0.5146
+
+    alpha and beta are dimensionless and unchanged. Returns (ms, lp, al, be)."""
+    return (ms + np.log10(1.0 / h), lp + 3.0 * np.log10(h), al, be)
+
+
+def from_driver_cosmology(ms, lp, al=None, be=None, h=H_DRIVER):
+    """Inverse of to_driver_cosmology: Driver's published values -> h=1 units.
+    Driver's GSR (14.13, -3.96) becomes (13.958, -3.445) at h=1."""
+    return (ms - np.log10(1.0 / h), lp - 3.0 * np.log10(h), al, be)
+
+
 def mrp_phi(x, ms, lp, al, be):
     """MRP number density per dex.  x = log10(M)."""
     u = x - ms
@@ -363,8 +389,8 @@ parameters {
   real<lower=0.1, upper=2.0> be;
 }
 model {
-  ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
-  lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
+  ms ~ normal(13.958, 0.42);   // Driver+22 M* (broad -> data-driven)
+  lp ~ normal(-3.445, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
   be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
@@ -440,8 +466,8 @@ parameters {
   real<lower=0.1, upper=2.0> be;
 }
 model {
-  ms ~ normal(14.13, 0.42);   // Driver+22 M* (broad -> data-driven)
-  lp ~ normal(-3.96, 0.69);   // Driver+22 logphi* (broad -> data-driven)
+  ms ~ normal(13.958, 0.42);   // Driver+22 M* (broad -> data-driven)
+  lp ~ normal(-3.445, 0.69);   // Driver+22 logphi* (broad -> data-driven)
   al ~ normal(-1.68, 0.22);   // Driver+22 alpha (informative)
   be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
@@ -644,8 +670,8 @@ parameters {
   real<lower=0.1, upper=2.0> be;
 }
 model {
-  ms ~ normal(14.13, 0.42);
-  lp ~ normal(-3.96, 0.69);
+  ms ~ normal(13.958, 0.42);
+  lp ~ normal(-3.445, 0.69);
   al ~ normal(-1.68, 0.22);
   be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
   target += survey_contrib(x_obs_a, sig_a, V_sh_a, mlim_sh_a, sig_sh_a,
@@ -693,8 +719,8 @@ parameters {
   real<lower=0.1, upper=2.0> be;
 }
 model {
-  ms ~ normal(14.13, 0.42);
-  lp ~ normal(-3.96, 0.69);
+  ms ~ normal(13.958, 0.42);
+  lp ~ normal(-3.445, 0.69);
   al ~ normal(-1.68, 0.22);
   be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
 
@@ -861,8 +887,8 @@ parameters {
   real<lower=0.1, upper=2.0> be;
 }
 model {
-  ms ~ normal(14.13, 0.42);
-  lp ~ normal(-3.96, 0.69);
+  ms ~ normal(13.958, 0.42);
+  lp ~ normal(-3.445, 0.69);
   al ~ normal(-1.68, 0.22);
   be ~ normal(0.63, 0.18);    // Driver+22 beta, published width (+0.25/-0.11)
   target += survey_ll_fixC(x_obs_a, sig_a, Cobj_a, mt_a, V_sh_a, Csh_a,
@@ -1035,8 +1061,8 @@ parameters {
   real<lower=0.2, upper=4.0> s_scale;   // multiplies every reported sigma
 }
 model {
-  ms ~ normal(14.13, 0.42);
-  lp ~ normal(-3.96, 0.69);
+  ms ~ normal(13.958, 0.42);
+  lp ~ normal(-3.445, 0.69);
   al ~ normal(-1.68, 0.22);
   be ~ normal(0.63, 0.18);    // Driver+22 beta, published width
   s_scale ~ lognormal(0, 0.30);         // prior median 1, ~ +/-35 per cent
@@ -1103,6 +1129,155 @@ MARG_COMP_REFLEX_FIXED_CODE = (
     "  }\n" + MARG_COMP_REFLEX_FIXED_CODE[_i2:]
 )
 _STAN["marg_comp_reflex_fixed"] = MARG_COMP_REFLEX_FIXED_CODE
+
+# Tabulated-completeness model. C(Delta,z) comes from running Nessie on the
+# mock (measure_completeness_nessie.py) and is NOT a parametric ramp -- the
+# measured curve saturates below 1 in some z bins and above 1 in others
+# (fragmentation), which no erf can represent. Because C does not depend on the
+# MRP parameters it is evaluated in Python on the integration grids and passed
+# in as matrices, so the sampler does no interpolation and no erf calls.
+MARG_TAB_CODE = r"""
+data {
+  int<lower=1> N;
+  int<lower=2> Nint;
+  int<lower=1> Nsh;
+  int<lower=2> Ng;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;
+  matrix[N, Nint] mt;          // per-object integration nodes (latent mass)
+  matrix[N, Nint] Cobj;        // C at those nodes
+  vector[Nsh] V_sh;
+  vector[Ng] xg;               // Lambda grid
+  matrix[Nsh, Ng] Csh;         // C on the Lambda grid, per shell
+  real dx;
+}
+transformed data {
+  real ln10 = log(10.0);
+  real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+}
+model {
+  ms ~ normal(13.958, 0.42);
+  lp ~ normal(-3.445, 0.69);
+  al ~ normal(-1.68, 0.22);
+  be ~ normal(0.63, 0.18);
+
+  vector[Ng] pg;
+  for (k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+  }
+
+  real Lambda = 0;
+  for (j in 1:Nsh) {
+    real acc = 0;
+    for (k in 1:Ng) {
+      real term = pg[k] * Csh[j, k];
+      acc += (k == 1 || k == Ng) ? 0.5 * term : term;
+    }
+    Lambda += V_sh[j] * acc * dx;
+  }
+  target += -Lambda;
+
+  for (i in 1:N) {
+    real inv_s = 1.0 / sig[i];
+    real dmt = mt[i, 2] - mt[i, 1];
+    real sm = 0;
+    for (g in 1:Nint) {
+      real u = mt[i, g] - ms;
+      real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+      real zsc = (x_obs[i] - mt[i, g]) * inv_s;
+      real term = phi_g * Cobj[i, g] * exp(-0.5 * zsc * zsc);
+      sm += (g == 1 || g == Nint) ? 0.5 * term : term;
+    }
+    sm *= dmt * inv_s * inv_sqrt2pi;
+    target += (sm > 1e-300) ? log(sm) : -300;
+  }
+}
+"""
+_STAN["marg_tab"] = MARG_TAB_CODE
+
+# As marg_tab, but with the error scale fitted. The trick that keeps it fast:
+# the integration NODES are fixed on a wide grid (+-5*S_HI sigma), so Cobj can
+# still be precomputed in Python; s_scale only changes the width of the Gaussian
+# kernel evaluated on those nodes. The prior is centred on the mock-measured
+# ratio (0.375/0.280 = 1.34) rather than on 1.
+MARG_TAB_SERR_CODE = r"""
+data {
+  int<lower=1> N;
+  int<lower=2> Nint;
+  int<lower=1> Nsh;
+  int<lower=2> Ng;
+  vector[N] x_obs;
+  vector<lower=0>[N] sig;      // catalogue sigma, UNSCALED
+  matrix[N, Nint] mt;          // fixed integration nodes
+  matrix[N, Nint] Cobj;
+  vector[Nsh] V_sh;
+  vector[Ng] xg;
+  matrix[Nsh, Ng] Csh;
+  real dx;
+  real s_mu;                   // prior median for s_scale
+  real s_sd;
+}
+transformed data {
+  real ln10 = log(10.0);
+  real inv_sqrt2pi = 1.0 / sqrt(2 * pi());
+}
+parameters {
+  real ms;
+  real lp;
+  real al;
+  real<lower=0.1, upper=2.0> be;
+  real<lower=0.4, upper=2.6> s_scale;
+}
+model {
+  ms ~ normal(13.958, 0.42);
+  lp ~ normal(-3.445, 0.69);
+  al ~ normal(-1.68, 0.22);
+  be ~ normal(0.63, 0.18);
+  s_scale ~ lognormal(log(s_mu), s_sd);
+
+  vector[Ng] pg;
+  for (k in 1:Ng) {
+    real u = xg[k] - ms;
+    pg[k] = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+  }
+  real Lambda = 0;
+  for (j in 1:Nsh) {
+    real acc = 0;
+    for (k in 1:Ng) {
+      real term = pg[k] * Csh[j, k];
+      acc += (k == 1 || k == Ng) ? 0.5 * term : term;
+    }
+    Lambda += V_sh[j] * acc * dx;
+  }
+  target += -Lambda;
+
+  for (i in 1:N) {
+    real si = s_scale * sig[i];
+    real inv_s = 1.0 / si;
+    real dmt = mt[i, 2] - mt[i, 1];
+    real sm = 0;
+    for (g in 1:Nint) {
+      real u = mt[i, g] - ms;
+      real phi_g = be * ln10 * pow(10, lp) * pow(10, (al + 1) * u) * exp(-pow(10, be * u));
+      real zsc = (x_obs[i] - mt[i, g]) * inv_s;
+      real term = phi_g * Cobj[i, g] * exp(-0.5 * zsc * zsc);
+      sm += (g == 1 || g == Nint) ? 0.5 * term : term;
+    }
+    sm *= dmt * inv_s * inv_sqrt2pi;
+    target += (sm > 1e-300) ? log(sm) : -300;
+  }
+}
+"""
+_STAN["marg_tab_serr"] = MARG_TAB_SERR_CODE
+
+
 _MODELS = {}
 
 # Compile OUTSIDE any iCloud-synced tree (e.g. ~/Desktop, ~/Documents).
@@ -1125,6 +1300,11 @@ def driver_prior(path="../data/hmfparams_gsr.csv", inflate=1.0):
     to partially offset double-counting."""
     d = np.genfromtxt(path, delimiter=",", skip_header=1)
     d = d[np.isfinite(d).all(axis=1)]
+    # The chains are in Driver's h=0.6737 units; this pipeline works at h=1,
+    # so shift log M* and log phi* (alpha and beta are dimensionless).
+    d = d.copy()
+    d[:, 0] -= np.log10(1.0 / H_DRIVER)
+    d[:, 1] -= 3.0 * np.log10(H_DRIVER)
     mu = d.mean(axis=0)
     cov = np.cov(d.T) * float(inflate) ** 2
     return mu, cov, d
@@ -1133,8 +1313,8 @@ def driver_prior(path="../data/hmfparams_gsr.csv", inflate=1.0):
 def _with_driver_prior(code):
     """Swap a model's independent-Gaussian prior block for a multivariate normal."""
     old = (
-        "  ms ~ normal(14.13, 0.42);\n"
-        "  lp ~ normal(-3.96, 0.69);\n"
+        "  ms ~ normal(13.958, 0.42);\n"
+        "  lp ~ normal(-3.445, 0.69);\n"
         "  al ~ normal(-1.68, 0.22);\n"
     )
     if old not in code:
@@ -1376,6 +1556,15 @@ def summarise(flat):
             f"  {p:9s} {tv[i]:8.3f} {med[i]:9.3f} {sd[i]:7.3f} "
             f"{q16[i]:8.3f} {q84[i]:8.3f} {bias:+9.2f}"
         )
+    if abs(H0 - 100.0) < 1e-6:
+        dms, dlp, _, _ = to_driver_cosmology(med[0], med[1])
+        sms = 0.5 * (q84[0] - q16[0])
+        slp = 0.5 * (q84[1] - q16[1])
+        print(
+            f"  [h=1 units. Converted to Driver's h={H_DRIVER}: "
+            f"log M* = {dms:.3f} +/- {sms:.3f}, log phi* = {dlp:.3f} +/- {slp:.3f}"
+            f"   (Driver GSR: 14.13, -3.96)]"
+        )
     if not SHOW_ALPHA_CORRECTION:
         return dict(median=med, sd=sd, q16=q16, q84=q84)
     ac = corrected_alpha(flat)
@@ -1490,7 +1679,7 @@ def plot_recovery(
     a.grid(alpha=0.3)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu = [14.13, -3.96, -1.68, 0.63]  # must match the Stan model priors
+    prior_mu = [13.958, -3.445, -1.68, 0.63]  # must match the Stan model priors
     prior_sd = [0.42, 0.69, 0.22, 0.18]
     for k, (i, j) in enumerate([(1, 0), (1, 1), (1, 2), (0, 2)]):
         a = ax[i, j]
@@ -1773,6 +1962,155 @@ def prep_comp(z_obs, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh):
     return data, keep
 
 
+# ---------------------------------------------------------------------------
+# Tabulated completeness from measure_completeness_nessie.py
+# ---------------------------------------------------------------------------
+# The mock says the run.R lookup table understates the mass errors: the measured
+# scatter of recovered vs true mass is 0.375 dex against the table's 0.280, a
+# ratio of 1.34. The fitted s_scale hyperparameter independently gave
+# 1.367 +/- 0.042. Applying the measured factor lets sigma be fixed data, which
+# means the completeness can be precomputed and the sampler runs far faster.
+SIGMA_SCALE = 1.34
+NESSIE_TABLE = "nessie_completeness_table.npz"
+
+
+def load_nessie_table(path=NESSIE_TABLE):
+    """(d, z, C) from measure_completeness_nessie.py. C is entries-per-halo, so
+    it may exceed 1 where the finder fragments a halo into several groups."""
+    t = np.load(path)
+    d, z, C = t["d"], t["z"], t["C"]
+    print(
+        f"  [C table] {path}: {C.shape[0]} z bins x {d.size} Delta points, "
+        f"C(Delta=0) = {np.round(np.interp(0.0, d, C[C.shape[0] // 2]), 3)}"
+    )
+    return d, z, C
+
+
+def eval_C(delta, zval, d, z, C):
+    """Bilinear lookup of C(Delta, z). Clamped: 0 below the measured Delta
+    range, held flat above it and outside the z range."""
+    delta = np.asarray(delta, float)
+    zval = np.broadcast_to(np.asarray(zval, float), delta.shape)
+    iz = np.clip(np.searchsorted(z, zval) - 1, 0, len(z) - 2)
+    t = np.clip((zval - z[iz]) / (z[iz + 1] - z[iz]), 0.0, 1.0)
+    out = np.empty(delta.shape)
+    for i in range(len(z) - 1):
+        m = iz == i
+        if not m.any():
+            continue
+        c0 = np.interp(delta[m], d, C[i], left=0.0, right=C[i][-1])
+        c1 = np.interp(delta[m], d, C[i + 1], left=0.0, right=C[i + 1][-1])
+        out[m] = (1 - t[m]) * c0 + t[m] * c1
+    return np.clip(out, 0.0, None)
+
+
+def prep_tab(
+    z_obs,
+    m_obs,
+    sigma,
+    mlim_func,
+    z_mids,
+    mlim_sh,
+    V_sh,
+    table_path=NESSIE_TABLE,
+    nint=41,
+    cmin=1e-3,
+    fit_scale=False,
+    s_hi=2.6,
+):
+    """Stan data for marg_tab: integration nodes and the completeness evaluated
+    on them, both precomputed. Keeps every group whose own completeness is
+    non-negligible (no observed-mass cut: the selection is carried by C)."""
+    d, ztab, C = load_nessie_table(table_path)
+    if fit_scale:
+        # nodes must cover the widest kernel the sampler can reach, so they are
+        # laid out at +-5*s_hi sigma and held FIXED; s_scale then only alters the
+        # Gaussian width, leaving Cobj precomputable.
+        sig = np.asarray(sigma, float)
+        nint = max(nint, int(np.ceil(41 * s_hi)))
+        span = 5.0 * s_hi
+    else:
+        sig = np.asarray(sigma, float) * SIGMA_SCALE
+        span = 5.0
+
+    mlim_obj = mlim_func(z_obs)
+    keep = eval_C(m_obs - mlim_obj, z_obs, d, ztab, C) > cmin
+    x, sg, ml, zk = m_obs[keep], sig[keep], mlim_obj[keep], z_obs[keep]
+
+    g = np.linspace(-span, span, nint)
+    mt = x[:, None] + sg[:, None] * g[None, :]
+    Cobj = eval_C(mt - ml[:, None], np.repeat(zk[:, None], nint, axis=1), d, ztab, C)
+
+    xlo = float(np.min(mlim_sh) + d[0])
+    xg = np.linspace(xlo, XHI, NG)
+    dx = float(xg[1] - xg[0])
+    Csh = np.vstack(
+        [
+            eval_C(xg - mlim_sh[j], np.full(NG, z_mids[j]), d, ztab, C)
+            for j in range(len(V_sh))
+        ]
+    )
+
+    mode = (
+        f"sigma FITTED (nodes +-{span:.0f}sigma, {nint} pts, "
+        f"prior median {SIGMA_SCALE})"
+        if fit_scale
+        else f"sigma x{SIGMA_SCALE} (mock-measured, fixed)"
+    )
+    beyond = int((m_obs[keep] - mlim_obj[keep] > d.max()).sum())
+    print(
+        f"  tabulated C: kept {int(keep.sum())}/{m_obs.size} groups "
+        f"(C > {cmin}); {mode}"
+    )
+    if beyond:
+        print(
+            f"  !! {beyond} groups ({beyond / max(int(keep.sum()), 1):.1%}) sit above "
+            f"Delta = {d.max():+.2f}, the top of the measured table -- C is held "
+            f"flat there, and that is where M* and beta are set."
+        )
+    data = dict(
+        N=int(keep.sum()),
+        Nint=int(nint),
+        Nsh=int(len(V_sh)),
+        Ng=int(NG),
+        x_obs=x,
+        sig=sg,
+        mt=mt,
+        Cobj=Cobj,
+        V_sh=np.asarray(V_sh, float),
+        xg=xg,
+        Csh=Csh,
+        dx=dx,
+    )
+    if fit_scale:
+        data.update(s_mu=float(SIGMA_SCALE), s_sd=0.15)
+    return data, keep
+
+
+def check_lambda(data, par, label=""):
+    """Lambda at the fitted parameters vs the number of groups actually fitted.
+    Lambda is the model's expected count, so Lambda/N ~ 1 means the normalisation
+    is self-consistent. It also reports the halo count the same MRP implies with
+    no completeness correction -- the gap between the two is how much of phi* is
+    being set by the completeness rather than by the data."""
+    ms, lp, al, be = [float(v) for v in par[:4]]
+    xg = np.asarray(data["xg"], float)
+    Csh, V_sh = np.asarray(data["Csh"], float), np.asarray(data["V_sh"], float)
+    pg = mrp_phi(xg, ms, lp, al, be)
+    lam = float(sum(V_sh[j] * np.trapezoid(pg * Csh[j], xg) for j in range(len(V_sh))))
+    lam0 = float(np.sum(V_sh) * np.trapezoid(pg, xg))
+    n = int(data["N"])
+    print(
+        f"  [Lambda{label}] expected detections = {lam:.0f}, fitted N = {n}, "
+        f"ratio = {lam / max(n, 1):.3f}"
+    )
+    print(
+        f"            same MRP with C=1: {lam0:.0f} halos "
+        f"({lam0 / max(n, 1):.1f}x the catalogue)"
+    )
+    return lam
+
+
 def run_real_pipeline(model_kind="marg"):
     print("Reading catalogues ...")
     groups, galaxies = load_catalogues(DATA_DIR)
@@ -2032,7 +2370,19 @@ def run_real_gama(
 
     mlim_per = mlim_func(z)
 
-    if model_kind in ("marg_comp", "marg_comp_serr"):
+    if model_kind in ("marg_tab", "marg_tab_serr"):
+        data, keep = prep_tab(
+            z,
+            log_mass,
+            sigma,
+            mlim_func,
+            z_mids,
+            mlim_sh,
+            V_sh,
+            fit_scale=(model_kind == "marg_tab_serr"),
+        )
+        x_fit = log_mass[keep]
+    elif model_kind in ("marg_comp", "marg_comp_serr"):
         # Completeness ramp from the GAMA-selected mock (same mag limit, same
         # >=MULTI members, same group finder) -- i.e. injection-recovery applied
         # to real GAMA. mlim(z) is derived from the REAL data above.
@@ -2093,6 +2443,11 @@ def run_real_gama(
     print(f"\nFitting [{model_kind}] on real GAMA (cmdstanpy) ...")
     map_par, flat = run_stan(model_kind, data)
     res = summarise(flat)  # 'bias vs truth' = offset vs Driver+22
+    if model_kind in ("marg_tab", "marg_tab_serr"):
+        try:
+            check_lambda(data, np.median(flat, axis=0))
+        except Exception as e:
+            print(f"  [Lambda check failed: {e}]")
     if model_kind == "marg_comp":
         MSTAR_LCDM = 14.13  # anchor: Driver's M* (sits on the Murray+21 LCDM curve)
         A_draws = A_SCALE * 10 ** (MSTAR_LCDM - flat[:, 0])  # flat[:,0] = ms draws
@@ -2347,7 +2702,7 @@ def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
     a.legend(fontsize=8)
 
     labels = [r"$M_*$", r"$\log\phi_*$", r"$\alpha$", r"$\beta$"]
-    prior_mu, prior_sd = [14.13, -3.96, -1.68, 0.63], [0.42, 0.69, 0.22, 0.18]
+    prior_mu, prior_sd = [13.958, -3.445, -1.68, 0.63], [0.42, 0.69, 0.22, 0.18]
     for i, (r, c) in enumerate([(0, 1), (0, 2), (1, 0), (1, 1)]):
         aa = ax[r, c]
         aa.hist(flat[:, i], bins=40, color="steelblue", density=True)
@@ -2457,7 +2812,7 @@ def _load_comparison(data_dir):
 def plot_publication(
     flat,
     my_surveys=None,
-    driver=(14.13, -3.96, -1.68, 0.63),
+    driver=(13.958, -3.445, -1.68, 0.63),
     data_dir="../data",
     fname="hmf_publication.pdf",
     title="HMF",
@@ -2606,7 +2961,7 @@ def _cred_levels(H):
 
 def plot_corner(
     flat,
-    driver=(14.13, -3.96, -1.68, 0.63),
+    driver=(13.958, -3.445, -1.68, 0.63),
     fname="corner.pdf",
     use_corrected_alpha=False,
 ):
@@ -3199,7 +3554,15 @@ if __name__ == "__main__":
     )
     ap.add_argument(
         "--gama-model",
-        choices=["marg", "marg_comp", "marg_comp_serr", "gama", "simple"],
+        choices=[
+            "marg",
+            "marg_comp",
+            "marg_comp_serr",
+            "marg_tab",
+            "marg_tab_serr",
+            "gama",
+            "simple",
+        ],
         default="marg",
         help="model for --realgama: 'marg' (sharp cut), 'marg_comp' "
         "(completeness forward-model), or 'gama' (R port, check only)",
