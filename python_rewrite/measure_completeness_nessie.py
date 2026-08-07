@@ -1016,6 +1016,24 @@ def main():
     print(f"  max Delta with data: {d_tab[np.isfinite(tab).any(axis=0)].max():+.2f}")
     print(f"  plateau      : {np.round(np.nanmax(tab, axis=1), 3)}")
     np.savez("nessie_completeness_table.npz", d=d_tab, z=np.array(zc_t), C=tab)
+
+    # Save the Nessie group catalogue itself so the fit can be closed-loop
+    # validated: the MRP was injected by abundance matching, Nessie recovered
+    # these groups from it, so fitting them with the same C table must return
+    # the injected parameters.
+    sel_t = table["multiplicity"] >= MULTI
+    gt = table.loc[sel_t]
+    np.savez(
+        "nessie_mock_groups.npz",
+        log_mass=np.log10(gt["MassA"].values),
+        z=gt["median_redshift"].values,
+        multiplicity=gt["multiplicity"].values,
+        area_deg2=float(sky_frac * 4 * np.pi * (180 / np.pi) ** 2),
+    )
+    print(
+        f"  saved nessie_mock_groups.npz  ({int(sel_t.sum())} groups, "
+        f"for closed-loop validation)"
+    )
     print("  saved nessie_completeness_table.npz  (d, z, C)")
 
     np.savez(

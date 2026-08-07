@@ -326,7 +326,14 @@ def _aic_ols(y, X):
 
 
 def turnover_mlim(
-    z_obs, m_obs, nbin_z=30, hist_bw=0.3, min_in_bin=20, zmin=ZMIN, zmax=ZLIMIT
+    z_obs,
+    m_obs,
+    nbin_z=30,
+    hist_bw=0.3,
+    min_in_bin=20,
+    zmin=ZMIN,
+    zmax=ZLIMIT,
+    form=None,
 ):
     z_edges = np.linspace(zmin, zmax, nbin_z + 1)
     z_mids = 0.5 * (z_edges[1:] + z_edges[:-1])
@@ -350,7 +357,12 @@ def turnover_mlim(
     aic_l, beta_l = _aic_ols(tb, np.column_stack([np.ones_like(zb), zb]))
     aic_q, beta_q = _aic_ols(tb, np.column_stack([np.ones_like(zb), zb, zb**2]))
 
-    if aic_q < aic_l - 2:
+    # `form` forces the functional form. The AIC choice is unstable: a 0.075 dex
+    # shift in the masses (rebuilt -> MassA) flipped it linear -> quad and moved
+    # mlim by 0.69 dex at low z. C is tabulated against Delta = m - mlim(z) and
+    # the mock's mlim is linear, so a flip here silently redefines Delta.
+    use_quad = (aic_q < aic_l - 2) if form is None else (form == "quad")
+    if use_quad:
         c = beta_q
         func = lambda z: c[0] + c[1] * z + c[2] * z**2
         kind = "quad"
@@ -358,6 +370,11 @@ def turnover_mlim(
         c = beta_l
         func = lambda z: c[0] + c[1] * z
         kind = "linear"
+    kind += (
+        " (forced)"
+        if form is not None
+        else f" [AIC lin {aic_l:.1f} / quad {aic_q:.1f}]"
+    )
     return func, c, kind, (z_mids, turn)
 
 
@@ -1970,7 +1987,32 @@ def prep_comp(z_obs, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh):
 # ratio of 1.34. The fitted s_scale hyperparameter independently gave
 # 1.367 +/- 0.042. Applying the measured factor lets sigma be fixed data, which
 # means the completeness can be precomputed and the sampler runs far faster.
+MLIM_FORM = None  # None = choose by AIC; 'linear'/'quad' to force
 SIGMA_SCALE = 1.34
+
+# Closed-loop bias of the marg_tab fit, from run_mock_nessie: the MRP is injected
+# by abundance matching, Nessie recovers the groups, the fit is run with the same
+# C table, and this is (fitted - injected). Subtracting it turns the fit into an
+# estimate of the underlying HALO mass function.
+#   ms: -0.229, of which -0.155 is the A=10 dynamical mass under-estimating the
+#       true halo mass; the remaining -0.074 dex is 0.34 sigma, i.e. consistent
+#       with no residual bias.
+#   lp: +0.418, essentially ms riding the rho=-0.97 M*-phi* ridge.
+#   al: +0.011 (0.11 sigma) -- alpha is recovered essentially unbiased.
+# ONE realisation, so these carry no error bar yet. Jackknifing the mock
+# footprint would give one.
+NESSIE_BIAS = dict(ms=-0.229, lp=+0.418, al=+0.011, be=-0.037)
+
+
+def apply_nessie_bias(flat):
+    """Subtract the closed-loop bias from every draw, so the covariance is
+    carried through rather than the median being shifted on its own."""
+    out = np.array(flat, float, copy=True)
+    for i, k in enumerate(PARAMS):
+        out[:, i] -= NESSIE_BIAS[k]
+    return out
+
+
 NESSIE_TABLE = "nessie_completeness_table.npz"
 
 
@@ -2187,7 +2229,9 @@ def run_real_pipeline(model_kind="marg"):
     return res
 
 
-def load_real_gama(fits_path, regions=None, use_veldisp_err=False, dec_cut=None):
+def load_real_gama(
+    fits_path, regions=None, use_veldisp_err=False, dec_cut=None, mass_col=None
+):
     """Read the GAMA G3C group catalogue and build observed log-masses exactly
     as run.R does: A=13.9 dynamical mass, multiplicity error model, and the
     empirical masscorr(Nfof) calibration. Returns (log_mass, sigma, z, Nfof).
@@ -2324,6 +2368,25 @@ def load_real_gama(fits_path, regions=None, use_veldisp_err=False, dec_cut=None)
     )
     log_mass = np.log10(mymass / 10**mc)
 
+    # The completeness table is measured against MassA = mass_proxy * A, with no
+    # masscorr. Reading that column directly puts the fit on exactly the same
+    # mass definition as the mock; the rebuilt path above applies Driver's old
+    # masscorr, which the new DMU replaces with its own MassAfunc.
+    if mass_col is not None:
+        if mass_col not in cols:
+            raise KeyError(f"{mass_col!r} not in this catalogue; have {sorted(cols)}")
+        v = np.asarray(t[mass_col], float)[sel]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            lm_cat = np.log10(v)
+        f1 = np.isfinite(lm_cat)
+        f2 = np.isfinite(log_mass)
+        print(
+            f"  [mass] catalogue column {mass_col!r}: median "
+            f"{np.median(lm_cat[f1]):.3f}   (rebuilt from VelDisp/Rad50 would "
+            f"give {np.median(log_mass[f2]):.3f})"
+        )
+        log_mass = lm_cat
+
     good = np.isfinite(log_mass) & (log_mass > 10) & (log_mass < 17) & np.isfinite(err)
     return log_mass[good], err[good], Zfof[good], Nfof[good].astype(int)
 
@@ -2339,6 +2402,7 @@ def run_real_gama(
     regions=None,
     use_veldisp_err=False,
     dec_cut=None,
+    mass_col=None,
 ):
     """Fit the MRP to the REAL GAMA group catalogue using OUR developed model
     ('marg' by default, with the current tight cutoff/slope priors; 'gama' =
@@ -2349,7 +2413,11 @@ def run_real_gama(
     prior-set near Driver by construction; M* and logphi* are the measurements."""
     print(f"Reading GAMA catalogue: {fits_path}")
     log_mass, sigma, z, nfof = load_real_gama(
-        fits_path, regions=regions, use_veldisp_err=use_veldisp_err, dec_cut=dec_cut
+        fits_path,
+        regions=regions,
+        use_veldisp_err=use_veldisp_err,
+        dec_cut=dec_cut,
+        mass_col=mass_col,
     )
     sky_frac = sky_area_deg2_val * (np.pi / 180) ** 2 / (4 * np.pi)
     print(
@@ -2358,7 +2426,7 @@ def run_real_gama(
     )
 
     print("Turnover mlim(z) ...")
-    mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass)
+    mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass, form=MLIM_FORM)
     print(
         f"  mlim(z) [{tkind}]: mlim({ZMIN})={mlim_func(ZMIN):.2f} "
         f"mlim({ZLIMIT})={mlim_func(ZLIMIT):.2f}"
@@ -2448,6 +2516,31 @@ def run_real_gama(
             check_lambda(data, np.median(flat, axis=0))
         except Exception as e:
             print(f"  [Lambda check failed: {e}]")
+        fb = apply_nessie_bias(flat)
+        mb, sb = (
+            np.median(fb, axis=0),
+            0.5 * (np.percentile(fb, 84, axis=0) - np.percentile(fb, 16, axis=0)),
+        )
+        dms, dlp, _, _ = to_driver_cosmology(mb[0], mb[1])
+        print(f"\n  === closed-loop bias-corrected (halo mass function) ===")
+        print(f"  {'param':6} {'h=1':>18} {'Driver units':>18} {'Driver+22':>10}")
+        print(
+            f"  {'ms':6} {mb[0]:9.3f} +/-{sb[0]:5.3f} {dms:9.3f} +/-{sb[0]:5.3f}"
+            f" {TRUE_DRIVER['ms']:10.2f}"
+        )
+        print(
+            f"  {'lp':6} {mb[1]:9.3f} +/-{sb[1]:5.3f} {dlp:9.3f} +/-{sb[1]:5.3f}"
+            f" {TRUE_DRIVER['lp']:10.2f}"
+        )
+        print(
+            f"  {'al':6} {mb[2]:9.3f} +/-{sb[2]:5.3f} {mb[2]:9.3f} +/-{sb[2]:5.3f}"
+            f" {TRUE_DRIVER['al']:10.2f}"
+        )
+        print(
+            f"  {'be':6} {mb[3]:9.3f} +/-{sb[3]:5.3f} {mb[3]:9.3f} +/-{sb[3]:5.3f}"
+            f" {TRUE_DRIVER['be']:10.2f}"
+        )
+        print(f"  [bias from one mock realisation, no error bar on the correction]")
     if model_kind == "marg_comp":
         MSTAR_LCDM = 14.13  # anchor: Driver's M* (sits on the Murray+21 LCDM curve)
         A_draws = A_SCALE * 10 ** (MSTAR_LCDM - flat[:, 0])  # flat[:,0] = ms draws
@@ -2460,6 +2553,14 @@ def run_real_gama(
         print(f"  vs Robotham+11 sim-calibrated 13.9, Driver variant 10, Zwicky 1.667")
         print(f"  [caveat: M* has a mild informative prior N(14.13,0.42); data-driven")
         print(f"   posterior ~0.1 dominates, so prior pull on A is small (~7%)]")
+    np.savetxt(
+        f"gama_{model_kind}_draws.csv",
+        flat,
+        delimiter=",",
+        header="ms,lp,al,be",
+        comments="",
+    )
+    print(f"  saved draws -> gama_{model_kind}_draws.csv")
     plot_recovery(
         flat,
         z,
@@ -2818,6 +2919,7 @@ def plot_publication(
     title="HMF",
     show_corrected=None,
     corrected_band=False,
+    nessie_bias=False,
 ):
     """Driver-style HMF: our MCMC band (highlighted), the LCDM curve, the Driver+22
     MRP curve, our own survey binned points (grey, 'not fitted'), and external
@@ -2874,6 +2976,25 @@ def plot_publication(
             lw=2,
             ls="-.",
             label=r"$\alpha$ bias-corrected (not a fit)",
+        )
+
+    # Closed-loop bias-corrected band: an estimate of the HALO mass function.
+    # It will NOT track the comparison points, and should not -- those are
+    # densities of DETECTED objects, which differ from the halo density by the
+    # completeness (C ~ 0.28 at mlim).
+    if nessie_bias:
+        fb = apply_nessie_bias(flat)
+        for k in idx:
+            ax.plot(
+                mgrid, np.log10(mrp_phi(mgrid, *fb[k])), color="darkgreen", alpha=0.02
+            )
+        ax.plot(
+            mgrid,
+            np.log10(mrp_phi(mgrid, *np.median(fb, axis=0))),
+            color="darkgreen",
+            lw=2,
+            ls="-",
+            label="bias-corrected (halo MF)",
         )
 
     # LCDM + Driver MRP curves
@@ -3040,7 +3161,7 @@ def plot_corner(
     return fname
 
 
-def emit_publication(flat, my_surveys, tag, title="HMF"):
+def emit_publication(flat, my_surveys, tag, title="HMF", nessie_bias=False):
     """Always emit the corner + publication HMF plots for a fit."""
     try:
         plot_corner(flat, fname=f"corner_{tag}.pdf")
@@ -3393,6 +3514,70 @@ def calibrate_alpha_bias(n_real=20, ms_pins=(14.13, 14.35, 14.60), seed0=500):
     return out
 
 
+def run_mock_nessie(path="nessie_mock_groups.npz", model_kind="marg_tab"):
+    """Closed-loop validation of the tabulated-completeness fit.
+
+    The MRP in TRUE was injected into the Shark halos by abundance matching;
+    Nessie then recovered the groups saved by measure_completeness_nessie.py.
+    Fitting those groups with the C table measured from the same run must
+    return the injected parameters. This is the only test of marg_tab against
+    a known answer -- the ordinary mock pipeline uses the membership proxy to
+    define detections, which is inconsistent with a Nessie-measured C.
+
+    Expect log M* low by ~0.155 dex: MassA (A=10) under-estimates the true halo
+    mass by that much, and the model has no term for it."""
+    t = np.load(path)
+    log_mass, z = t["log_mass"], t["z"]
+    mult = t["multiplicity"]
+    area = float(t["area_deg2"])
+    sky_frac = area * (np.pi / 180) ** 2 / (4 * np.pi)
+    sigma = sigma_from_nfof(mult)
+
+    ok = np.isfinite(log_mass) & np.isfinite(z) & (z > ZMIN) & (z < ZLIMIT)
+    log_mass, z, sigma = log_mass[ok], z[ok], sigma[ok]
+    print(
+        f"  Nessie mock groups: {log_mass.size} over {area:.1f} deg^2 "
+        f"({log_mass.size / area:.2f} per deg^2)"
+    )
+    print(
+        f"  mass {log_mass.min():.2f}..{log_mass.max():.2f} "
+        f"(med {np.median(log_mass):.2f})"
+    )
+
+    mlim_func, _, kind, turn_pts = turnover_mlim(z, log_mass)
+    print(f"  mlim(z) [{kind}]: {mlim_func(ZMIN):.2f} -> {mlim_func(ZLIMIT):.2f}")
+    z_mids, V_sh = shell_volumes(sky_frac)
+    mlim_sh = mlim_func(z_mids)
+
+    data, keep = prep_tab(
+        z,
+        log_mass,
+        sigma,
+        mlim_func,
+        z_mids,
+        mlim_sh,
+        V_sh,
+        fit_scale=(model_kind == "marg_tab_serr"),
+    )
+    print(f"\nFitting [{model_kind}] on the Nessie mock catalogue ...")
+    map_par, flat = run_stan(model_kind, data)
+    res = summarise(flat)
+    try:
+        check_lambda(data, np.median(flat, axis=0))
+    except Exception as e:
+        print(f"  [Lambda check failed: {e}]")
+    print("\n  Truth here is the INJECTED MRP, so 'bias(sd)' is genuine recovery.")
+    print("  A log M* deficit of ~0.155 dex is expected (the A=10 dynamical mass")
+    print("  under-estimates the true halo mass by that much on this mock).")
+    emit_publication(
+        flat,
+        {"Nessie mock": dict(x_fit=log_mass[keep], Vsurvey=float(V_sh.sum()))},
+        tag=f"nessiemock_{model_kind}",
+        title="Nessie mock HMF",
+    )
+    return res
+
+
 def run_selftest(model_kind="marg"):
     """Synthetic recovery, no data files. Confirms the chosen Stan model
     recovers a known MRP.
@@ -3503,6 +3688,11 @@ if __name__ == "__main__":
         help="measure the alpha-vs-M* bias over many mock realisations",
     )
     ap.add_argument(
+        "--mock-nessie",
+        action="store_true",
+        help="closed-loop validation: fit the Nessie mock catalogue",
+    )
+    ap.add_argument(
         "--selftest",
         action="store_true",
         help="run synthetic recovery without needing the parquet files",
@@ -3545,6 +3735,19 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help="legacy Dec cut; Driver used -3.5, which EXCLUDES G23",
+    )
+    ap.add_argument(
+        "--mlim-form",
+        choices=["linear", "quad"],
+        default=None,
+        help="force the mlim(z) form; the mock used linear and the "
+        "AIC choice is unstable",
+    )
+    ap.add_argument(
+        "--mass-col",
+        default=None,
+        help="use this catalogue mass column (e.g. MassA) instead of "
+        "rebuilding from VelDisp/Rad50; MassA matches the mock",
     )
     ap.add_argument(
         "--veldisp-err",
@@ -3640,9 +3843,12 @@ if __name__ == "__main__":
     )
     args = ap.parse_args()
     SHOW_ALPHA_CORRECTION = args.alpha_correction
+    MLIM_FORM = args.mlim_form
     USE_DRIVER_PRIOR = args.driver_prior
     DRIVER_PRIOR_INFLATE = args.driver_prior_inflate
-    if args.calibrate_alpha:
+    if args.mock_nessie:
+        run_mock_nessie(model_kind=args.gama_model)
+    elif args.calibrate_alpha:
         calibrate_alpha_bias(n_real=args.nreal)
     elif args.selftest:
         run_selftest(model_kind=args.model)
@@ -3660,6 +3866,7 @@ if __name__ == "__main__":
             regions=args.gama_regions,
             use_veldisp_err=args.veldisp_err,
             dec_cut=args.gama_dec_cut,
+            mass_col=args.mass_col,
         )
     elif args.realsdss:
         run_real_sdss(
