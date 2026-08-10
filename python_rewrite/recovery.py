@@ -1349,6 +1349,24 @@ MARG_TAB_PINBE_CODE = (
 )
 _STAN["marg_tab_pinbe"] = MARG_TAB_PINBE_CODE
 
+# marg_tab with ALPHA pinned. Note this pins the one parameter the closed-loop
+# validation shows is essentially unbiased (+0.011 dex, 0.11 sigma), so it is a
+# sensitivity test rather than a preferred configuration.
+MARG_TAB_PINAL_CODE = (
+    MARG_TAB_CODE.replace(
+        "  real dx;\n}",
+        "  real dx;\n  real al;          // PINNED, supplied as data\n}",
+        1,
+    )
+    .replace(
+        "  real al;\n  real<lower=0.1, upper=2.0> be;",
+        "  real<lower=0.1, upper=2.0> be;",
+        1,
+    )
+    .replace("  al ~ normal(-1.68, 0.22);\n", "", 1)
+)
+_STAN["marg_tab_pinal"] = MARG_TAB_PINAL_CODE
+
 
 _MODELS = {}
 
@@ -1510,7 +1528,7 @@ def run_stan(
             al=float(rng.normal(-1.3, 0.2)),
             be=float(rng.uniform(0.3, 0.7)),
         )
-        pin0 = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+        pin0 = {"_pinms": "ms", "_pinbe": "be", "_pinal": "al"}.get(kind[-6:])
         if pin0:
             init.pop(pin0, None)
         try:
@@ -1519,7 +1537,7 @@ def run_stan(
             )
             val = float(opt.optimized_params_dict["lp__"])
             if best is None or val > best[0]:
-                pin0 = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+                pin0 = {"_pinms": "ms", "_pinbe": "be", "_pinal": "al"}.get(kind[-6:])
                 best = (
                     val,
                     np.array(
@@ -1547,7 +1565,7 @@ def run_stan(
         for _ in range(chains)
     ]
 
-    pin1 = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+    pin1 = {"_pinms": "ms", "_pinbe": "be", "_pinal": "al"}.get(kind[-6:])
     if pin1:
         inits = [{k: v for k, v in d.items() if k != pin1} for d in inits]
     fit = model.sample(
@@ -1564,7 +1582,7 @@ def run_stan(
         output_dir=output_dir,
     )
 
-    pinned = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+    pinned = {"_pinms": "ms", "_pinbe": "be", "_pinal": "al"}.get(kind[-6:])
     if pinned:
         n_draw = int(chains) * int(sampling)
         flat = np.column_stack(
@@ -1582,7 +1600,9 @@ def run_stan(
     try:
         summ = fit.summary()
         free = [
-            p for p in PARAMS if p != {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+            p
+            for p in PARAMS
+            if p != {"_pinms": "ms", "_pinbe": "be", "_pinal": "al"}.get(kind[-6:])
         ]
         rhat = float(summ.loc[free, "R_hat"].max())
         ess_col = next((c for c in ("ESS_bulk", "N_Eff") if c in summ.columns), None)
@@ -2079,6 +2099,7 @@ def prep_comp(z_obs, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh):
 MLIM_FORM = None  # None = choose by AIC; 'linear'/'quad' to force
 PIN_MS = 13.958  # Driver+22 GSR M* in h=1 units, for marg_tab_pinms
 PIN_BE = 0.63  # Driver+22 GSR beta, for marg_tab_pinbe
+PIN_AL = -1.68  # Driver+22 GSR alpha, for marg_tab_pinal
 SIGMA_SCALE = 1.34
 
 # Closed-loop bias of the marg_tab fit, from run_mock_nessie: the MRP is injected
@@ -2529,7 +2550,13 @@ def run_real_gama(
 
     mlim_per = mlim_func(z)
 
-    if model_kind in ("marg_tab", "marg_tab_serr", "marg_tab_pinms", "marg_tab_pinbe"):
+    if model_kind in (
+        "marg_tab",
+        "marg_tab_serr",
+        "marg_tab_pinms",
+        "marg_tab_pinbe",
+        "marg_tab_pinal",
+    ):
         data, keep = prep_tab(
             z,
             log_mass,
@@ -2540,6 +2567,13 @@ def run_real_gama(
             V_sh,
             fit_scale=(model_kind == "marg_tab_serr"),
         )
+        if model_kind == "marg_tab_pinal":
+            data["al"] = float(PIN_AL)
+            print(
+                f"  alpha PINNED at {PIN_AL:.3f}. Note the closed loop shows alpha"
+                f" is the LEAST biased\n    parameter (+0.011 dex), so this trades"
+                f" away the best-validated result."
+            )
         if model_kind == "marg_tab_pinbe":
             data["be"] = float(PIN_BE)
             print(
@@ -2677,6 +2711,17 @@ def run_real_gama(
         turn_pts=turn_pts,
         fname=f"recovery_gama_{model_kind}.pdf",
     )
+    if model_kind.startswith("marg_tab"):
+        try:
+            plot_ppc(
+                flat,
+                data,
+                x_fit,
+                fname=f"ppc_gama_{model_kind}.pdf",
+                title=f"GAMA: observed vs predicted detections [{model_kind}]",
+            )
+        except Exception as e:
+            print(f"  [ppc failed: {e}]")
     emit_publication(
         flat,
         {"GAMA": dict(x_fit=x_fit, Vsurvey=Vsurvey)},
@@ -3117,6 +3162,15 @@ def plot_publication(
         ls=":",
         label="Driver+22 MRP (GSR)",
     )
+    g5 = driver_gama5(match_A=True)
+    ax.plot(
+        mgrid,
+        np.log10(mrp_phi(mgrid, *g5)),
+        color="darkred",
+        lw=1.6,
+        ls=(0, (6, 2)),
+        label=f"Driver+22 GAMA only (A={A_SCALE:g})",
+    )
 
     # our own survey binned points (grey, not fitted) -- see SHOW_OWN_POINTS
     if my_surveys and SHOW_OWN_POINTS:
@@ -3284,6 +3338,106 @@ def plot_corner(
     fig.tight_layout()
     fig.savefig(fname)
     print(f"  saved {fname}")
+    return fname
+
+
+def plot_ppc(flat, data, x_fit, fname="ppc.pdf", nbin=14, title="Posterior predictive"):
+    """Does the model fit the GAMA data?
+
+    The HMF figure shows phi(m), a HALO mass function, while the catalogue holds
+    DETECTED groups -- the two differ by the completeness, so the fit is not
+    supposed to pass through the observed counts and the figure cannot tell you
+    whether it fits.
+
+    What the model actually predicts is the number of catalogue entries per mass
+    bin: dN/dm = sum_j V_j phi(m) C(m, z_j). That is compared here with the
+    observed histogram. If the points sit in the band, the model fits."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    xg = np.asarray(data["xg"], float)
+    Csh = np.asarray(data["Csh"], float)
+    V_sh = np.asarray(data["V_sh"], float)
+
+    lo = float(np.percentile(x_fit, 0.5))
+    hi = float(np.percentile(x_fit, 99.5))
+    edges = np.linspace(lo, hi, nbin + 1)
+    cen = 0.5 * (edges[1:] + edges[:-1])
+    obs, _ = np.histogram(x_fit, bins=edges)
+
+    # expected detections per bin, for a sample of the posterior
+    idx = np.random.default_rng(0).choice(
+        flat.shape[0], size=min(300, flat.shape[0]), replace=False
+    )
+    pred = np.empty((idx.size, nbin))
+    for n, k in enumerate(idx):
+        pg = mrp_phi(xg, *flat[k])
+        dens = np.sum(V_sh[:, None] * Csh * pg[None, :], axis=0)  # dN/dm on the grid
+        for b in range(nbin):
+            m = (xg >= edges[b]) & (xg < edges[b + 1])
+            pred[n, b] = np.trapezoid(dens[m], xg[m]) if m.sum() > 1 else np.nan
+
+    med = np.nanmedian(pred, axis=0)
+    q16, q84 = np.nanpercentile(pred, [16, 84], axis=0)
+
+    fig, (a1, a2) = plt.subplots(
+        2,
+        1,
+        figsize=(6.4, 6.0),
+        sharex=True,
+        gridspec_kw=dict(height_ratios=[2.4, 1], hspace=0.06),
+    )
+    a1.fill_between(
+        cen,
+        q16,
+        q84,
+        color="steelblue",
+        alpha=0.35,
+        label="model 68% (predicted detections)",
+    )
+    a1.plot(cen, med, color="steelblue", lw=1.8, label="model median")
+    a1.errorbar(
+        cen,
+        obs,
+        yerr=np.sqrt(np.maximum(obs, 1)),
+        fmt="o",
+        ms=4.5,
+        color="k",
+        capsize=2.5,
+        lw=1,
+        label="GAMA groups (observed)",
+    )
+    a1.set_yscale("log")
+    a1.set_ylabel("groups per bin")
+    a1.set_title(title)
+    a1.legend(fontsize=8)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pull = (obs - med) / np.sqrt(np.maximum(med, 1))
+    a2.axhline(0, color="0.6", lw=1)
+    a2.axhspan(-1, 1, color="0.85", alpha=0.6)
+    a2.plot(cen, pull, "o-", color="crimson", ms=4.5, lw=1.2)
+    a2.set(
+        xlabel=r"$\log_{10}(M_{\rm halo}/M_\odot)$",
+        ylabel=r"(obs$-$model)/$\sqrt{\rm model}$",
+    )
+    lim = max(3.0, float(np.nanmax(np.abs(pull))) * 1.15)
+    a2.set_ylim(-lim, lim)
+
+    chi2 = float(np.nansum(pull**2))
+    a2.annotate(
+        f"$\\chi^2$/bin = {chi2 / nbin:.2f}",
+        xy=(0.02, 0.08),
+        xycoords="axes fraction",
+        fontsize=9,
+    )
+    fig.savefig(fname, dpi=300, bbox_inches="tight")
+    print(
+        f"  saved {fname}   (chi2/bin = {chi2 / nbin:.2f}, "
+        f"total observed {obs.sum()}, predicted {med.sum():.0f})"
+    )
     return fname
 
 
@@ -3871,6 +4025,13 @@ if __name__ == "__main__":
         help="legacy Dec cut; Driver used -3.5, which EXCLUDES G23",
     )
     ap.add_argument(
+        "--pin-al",
+        type=float,
+        default=None,
+        help="value to pin alpha at for marg_tab_pinal; default -1.68 "
+        "(Driver GSR). GAMA-only -1.27, LCDM -1.865",
+    )
+    ap.add_argument(
         "--pin-be",
         type=float,
         default=None,
@@ -3913,6 +4074,7 @@ if __name__ == "__main__":
             "marg_tab_serr",
             "marg_tab_pinms",
             "marg_tab_pinbe",
+            "marg_tab_pinal",
             "gama",
             "simple",
         ],
@@ -3998,6 +4160,8 @@ if __name__ == "__main__":
         PIN_MS = args.pin_ms
     if args.pin_be is not None:
         PIN_BE = args.pin_be
+    if args.pin_al is not None:
+        PIN_AL = args.pin_al
     USE_DRIVER_PRIOR = args.driver_prior
     DRIVER_PRIOR_INFLATE = args.driver_prior_inflate
     if args.mock_nessie:
