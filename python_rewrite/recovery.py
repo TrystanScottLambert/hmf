@@ -2576,6 +2576,8 @@ def run_real_gama(
         {"GAMA": dict(x_fit=x_fit, Vsurvey=Vsurvey)},
         tag=f"gama_{model_kind}",
         title="GAMA HMF",
+        nessie_bias=model_kind in ("marg_tab", "marg_tab_serr"),
+        mmax_data=float(np.percentile(x_fit, 99.5)),
     )
     return res
 
@@ -2920,6 +2922,7 @@ def plot_publication(
     show_corrected=None,
     corrected_band=False,
     nessie_bias=False,
+    mmax_data=None,
 ):
     """Driver-style HMF: our MCMC band (highlighted), the LCDM curve, the Driver+22
     MRP curve, our own survey binned points (grey, 'not fitted'), and external
@@ -3054,6 +3057,20 @@ def plot_publication(
                 label=name,
             )
 
+    # Beyond the most massive group in the sample the curve extrapolates a cutoff
+    # that nothing constrains: no groups, the completeness table held flat, and
+    # beta only weakly determined. Unmarked, that region reads as a measurement.
+    if mmax_data is not None:
+        ax.axvspan(float(mmax_data), 16.0, color="0.85", alpha=0.45, zorder=0)
+        ax.axvline(float(mmax_data), color="0.55", lw=1, zorder=1)
+        ax.annotate(
+            "no groups above here",
+            xy=(float(mmax_data) + 0.06, -7.7),
+            fontsize=7.5,
+            color="0.35",
+            ha="left",
+        )
+
     ax.set(
         xlim=(12.75, 16),
         ylim=(-8, -2),
@@ -3161,7 +3178,9 @@ def plot_corner(
     return fname
 
 
-def emit_publication(flat, my_surveys, tag, title="HMF", nessie_bias=False):
+def emit_publication(
+    flat, my_surveys, tag, title="HMF", nessie_bias=False, mmax_data=None
+):
     """Always emit the corner + publication HMF plots for a fit."""
     try:
         plot_corner(flat, fname=f"corner_{tag}.pdf")
@@ -3169,7 +3188,12 @@ def emit_publication(flat, my_surveys, tag, title="HMF", nessie_bias=False):
         print(f"  [corner_{tag} failed: {e}]")
     try:
         plot_publication(
-            flat, my_surveys=my_surveys, fname=f"hmf_{tag}.pdf", title=title
+            flat,
+            my_surveys=my_surveys,
+            fname=f"hmf_{tag}.pdf",
+            title=title,
+            nessie_bias=nessie_bias,
+            mmax_data=mmax_data,
         )
     except Exception as e:
         print(f"  [hmf_{tag} failed: {e}]")
@@ -3574,6 +3598,7 @@ def run_mock_nessie(path="nessie_mock_groups.npz", model_kind="marg_tab"):
         {"Nessie mock": dict(x_fit=log_mass[keep], Vsurvey=float(V_sh.sum()))},
         tag=f"nessiemock_{model_kind}",
         title="Nessie mock HMF",
+        mmax_data=float(np.percentile(log_mass[keep], 99.5)),
     )
     return res
 
