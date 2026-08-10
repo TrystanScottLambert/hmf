@@ -180,6 +180,29 @@ def from_driver_cosmology(ms, lp, al=None, be=None, h=H_DRIVER):
     return (ms - np.log10(1.0 / h), lp - 3.0 * np.log10(h), al, be)
 
 
+# Driver+22's GAMA-ONLY fit (his "GAMA5" row: N>=5, A=13.9), as published in his
+# h=0.6737 units. This is the like-for-like comparison for a GAMA-only analysis;
+# the GSR values are a combined GAMA+SDSS+REFLEX fit.
+#
+# TWO conversions are needed, not one:
+#   h    : log M* -log10(1/h),  log phi* -3log10(h)   (as for the GSR values)
+#   A    : his A=13.9 vs our A_SCALE -- M ~ A sigma^2 R/G, so log M* shifts by
+#          log10(A_SCALE/13.9). phi*, alpha and beta are unaffected by A.
+DRIVER_GAMA5 = dict(ms=13.51, lp=-3.19, al=-1.27, be=0.47)  # as published
+DRIVER_GAMA5_A = 13.9
+
+
+def driver_gama5(match_A=True):
+    """Driver's GAMA-only fit in this pipeline's units (h=1, and optionally
+    rescaled from his A=13.9 to A_SCALE)."""
+    ms, lp, al, be = from_driver_cosmology(
+        DRIVER_GAMA5["ms"], DRIVER_GAMA5["lp"], DRIVER_GAMA5["al"], DRIVER_GAMA5["be"]
+    )
+    if match_A:
+        ms = ms + np.log10(A_SCALE / DRIVER_GAMA5_A)
+    return (ms, lp, al, be)
+
+
 def mrp_phi(x, ms, lp, al, be):
     """MRP number density per dex.  x = log10(M)."""
     u = x - ms
@@ -1294,6 +1317,21 @@ model {
 """
 _STAN["marg_tab_serr"] = MARG_TAB_SERR_CODE
 
+# marg_tab with M* PINNED. M* is exactly degenerate with the mass calibration A
+# (M = A sigma^2 R / G), so fixing it asserts the calibration and asks what GAMA
+# says about the remaining shape. ms is passed as DATA rather than as a parameter
+# with a spike prior -- a near-zero-width prior collapses HMC's step size.
+MARG_TAB_PINMS_CODE = (
+    MARG_TAB_CODE.replace(
+        "  real dx;\n}",
+        "  real dx;\n  real ms;          // PINNED, supplied as data\n}",
+        1,
+    )
+    .replace("parameters {\n  real ms;\n", "parameters {\n", 1)
+    .replace("  ms ~ normal(13.958, 0.42);\n", "", 1)
+)
+_STAN["marg_tab_pinms"] = MARG_TAB_PINMS_CODE
+
 
 _MODELS = {}
 
@@ -1455,6 +1493,8 @@ def run_stan(
             al=float(rng.normal(-1.3, 0.2)),
             be=float(rng.uniform(0.3, 0.7)),
         )
+        if kind.endswith("_pinms"):
+            init.pop("ms", None)
         try:
             opt = model.optimize(
                 data=data, inits=init, algorithm="lbfgs", iter=20000, seed=seed
@@ -1463,7 +1503,14 @@ def run_stan(
             if best is None or val > best[0]:
                 best = (
                     val,
-                    np.array([float(opt.optimized_params_dict[p]) for p in PARAMS]),
+                    np.array(
+                        [
+                            float(data["ms"])
+                            if (p == "ms" and kind.endswith("_pinms"))
+                            else float(opt.optimized_params_dict[p])
+                            for p in PARAMS
+                        ]
+                    ),
                 )
         except Exception as e:
             print("  optimize trial failed:", e)
@@ -1481,6 +1528,8 @@ def run_stan(
         for _ in range(chains)
     ]
 
+    if kind.endswith("_pinms"):
+        inits = [{k: v for k, v in d.items() if k != "ms"} for d in inits]
     fit = model.sample(
         data=data,
         chains=chains,
@@ -1495,7 +1544,18 @@ def run_stan(
         output_dir=output_dir,
     )
 
-    flat = np.column_stack([fit.stan_variable(p) for p in PARAMS])
+    if kind.endswith("_pinms"):
+        n_draw = int(chains) * int(sampling)
+        flat = np.column_stack(
+            [
+                np.full(n_draw, float(data["ms"]))
+                if p == "ms"
+                else fit.stan_variable(p)
+                for p in PARAMS
+            ]
+        )
+    else:
+        flat = np.column_stack([fit.stan_variable(p) for p in PARAMS])
 
     # diagnostics (column names vary slightly across cmdstanpy versions)
     try:
@@ -1577,6 +1637,11 @@ def summarise(flat):
         dms, dlp, _, _ = to_driver_cosmology(med[0], med[1])
         sms = 0.5 * (q84[0] - q16[0])
         slp = 0.5 * (q84[1] - q16[1])
+        g5 = driver_gama5(match_A=True)
+        print(
+            f"  [Driver+22 GAMA-only (GAMA5), h=1 and rescaled to A={A_SCALE:g}: "
+            f"{g5[0]:.3f} / {g5[1]:.3f} / {g5[2]:.3f} / {g5[3]:.3f}]"
+        )
         print(
             f"  [h=1 units. Converted to Driver's h={H_DRIVER}: "
             f"log M* = {dms:.3f} +/- {sms:.3f}, log phi* = {dlp:.3f} +/- {slp:.3f}"
@@ -1988,6 +2053,7 @@ def prep_comp(z_obs, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh):
 # 1.367 +/- 0.042. Applying the measured factor lets sigma be fixed data, which
 # means the completeness can be precomputed and the sampler runs far faster.
 MLIM_FORM = None  # None = choose by AIC; 'linear'/'quad' to force
+PIN_MS = 13.958  # Driver+22 GSR M* in h=1 units, for marg_tab_pinms
 SIGMA_SCALE = 1.34
 
 # Closed-loop bias of the marg_tab fit, from run_mock_nessie: the MRP is injected
@@ -2438,7 +2504,7 @@ def run_real_gama(
 
     mlim_per = mlim_func(z)
 
-    if model_kind in ("marg_tab", "marg_tab_serr"):
+    if model_kind in ("marg_tab", "marg_tab_serr", "marg_tab_pinms"):
         data, keep = prep_tab(
             z,
             log_mass,
@@ -2449,6 +2515,13 @@ def run_real_gama(
             V_sh,
             fit_scale=(model_kind == "marg_tab_serr"),
         )
+        if model_kind == "marg_tab_pinms":
+            data["ms"] = float(PIN_MS)
+            print(
+                f"  M* PINNED at {PIN_MS:.3f} (h=1) = "
+                f"{to_driver_cosmology(PIN_MS, 0)[0]:.3f} in Driver units;\n"
+                f"    equivalent to asserting the mass calibration A"
+            )
         x_fit = log_mass[keep]
     elif model_kind in ("marg_comp", "marg_comp_serr"):
         # Completeness ramp from the GAMA-selected mock (same mag limit, same
@@ -3139,6 +3212,7 @@ def plot_corner(
                 ax.axvline(med[i], color="red")
                 if driver[i] is not None:
                     ax.axvline(driver[i], color="k", ls="--")
+                ax.axvline(driver_gama5(match_A=True)[i], color="darkred", ls=":")
                 ax.set_yticks([])
             else:
                 H, xe, ye = np.histogram2d(flat[:, j], flat[:, i], bins=40)
@@ -3156,6 +3230,8 @@ def plot_corner(
                 ax.plot(med[j], med[i], "r+", ms=8)
                 if driver[j] is not None and driver[i] is not None:
                     ax.plot(driver[j], driver[i], "k*", ms=9)
+                g5 = driver_gama5(match_A=True)
+                ax.plot(g5[j], g5[i], marker="P", color="darkred", ms=7, ls="")
             if i == P - 1:
                 ax.set_xlabel(labels[j])
             else:
@@ -3762,6 +3838,13 @@ if __name__ == "__main__":
         help="legacy Dec cut; Driver used -3.5, which EXCLUDES G23",
     )
     ap.add_argument(
+        "--pin-ms",
+        type=float,
+        default=None,
+        help="value to pin log10 M* at (h=1 units) for marg_tab_pinms; "
+        "default 13.958 = Driver+22 GSR",
+    )
+    ap.add_argument(
         "--mlim-form",
         choices=["linear", "quad"],
         default=None,
@@ -3788,6 +3871,7 @@ if __name__ == "__main__":
             "marg_comp_serr",
             "marg_tab",
             "marg_tab_serr",
+            "marg_tab_pinms",
             "gama",
             "simple",
         ],
@@ -3869,6 +3953,8 @@ if __name__ == "__main__":
     args = ap.parse_args()
     SHOW_ALPHA_CORRECTION = args.alpha_correction
     MLIM_FORM = args.mlim_form
+    if args.pin_ms is not None:
+        PIN_MS = args.pin_ms
     USE_DRIVER_PRIOR = args.driver_prior
     DRIVER_PRIOR_INFLATE = args.driver_prior_inflate
     if args.mock_nessie:
