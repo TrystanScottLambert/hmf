@@ -71,6 +71,15 @@ def vmax_hmf(log_mass, z, sigma, mlim_func, sky_frac, zmin, zmax, label=""):
     mlim(z) is found by inverting mlim, and Vmax is the comoving volume out to
     it (capped at the survey limits). Returns (mass, log10 phi, frac_err, N)
     for the occupied bins."""
+    # 1/Vmax is defined only for objects that are actually detectable, i.e.
+    # above the limit at their own redshift. Including groups below mlim gives
+    # them Vmax -> 0 and hence enormous weight, which drags alpha to nonsense.
+    above = log_mass > mlim_func(z)
+    n_drop = int((~above).sum())
+    log_mass, z = log_mass[above], z[above]
+    if sigma is not None and np.ndim(sigma) and len(sigma) == above.size:
+        sigma = np.asarray(sigma)[above]
+
     zg = np.linspace(zmin, zmax, 2001)
     mg = mlim_func(zg)
     # mlim rises with z, so a group drops out once mlim exceeds its mass
@@ -80,7 +89,18 @@ def vmax_hmf(log_mass, z, sigma, mlim_func, sky_frac, zmin, zmax, label=""):
     d_hi = R.comoving_distance(zmax_i)
     d_lo = R.comoving_distance(np.full_like(zmax_i, zmin))
     vmax = (4 / 3) * np.pi * (d_hi**3 - d_lo**3) * sky_frac
-    vmax = np.maximum(vmax, 1.0)
+
+    # a group barely above the limit has a tiny Vmax and a correspondingly huge
+    # weight; drop the worst offenders rather than let one object set a bin
+    vfull = (
+        (4 / 3)
+        * np.pi
+        * (R.comoving_distance(np.array([zmax]))[0] ** 3 - d_lo[0] ** 3)
+        * sky_frac
+    )
+    usable = vmax > 1e-4 * vfull
+    n_tiny = int((~usable).sum())
+    log_mass, vmax = log_mass[usable], vmax[usable]
 
     idx = np.digitize(log_mass, MASS_EDGES) - 1
     ok = (idx >= 0) & (idx < MASS_MIDS.size)
@@ -94,9 +114,11 @@ def vmax_hmf(log_mass, z, sigma, mlim_func, sky_frac, zmin, zmax, label=""):
     keep = cnt >= 3
     frac = np.where(cnt > 0, 1.0 / np.sqrt(np.maximum(cnt, 1)), 1.0)
     print(
-        f"  [{label}] 1/Vmax: {int(cnt.sum())} groups in {int(keep.sum())} bins, "
-        f"logM {MASS_MIDS[keep].min():.2f}-{MASS_MIDS[keep].max():.2f}"
+        f"  [{label}] 1/Vmax: {int(cnt.sum())} groups above mlim in "
+        f"{int(keep.sum())} bins, logM {MASS_MIDS[keep].min():.2f}-"
+        f"{MASS_MIDS[keep].max():.2f}"
     )
+    print(f"           dropped {n_drop} below mlim, {n_tiny} with Vmax < 1e-4 Vsurvey")
     with np.errstate(divide="ignore"):
         lp = np.log10(phi)
     return MASS_MIDS[keep], lp[keep], frac[keep], cnt[keep]
@@ -136,11 +158,22 @@ def massfn_chi2(par, sets):
     return tot
 
 
+BOUNDS = [(12.0, 16.0), (-8.0, -1.0), (-2.6, -0.5), (0.15, 1.6)]
+
+
 def fit_mrp(sets, p0=(13.9, -3.4, -1.4, 0.6)):
+    """Bounded so a bad Monte-Carlo realisation cannot run the fit off to
+    alpha ~ -5 or phi* > 0, which overflows the MRP."""
+
+    def obj(par):
+        for v, (lo, hi) in zip(par, BOUNDS):
+            if not (lo <= v <= hi):
+                return 1e12
+        return massfn_chi2(par, sets)
+
     r = optimize.minimize(
-        massfn_chi2,
+        obj,
         np.asarray(p0, float),
-        args=(sets,),
         method="Nelder-Mead",
         options=dict(xatol=1e-5, fatol=1e-4, maxiter=20000),
     )
