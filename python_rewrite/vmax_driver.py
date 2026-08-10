@@ -64,7 +64,7 @@ def cosvar(V, N):
 
 
 # ----------------------------------------------------------------------
-def vmax_hmf(log_mass, z, sigma, mlim_func, sky_frac, zmin, zmax, label=""):
+def vmax_hmf(log_mass, z, sigma, mlim_func, sky_frac, zmin, zmax, label="", mmax=None):
     """Binned 1/Vmax mass function.
 
     For each group the maximum redshift at which it would still lie above
@@ -74,6 +74,15 @@ def vmax_hmf(log_mass, z, sigma, mlim_func, sky_frac, zmin, zmax, label=""):
     # 1/Vmax is defined only for objects that are actually detectable, i.e.
     # above the limit at their own redshift. Including groups below mlim gives
     # them Vmax -> 0 and hence enormous weight, which drags alpha to nonsense.
+    if mmax is not None:
+        n_hi = int((log_mass > mmax).sum())
+        if n_hi:
+            print(f"  [{label}] capping at logM < {mmax}: dropping {n_hi} groups")
+        keep_hi = log_mass <= mmax
+        log_mass, z = log_mass[keep_hi], z[keep_hi]
+        if sigma is not None and np.ndim(sigma):
+            sigma = np.asarray(sigma)[keep_hi]
+
     above = log_mass > mlim_func(z)
     n_drop = int((~above).sum())
     log_mass, z = log_mass[above], z[above]
@@ -238,7 +247,15 @@ def load_sdss(args):
     )
     vol = float(R.survey_volume(sky_frac, zmin=args.sdss_zmin, zmax=args.sdss_zmax))
     m, y, f, n = vmax_hmf(
-        lm, z, sig, mlim_func, sky_frac, args.sdss_zmin, args.sdss_zmax, "SDSS"
+        lm,
+        z,
+        sig,
+        mlim_func,
+        sky_frac,
+        args.sdss_zmin,
+        args.sdss_zmax,
+        "SDSS",
+        mmax=args.sdss_mmax,
     )
     return dict(
         m=m,
@@ -288,10 +305,16 @@ def run(sets_raw, tag, title, args, eddington=True):
                     y = y + np.log10(eddington_factor(d["m"], par, d["sigma"]))
                 sets.append((d["m"], y, d["f"], d["vol"]))
             par = fit_mrp(sets)
+        for d, (mm, yy, ff, vv) in zip(sets_raw, sets):
+            d["y_corr"] = yy
         print(
             f"  Eddington correction applied (2 iterations, "
             f"sigma = {[round(d['sigma'], 3) for d in sets_raw]})"
         )
+        for d in sets_raw:
+            if "y_corr" in d:
+                sh = float(np.median(d["y_corr"] - d["y"]))
+                print(f"    {d['label']}: median shift {sh:+.3f} dex")
 
     cosvars = [
         cosvar(d["vol"] / max(d["nfield"], 1), d["nfield"])
@@ -309,7 +332,26 @@ def run(sets_raw, tag, title, args, eddington=True):
     print(f"\n  === Driver+22 method on {title} ===")
     print(f"  {'param':>9} {'best fit':>10} {'MC median':>11} {'16-84%':>18}")
     for i, nm in enumerate(names):
-        print(f"  {nm:>9} {par[i]:10.3f} {med[i]:11.3f}   [{lo[i]:7.3f}, {hi[i]:7.3f}]")
+        blo, bhi = BOUNDS[i]
+        flag = (
+            "  <-- AT BOUND"
+            if (abs(par[i] - blo) < 1e-3 or abs(par[i] - bhi) < 1e-3)
+            else ""
+        )
+        print(
+            f"  {nm:>9} {par[i]:10.3f} {med[i]:11.3f}   "
+            f"[{lo[i]:7.3f}, {hi[i]:7.3f}]{flag}"
+        )
+    at_bound = [
+        names[i]
+        for i in range(4)
+        if abs(par[i] - BOUNDS[i][0]) < 1e-3 or abs(par[i] - BOUNDS[i][1]) < 1e-3
+    ]
+    if at_bound:
+        print(
+            f"  !! {', '.join(at_bound)} railed against a bound -- the data are"
+            f" pulling outside the physical range, so this fit is not usable."
+        )
 
     dms, dlp, _, _ = R.to_driver_cosmology(par[0], par[1])
     print(
@@ -405,16 +447,22 @@ def plot(sets_raw, par, chains, tag, title, args):
         mk, col = styles[key]
         e_hi = np.log10(1 + np.clip(d["f"], 0, 0.99))
         e_lo = -np.log10(1 - np.clip(d["f"], 0, 0.99))
+        yy = d.get("y_corr", d["y"])
+        if "y_corr" in d:
+            # the raw 1/Vmax points, before the Eddington correction that the
+            # fit actually used -- shown faint so the size of the correction is
+            # visible and the fit is not compared against uncorrected data
+            ax.plot(d["m"], d["y"], mk, ms=4, color=col, alpha=0.25, zorder=3)
         ax.errorbar(
             d["m"],
-            d["y"],
+            yy,
             yerr=[e_lo, e_hi],
             fmt=mk,
             ms=5,
             color=col,
             capsize=2,
             lw=1,
-            label=d["label"],
+            label=d["label"] + " (Eddington-corr.)",
             zorder=5,
         )
 
@@ -468,6 +516,14 @@ def main():
     ap.add_argument("--sdss-zmax", type=float, default=0.08)
     ap.add_argument("--data-dir", default="../data")
     ap.add_argument("--show-2pigg", action="store_true", default=True)
+    ap.add_argument(
+        "--sdss-mmax",
+        type=float,
+        default=None,
+        help="drop SDSS groups above this logM. The Nessie SDSS masses "
+        "reach 15.7 and sit ~1.4 dex above REFLEX at the same mass, "
+        "which is not credible in 8770 deg^2 out to z=0.08; try 15.0",
+    )
     ap.add_argument("--no-eddington", action="store_true")
     a = ap.parse_args()
 
