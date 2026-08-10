@@ -140,9 +140,13 @@ def hmf_with_edb(log_mass, weights, mass_err, n_mc=N_MC, seed=0):
 
     with np.errstate(divide="ignore", invalid="ignore"):
         mcerr = np.sqrt(np.quantile((meanc[None, :] - mock) ** 2, 0.66, axis=0)) / meanc
-        rootn = 1.0 / np.sqrt(counts_raw)
+        rootn = np.where(
+            counts_raw > 0, 1.0 / np.sqrt(np.maximum(counts_raw, 1)), np.inf
+        )
         y = counts_w / (LOGBIN * edb)
-    f = np.sqrt(np.nan_to_num(mcerr) ** 2 + np.nan_to_num(rootn) ** 2)
+    mcerr = np.nan_to_num(mcerr, nan=0.0, posinf=1.0, neginf=0.0)
+    rootn = np.nan_to_num(rootn, nan=1.0, posinf=1.0, neginf=1.0)
+    f = np.sqrt(mcerr**2 + rootn**2)
     f[~np.isfinite(f)] = 0.9999
     f = np.where(f >= 1, 0.9999, f)
 
@@ -186,17 +190,44 @@ def massfn(par, allx, ally, allf, vlimit, use_penalty=True):
     return chi2 if np.isfinite(chi2) else 1e12
 
 
+# sane ranges; the chi^2 surface has flat directions and Nelder-Mead will
+# happily wander to beta ~ 0 or phi* ~ 1 without them
+BOUNDS = [(11.5, 16.5), (-8.0, -0.5), (-2.5, -0.3), (0.15, 1.8)]
+
+
 def fit(allx, ally, allf, vlimit, p0, use_penalty=True):
-    """optim(par, massfn, parscale=c(1,1,1,0.5)) -- note phi is LINEAR here,
-    as in gamahmf.r, not log10."""
-    r = optimize.minimize(
-        massfn,
-        np.asarray(p0, float),
-        args=(allx, ally, allf, vlimit, use_penalty),
-        method="Nelder-Mead",
-        options=dict(maxiter=5000, xatol=1e-8, fatol=1e-8),
-    )
-    return r.x
+    """gamahmf.r calls optim(..., parscale=c(1,1,1,0.5)), which rescales the
+    parameters internally. Without an equivalent, scipy would be optimising
+    mstar ~ 14 alongside phi ~ 4e-4 -- four orders of magnitude apart -- and the
+    simplex collapses. Fitting log10(phi) instead puts every parameter at O(1),
+    which is the same trick and numerically identical.
+
+    p0 is given with phi LINEAR, as in gamahmf.r; it is converted here."""
+    q0 = np.array([p0[0], np.log10(max(p0[1], 1e-12)), p0[2], p0[3]], float)
+    q0 = np.array([np.clip(v, lo, hi) for v, (lo, hi) in zip(q0, BOUNDS)])
+
+    def obj(q):
+        for v, (lo, hi) in zip(q, BOUNDS):
+            if not (lo <= v <= hi):
+                return 1e12
+        return massfn(
+            [q[0], 10 ** q[1], q[2], q[3]], allx, ally, allf, vlimit, use_penalty
+        )
+
+    best, bq = np.inf, q0
+    # a few restarts, since the surface is not convex
+    for jitter in (0.0, 0.15, -0.15):
+        start = q0 + np.array([jitter, jitter, 0.5 * jitter, 0.1 * jitter])
+        start = np.array([np.clip(v, lo, hi) for v, (lo, hi) in zip(start, BOUNDS)])
+        r = optimize.minimize(
+            obj,
+            start,
+            method="Nelder-Mead",
+            options=dict(maxiter=20000, maxfev=20000, xatol=1e-8, fatol=1e-8),
+        )
+        if r.fun < best:
+            best, bq = r.fun, r.x
+    return np.array([bq[0], 10 ** bq[1], bq[2], bq[3]])
 
 
 def mc_params(
@@ -274,6 +305,19 @@ def build_gama(a):
 
     sky_frac = a.gama_area * (np.pi / 180) ** 2 / (4 * np.pi)
     zmax = group_zmax(a.gig, gid, nfof, multi=MULTI, zcol=a.zmax_col)
+    have = np.isfinite(zmax)
+    if (~have).any():
+        print(
+            f"  dropping {int((~have).sum())} groups with no member zmax "
+            f"(they would otherwise be given zmax = Zfof and a huge weight)"
+        )
+        log_mass, nfof, zfof, err, zmax = (
+            log_mass[have],
+            nfof[have],
+            zfof[have],
+            err[have],
+            zmax[have],
+        )
     vmax, w, vlimit = vmax_weights(zmax, zfof, sky_frac, R.ZMIN, R.ZLIMIT)
     print(
         f"  vlimit = {vlimit:.4e} Mpc^3 (h=1); median vmax/vlimit = "
@@ -471,6 +515,11 @@ def run(sets, tag, title, a):
 
     p0 = (13.9, 10**-3.4, -1.4, 0.6)  # phi LINEAR, as gamahmf.r
     par = fit(allx, ally, allf, vlimit, p0, use_penalty=not a.no_penalty)
+    c2 = massfn(par, allx, ally, allf, vlimit, use_penalty=not a.no_penalty)
+    print(
+        f"  best-fit chi2 = {c2:.1f} over {allx.size} bins "
+        f"({c2 / max(allx.size - 4, 1):.2f} per dof)"
+    )
     cv = cosvar(vlimit / max(sets[0]["nfield"], 1), sets[0]["nfield"])
     print(f"  cosmic variance = {cv:.4f}")
     print(f"  {a.n_mc} Monte-Carlo refits ...")
