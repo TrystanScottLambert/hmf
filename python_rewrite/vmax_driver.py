@@ -327,6 +327,18 @@ def build_gama(a):
     x, y, f, cnt, edb, ok = hmf_with_edb(log_mass, w, err)
     keep = ok & (x > a.mlimit)
     print(f"  bins kept: {int(keep.sum())} with logM > {a.mlimit}")
+    print(
+        f"\n  {'logM':>6} {'N':>6} {'log phi':>9} {'edb':>7} {'frac err':>9} {'used':>5}"
+    )
+    for i in range(x.size):
+        if cnt[i] == 0 and not ok[i]:
+            continue
+        yy = np.log10(y[i]) if (np.isfinite(y[i]) and y[i] > 0) else np.nan
+        print(
+            f"  {x[i]:6.2f} {cnt[i]:6d} {yy:9.3f} {edb[i]:7.3f} {f[i]:9.3f} "
+            f"{'yes' if keep[i] else 'no':>5}"
+        )
+    print()
     return dict(
         x=x[keep],
         y=np.log10(y[keep]),
