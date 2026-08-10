@@ -1332,6 +1332,23 @@ MARG_TAB_PINMS_CODE = (
 )
 _STAN["marg_tab_pinms"] = MARG_TAB_PINMS_CODE
 
+# marg_tab with BETA pinned. Unlike M*, beta is not degenerate with the mass
+# calibration -- it is genuinely unconstrained because GAMA has almost no groups
+# above 10^15 and the completeness table above Delta=+1 rests on 17 halos. Fixing
+# it to a literature value is defensible, but note it is correlated with alpha
+# (rho ~ -0.8), so pinning shifts alpha and shrinks its error bar by ~40%: the
+# resulting precision on alpha is conditional on beta being exactly right.
+MARG_TAB_PINBE_CODE = (
+    MARG_TAB_CODE.replace(
+        "  real dx;\n}",
+        "  real dx;\n  real be;          // PINNED, supplied as data\n}",
+        1,
+    )
+    .replace("  real<lower=0.1, upper=2.0> be;\n}", "}", 1)
+    .replace("  be ~ normal(0.63, 0.18);\n", "", 1)
+)
+_STAN["marg_tab_pinbe"] = MARG_TAB_PINBE_CODE
+
 
 _MODELS = {}
 
@@ -1493,20 +1510,22 @@ def run_stan(
             al=float(rng.normal(-1.3, 0.2)),
             be=float(rng.uniform(0.3, 0.7)),
         )
-        if kind.endswith("_pinms"):
-            init.pop("ms", None)
+        pin0 = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+        if pin0:
+            init.pop(pin0, None)
         try:
             opt = model.optimize(
                 data=data, inits=init, algorithm="lbfgs", iter=20000, seed=seed
             )
             val = float(opt.optimized_params_dict["lp__"])
             if best is None or val > best[0]:
+                pin0 = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
                 best = (
                     val,
                     np.array(
                         [
-                            float(data["ms"])
-                            if (p == "ms" and kind.endswith("_pinms"))
+                            float(data[p])
+                            if p == pin0
                             else float(opt.optimized_params_dict[p])
                             for p in PARAMS
                         ]
@@ -1528,8 +1547,9 @@ def run_stan(
         for _ in range(chains)
     ]
 
-    if kind.endswith("_pinms"):
-        inits = [{k: v for k, v in d.items() if k != "ms"} for d in inits]
+    pin1 = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+    if pin1:
+        inits = [{k: v for k, v in d.items() if k != pin1} for d in inits]
     fit = model.sample(
         data=data,
         chains=chains,
@@ -1544,12 +1564,13 @@ def run_stan(
         output_dir=output_dir,
     )
 
-    if kind.endswith("_pinms"):
+    pinned = {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+    if pinned:
         n_draw = int(chains) * int(sampling)
         flat = np.column_stack(
             [
-                np.full(n_draw, float(data["ms"]))
-                if p == "ms"
+                np.full(n_draw, float(data[pinned]))
+                if p == pinned
                 else fit.stan_variable(p)
                 for p in PARAMS
             ]
@@ -1560,9 +1581,12 @@ def run_stan(
     # diagnostics (column names vary slightly across cmdstanpy versions)
     try:
         summ = fit.summary()
-        rhat = float(summ.loc[PARAMS, "R_hat"].max())
+        free = [
+            p for p in PARAMS if p != {"_pinms": "ms", "_pinbe": "be"}.get(kind[-6:])
+        ]
+        rhat = float(summ.loc[free, "R_hat"].max())
         ess_col = next((c for c in ("ESS_bulk", "N_Eff") if c in summ.columns), None)
-        ess = float(summ.loc[PARAMS, ess_col].min()) if ess_col else float("nan")
+        ess = float(summ.loc[free, ess_col].min()) if ess_col else float("nan")
     except Exception:
         rhat, ess = float("nan"), float("nan")
     try:
@@ -2054,6 +2078,7 @@ def prep_comp(z_obs, m_obs, sigma, mlim_func, z_mids, mlim_sh, V_sh):
 # means the completeness can be precomputed and the sampler runs far faster.
 MLIM_FORM = None  # None = choose by AIC; 'linear'/'quad' to force
 PIN_MS = 13.958  # Driver+22 GSR M* in h=1 units, for marg_tab_pinms
+PIN_BE = 0.63  # Driver+22 GSR beta, for marg_tab_pinbe
 SIGMA_SCALE = 1.34
 
 # Closed-loop bias of the marg_tab fit, from run_mock_nessie: the MRP is injected
@@ -2504,7 +2529,7 @@ def run_real_gama(
 
     mlim_per = mlim_func(z)
 
-    if model_kind in ("marg_tab", "marg_tab_serr", "marg_tab_pinms"):
+    if model_kind in ("marg_tab", "marg_tab_serr", "marg_tab_pinms", "marg_tab_pinbe"):
         data, keep = prep_tab(
             z,
             log_mass,
@@ -2515,6 +2540,14 @@ def run_real_gama(
             V_sh,
             fit_scale=(model_kind == "marg_tab_serr"),
         )
+        if model_kind == "marg_tab_pinbe":
+            data["be"] = float(PIN_BE)
+            print(
+                f"  beta PINNED at {PIN_BE:.3f}  (Driver GSR 0.63, GAMA-only 0.47,"
+                f" LCDM 0.71).\n"
+                f"    beta correlates with alpha at rho ~ -0.8, so alpha's error"
+                f" bar below is CONDITIONAL on this value."
+            )
         if model_kind == "marg_tab_pinms":
             data["ms"] = float(PIN_MS)
             print(
@@ -3838,6 +3871,13 @@ if __name__ == "__main__":
         help="legacy Dec cut; Driver used -3.5, which EXCLUDES G23",
     )
     ap.add_argument(
+        "--pin-be",
+        type=float,
+        default=None,
+        help="value to pin beta at for marg_tab_pinbe; default 0.63 "
+        "(Driver GSR). GAMA-only 0.47, LCDM 0.71",
+    )
+    ap.add_argument(
         "--pin-ms",
         type=float,
         default=None,
@@ -3872,6 +3912,7 @@ if __name__ == "__main__":
             "marg_tab",
             "marg_tab_serr",
             "marg_tab_pinms",
+            "marg_tab_pinbe",
             "gama",
             "simple",
         ],
@@ -3955,6 +3996,8 @@ if __name__ == "__main__":
     MLIM_FORM = args.mlim_form
     if args.pin_ms is not None:
         PIN_MS = args.pin_ms
+    if args.pin_be is not None:
+        PIN_BE = args.pin_be
     USE_DRIVER_PRIOR = args.driver_prior
     DRIVER_PRIOR_INFLATE = args.driver_prior_inflate
     if args.mock_nessie:
