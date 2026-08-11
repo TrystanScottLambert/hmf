@@ -63,7 +63,74 @@ LOGBIN = 0.2
 MASSX = np.arange(10.3, 16.1 + 1e-9, LOGBIN)  # gamahmf.r: seq(10.3,16.1,logbin)
 MIDS = 0.5 * (MASSX[1:] + MASSX[:-1])
 N_MC = 1001  # as gamahmf.r
-MULTI = 5
+MULTI = 5  # gamahmf.r line 239
+ZMIN = 0.015  # line 242 -- NOT 0.01
+MLIMIT = 12.7  # line 240
+MAGICA = 13.9  # line 238, the A in mymass
+MYOPTION = "GAMA"  # line 241 -> MassAfunc = mymass/10^masscorr
+
+# gamahmf.r runs at ho=67.37, omegam=0.3147 (lines 224-228, 304). Every volume
+# uses cosdist(..., H0=ho), so running at h=1 instead makes the volumes
+# 0.6737^3 = 0.306x his and phi = counts/vmax correspondingly +0.514 dex high.
+# Masses go the other way: mymass carries (100/ho), so his are +0.172 dex above
+# an h=1 build. Both must match to reproduce his numbers.
+DRIVER_H0, DRIVER_OM = 67.37, 0.3147
+
+# gamahmf.r's Murray+21 starting point (lines 246-253)
+BETAMRP = 0.7097976
+AMRP = 1.727006e-19
+MSTARMRP = 14.42947
+ALPHAMRP = -1.864908
+
+MASSCORR = np.array(
+    [
+        0.0,
+        0.0,
+        -2.672595e-01,
+        -1.513503e-01,
+        -1.259069e-01,
+        -9.006064e-02,
+        -5.466009e-02,
+        -6.666895e-02,
+        -1.988694e-02,
+        -2.439581e-02,
+        -2.067060e-02,
+        -1.812964e-02,
+        -1.556899e-02,
+        -1.313664e-02,
+        -1.743112e-02,
+        -7.965513e-03,
+        -1.257178e-02,
+        -7.064037e-03,
+        -3.963656e-03,
+        -1.271533e-02,
+        -2.664687e-03,
+        -1.691287e-03,
+    ]
+)
+
+
+def phimrp(ho=None):
+    """phimrp = A/factor, gamahmf.r lines 250-253."""
+    ho = R.H0 if ho is None else ho
+    msol, parsec, G = 1.988e30, 3.0857e16, 6.67408e-11
+    rhocrit = 3 * (1000 * ho / (1e6 * parsec)) ** 2 / (8 * np.pi * G)
+    mrpx = np.arange(0, 17, 0.001) + np.log10(100 / ho)
+    mrpy = (
+        AMRP
+        * BETAMRP
+        * 10 ** ((ALPHAMRP + 1) * (mrpx - MSTARMRP))
+        * np.exp(-(10 ** (BETAMRP * (mrpx - MSTARMRP))))
+        * (ho / 100) ** 3
+    )
+    factor = (
+        np.sum(10**mrpx * mrpy)
+        * 0.001
+        * msol
+        / (1e6 * parsec) ** 3
+        / (R.OMEGA_M * rhocrit)
+    )
+    return AMRP / factor
 
 
 def cosvar(V, N):
@@ -84,6 +151,10 @@ def group_zmax(
     import pandas as pd
 
     gig = pd.read_csv(gig_path)
+    n0 = int((gig[idcol] == 0).sum())
+    if n0:
+        print(f"  excluding GroupID 0 (the ungrouped sentinel, {n0} galaxies)")
+        gig = gig[gig[idcol] != 0]
     if zcol not in gig.columns:
         cand = [c for c in gig.columns if "zmax" in c.lower()]
         raise KeyError(
@@ -102,6 +173,14 @@ def group_zmax(
         k = 2 if int(n) == 2 else int(multi)
         if v.size >= k:
             out[i] = v[k - 1]
+    sizes = np.array(
+        [len(grp.get_group(g)) if g in grp.groups else 0 for g in group_ids]
+    )
+    short = int((sizes < multi).sum())
+    print(
+        f"  members found per group: median {int(np.median(sizes))}, "
+        f"{short} have fewer than {multi}"
+    )
     miss = int(np.isnan(out).sum())
     if miss:
         print(f"  !! {miss}/{out.size} groups have no usable member zmax")
@@ -192,7 +271,9 @@ def massfn(par, allx, ally, allf, vlimit, use_penalty=True):
 
 # sane ranges; the chi^2 surface has flat directions and Nelder-Mead will
 # happily wander to beta ~ 0 or phi* ~ 1 without them
-BOUNDS = [(11.5, 16.5), (-8.0, -0.5), (-2.5, -0.3), (0.15, 1.8)]
+# M* below ~12.8 puts the knee under every fitted bin, which admits the
+# degenerate all-exponential-tail branch; the data cannot constrain it.
+BOUNDS = [(12.5, 16.5), (-8.0, -0.5), (-2.5, -0.3), (0.15, 1.8)]
 
 
 def fit(allx, ally, allf, vlimit, p0, use_penalty=True):
@@ -214,20 +295,19 @@ def fit(allx, ally, allf, vlimit, p0, use_penalty=True):
             [q[0], 10 ** q[1], q[2], q[3]], allx, ally, allf, vlimit, use_penalty
         )
 
-    best, bq = np.inf, q0
-    # a few restarts, since the surface is not convex
-    for jitter in (0.0, 0.15, -0.15):
-        start = q0 + np.array([jitter, jitter, 0.5 * jitter, 0.1 * jitter])
-        start = np.array([np.clip(v, lo, hi) for v, (lo, hi) in zip(start, BOUNDS)])
-        r = optimize.minimize(
-            obj,
-            start,
-            method="Nelder-Mead",
-            options=dict(maxiter=20000, maxfev=20000, xatol=1e-8, fatol=1e-8),
-        )
-        if r.fun < best:
-            best, bq = r.fun, r.x
-    return np.array([bq[0], 10 ** bq[1], bq[2], bq[3]])
+    # gamahmf.r: optim(par=c(mstarmrp,...), maxit=500, reltol=1e-8).
+    # ONE start from the Murray+21 values and only 500 iterations. Adding
+    # restarts or raising maxiter finds a lower-chi^2 but unphysical branch with
+    # M* ~ 11.5, where the whole fitted range sits in the exponential tail --
+    # a solution R's optimiser never reaches from that starting point. Matching
+    # his settings is the point of the exercise, so they are kept.
+    r = optimize.minimize(
+        obj,
+        q0,
+        method="Nelder-Mead",
+        options=dict(maxiter=500, maxfev=500, fatol=1e-8, xatol=1e-8),
+    )
+    return np.array([r.x[0], 10 ** r.x[1], r.x[2], r.x[3]])
 
 
 def mc_params(
@@ -263,13 +343,47 @@ def build_gama(a):
     mafunc = np.asarray(t["MassAfunc"], float)
     gid = np.asarray(t["GroupID"])
 
-    sel = (nfof > MULTI - 1) & (zfof < R.ZLIMIT) & (zfof > R.ZMIN) & (mafunc > 1e1)
+    sel = (nfof > MULTI - 1) & (zfof < R.ZLIMIT) & (zfof > ZMIN) & (mafunc > 1e1)
     if a.regions and "GAMARegion" in cols:
         reg = np.asarray(t["GAMARegion"]).astype(str)
         sel &= np.isin(reg, a.regions)
     print(f"  groups after selection: {int(sel.sum())}")
 
-    mass = np.asarray(t[a.mass_col], float)[sel]
+    if a.mass_col.upper() == "GAMA":
+        # myoption="GAMA": MassAfunc = mymass/10^masscorr, with
+        #   mymass = magica * (VelDisp*1000)^2 * Rad50 * pc*1e6 / (G*msol) * (100/ho)
+        # i.e. rebuilt from the velocity dispersion with A=13.9, NOT the
+        # catalogue's MassAfunc column. The (100/ho) is already inside, so no
+        # further h conversion is applied.
+        G, msol, parsec = 6.67408e-11, 1.988e30, 3.0857e16
+        vd = np.asarray(t["VelDisp"], float)[sel]
+        r50 = np.asarray(t["Rad50"], float)[sel]
+        mymass = (
+            MAGICA * (vd * 1000) ** 2 * r50 * parsec * 1e6 / (G * msol) * (100 / R.H0)
+        )
+        mc = MASSCORR[
+            np.clip(
+                np.asarray(t["Nfof"], float)[sel].astype(int) - 1, 0, MASSCORR.size - 1
+            )
+        ]
+        mc = np.where(np.isfinite(mc), mc, 0.0)
+        mass = mymass / 10**mc
+        print(
+            f"  masses: myoption='GAMA' -- rebuilt from VelDisp with A={MAGICA}, "
+            f"masscorr applied, no extra h conversion"
+        )
+        a.h_convert = False
+    else:
+        mass = np.asarray(t[a.mass_col], float)[sel]
+    if a.h_convert:
+        # gamahmf.r: g3c$MassAfunc = g3c$MassAfunc*100/ho, putting the catalogue
+        # masses into Msun/h. Skip with --no-h-convert if the catalogue is
+        # already in h=1 units (the new Nessie DMU is).
+        mass = mass * 100.0 / (R.H_DRIVER * 100.0)
+        print(
+            f"  applied Driver's mass conversion x100/ho = "
+            f"x{100.0 / (R.H_DRIVER * 100.0):.4f} ({np.log10(1 / R.H_DRIVER):+.3f} dex)"
+        )
     nfof, zfof, gid = nfof[sel], zfof[sel], gid[sel]
     log_mass = np.log10(mass)
 
@@ -318,14 +432,21 @@ def build_gama(a):
             err[have],
             zmax[have],
         )
-    vmax, w, vlimit = vmax_weights(zmax, zfof, sky_frac, R.ZMIN, R.ZLIMIT)
+    vmax, w, vlimit = vmax_weights(zmax, zfof, sky_frac, ZMIN, R.ZLIMIT)
     print(
         f"  vlimit = {vlimit:.4e} Mpc^3 (h=1); median vmax/vlimit = "
         f"{np.median(vmax) / vlimit:.3f}"
     )
 
     x, y, f, cnt, edb, ok = hmf_with_edb(log_mass, w, err)
-    keep = ok & (x > a.mlimit)
+    # gamahmf.r removes one bad group by hand (GroupID 100622 -> 1E9), and its
+    # fit is protected from sparse bins by mlimit. Here a minimum count does the
+    # same job: a lone group in a bin gets f = 1 and a wild edb, and being the
+    # only point near the cutoff it anchors beta on its own.
+    keep = ok & (x > a.mlimit) & (cnt >= a.min_count)
+    n_sparse = int((ok & (x > a.mlimit) & (cnt < a.min_count)).sum())
+    if n_sparse:
+        print(f"  dropping {n_sparse} bins with fewer than {a.min_count} groups")
     print(f"  bins kept: {int(keep.sum())} with logM > {a.mlimit}")
     print(
         f"\n  {'logM':>6} {'N':>6} {'log phi':>9} {'edb':>7} {'frac err':>9} {'used':>5}"
@@ -397,12 +518,32 @@ def report(name, par, chains, sets):
             f"  {nm:>9} {best[i]:9.3f}   MC {med[i]:8.3f} "
             f"[{q16[i]:7.3f}, {q84[i]:7.3f}]"
         )
-    dms, dlp, _, _ = R.to_driver_cosmology(best[0], best[1])
-    print(f"  in Driver's h={R.H_DRIVER}: log M* = {dms:.3f}, log phi* = {dlp:.3f}")
-    g5 = R.driver_gama5(match_A=True)
+    if abs(R.H0 - 100.0) < 1e-6:
+        dms, dlp, _, _ = R.to_driver_cosmology(best[0], best[1])
+        print(f"  in Driver's h={R.H_DRIVER}: log M* = {dms:.3f}, log phi* = {dlp:.3f}")
+    # gamahmf.r's myoption="GAMA" uses magica=13.9, the same A as his GAMA5 row,
+    # so compare WITHOUT rescaling to A_SCALE.
+    if abs(R.H0 - DRIVER_H0) < 1e-6:
+        # already in his units: compare with the published values directly
+        g5 = (
+            R.DRIVER_GAMA5["ms"],
+            R.DRIVER_GAMA5["lp"],
+            R.DRIVER_GAMA5["al"],
+            R.DRIVER_GAMA5["be"],
+        )
+        print(
+            f"  Driver+22 GAMA-only (as published, ho={DRIVER_H0}, A={MAGICA:g}): "
+            f"{g5[0]:.3f} / {g5[1]:.3f} / {g5[2]:.3f} / {g5[3]:.3f}"
+        )
+    else:
+        g5 = R.driver_gama5(match_A=False)
+        print(
+            f"  Driver+22 GAMA-only (h=1, A={MAGICA:g}): "
+            f"{g5[0]:.3f} / {g5[1]:.3f} / {g5[2]:.3f} / {g5[3]:.3f}"
+        )
     print(
-        f"  Driver+22 GAMA-only (h=1, A={R.A_SCALE:g}): "
-        f"{g5[0]:.3f} / {g5[1]:.3f} / {g5[2]:.3f} / {g5[3]:.3f}"
+        f"  difference: {par[0] - g5[0]:+.3f} / {np.log10(par[1]) - g5[1]:+.3f} / "
+        f"{par[2] - g5[2]:+.3f} / {par[3] - g5[3]:+.3f}"
     )
     return np.column_stack([chains[:, 0], lp, chains[:, 2], chains[:, 3]])
 
@@ -525,7 +666,12 @@ def run(sets, tag, title, a):
     allf = np.concatenate([d["f"] for d in sets])
     vlimit = sets[0]["vlimit"]
 
-    p0 = (13.9, 10**-3.4, -1.4, 0.6)  # phi LINEAR, as gamahmf.r
+    # gamahmf.r starts the fit at the Murray+21 LCDM values
+    p0 = (MSTARMRP, phimrp(), ALPHAMRP, BETAMRP)
+    print(
+        f"  starting at Murray+21: {MSTARMRP:.3f} / "
+        f"{np.log10(p0[1]):.3f} / {ALPHAMRP:.3f} / {BETAMRP:.3f}"
+    )
     par = fit(allx, ally, allf, vlimit, p0, use_penalty=not a.no_penalty)
     c2 = massfn(par, allx, ally, allf, vlimit, use_penalty=not a.no_penalty)
     print(
@@ -570,20 +716,67 @@ def main():
         help="per-galaxy zmax column; the new DMU may name it differently",
     )
     ap.add_argument("--gama-area", type=float, default=238.11)
-    ap.add_argument("--mass-col", default="MassA")
+    ap.add_argument(
+        "--mass-col",
+        default="GAMA",
+        help="GAMA = rebuild from VelDisp with A=13.9 and "
+        "masscorr (gamahmf.r myoption='GAMA'); or a "
+        "column name such as MassA / MassAfunc",
+    )
     ap.add_argument(
         "--mlimit",
         type=float,
-        default=12.7,
+        default=MLIMIT,
         help="lowest mass bin used in the fit (gamahmf.r's mlimit)",
     )
     ap.add_argument("--regions", nargs="+", default=None)
     ap.add_argument("--data-dir", default="../data")
+    ap.add_argument(
+        "--min-count",
+        type=int,
+        default=5,
+        help="minimum groups per bin. Sparse bins get a wild "
+        "Eddington factor and f=1, and a single group near the "
+        "cutoff can anchor beta by itself",
+    )
+    ap.add_argument(
+        "--no-h-convert",
+        dest="h_convert",
+        action="store_false",
+        help="skip gamahmf.r's x100/ho mass conversion (use for a "
+        "catalogue already in h=1 units)",
+    )
+    ap.add_argument(
+        "--driver-cosmology",
+        action="store_true",
+        default=True,
+        help="run at gamahmf.r's ho=67.37, omegam=0.3147. On by "
+        "default: every volume in his script uses it, and at "
+        "h=1 phi comes out +0.514 dex high",
+    )
+    ap.add_argument(
+        "--h1",
+        dest="driver_cosmology",
+        action="store_false",
+        help="run at h=1 instead (matches recovery.py's convention)",
+    )
     ap.add_argument("--n-mc", type=int, default=200)
     ap.add_argument("--no-penalty", action="store_true")
     a = ap.parse_args()
     if not (a.gama_only or a.combined):
         a.gama_only = a.combined = True
+
+    if a.driver_cosmology:
+        R.H0, R.OMEGA_M = DRIVER_H0, DRIVER_OM
+        print(f"  using gamahmf.r's cosmology: ho={DRIVER_H0}, omegam={DRIVER_OM}")
+        print(
+            f"  (volumes x{(100 / DRIVER_H0) ** 3:.3f} vs h=1, so phi shifts by "
+            f"{-3 * np.log10(100 / DRIVER_H0):+.3f} dex;"
+        )
+        print(
+            f"   masses carry 100/ho = {100 / DRIVER_H0:.4f}, "
+            f"{np.log10(100 / DRIVER_H0):+.3f} dex)"
+        )
 
     print("=" * 68)
     print("  Driver+22 gamahmf.r, ported")
