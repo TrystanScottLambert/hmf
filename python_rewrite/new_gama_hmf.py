@@ -294,17 +294,18 @@ def plot_comparison(results, mrpx, mrpy, factor, outfile):
 
 
 def run_one(g3c, vlimit, phimrp, seed, nmc_edb, nmc_fit, label, short, colour,
-            marker, verbose=True):
-    b, rng = bin_hmf(g3c, vlimit, seed=seed, nmc=nmc_edb, verbose=verbose)
-    allx, ally, allf = fit_selection(b)
+            marker, verbose=True, nboot=0, mmax=None):
+    b, rng = bin_hmf(g3c, vlimit, seed=seed, nmc=nmc_edb, verbose=verbose,
+                     nboot=nboot)
+    allx, ally, allf = fit_selection(b, mmax=mmax)
     par, value, fncount, conv = fit_mrp(allx, ally, allf, vlimit, phimrp)
     mc = None
     if nmc_fit > 0:
-        print(f"  Monte-Carlo error band: {nmc_fit} refits ...")
-        mc = monte_carlo_fits(b, rng, phimrp, nmc=nmc_fit)
+        print(f"  {short}: Monte-Carlo error band, {nmc_fit} refits ...")
+        mc = monte_carlo_fits(b, rng, phimrp, nmc=nmc_fit, mmax=mmax)
     return dict(binned=b, par=par, value=value, conv=conv, mc=mc, nfit=len(allx),
                 label=label, short=short, colour=colour, marker=marker,
-                ngroups=len(g3c), vlimit=vlimit)
+                ngroups=len(g3c), vlimit=vlimit, mfit=(allx.min(), allx.max()))
 
 
 def report(results):
@@ -316,6 +317,7 @@ def report(results):
     rows = [("N groups", lambda r: f"{r['ngroups']}"),
             ("vlimit [Mpc^3]", lambda r: f"{r['vlimit']:.3e}"),
             ("bins fitted", lambda r: f"{r['nfit']}"),
+            ("fitted range", lambda r: f"{r['mfit'][0]:.1f}-{r['mfit'][1]:.1f}"),
             ("log10(M*)", lambda r: f"{r['par'][0]:.3f}"),
             ("log10(phi*)", lambda r: f"{np.log10(r['par'][1]):.3f}"),
             ("alpha", lambda r: f"{r['par'][2]:.3f}"),
@@ -365,6 +367,12 @@ def main():
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--nmc-edb", type=int, default=1001)
     p.add_argument("--nmc-fit", type=int, default=2001)
+    p.add_argument("--nboot", type=int, default=2000,
+                   help="group-bootstrap errors (0 = Driver's Poisson term)")
+    p.add_argument("--fit-max", type=float, default=15.5,
+                   help="upper edge of the fitted mass range. 15.5 matches the "
+                        "range Driver's catalogue reaches, so the two are "
+                        "compared like with like; use 99 to disable.")
     p.add_argument("--zmax-control", action="store_true",
                    help="also run the old data with zmax recomputed the new way")
     args = p.parse_args()
@@ -377,21 +385,24 @@ def main():
                                    "../data/GAMAGalsInGroups.csv")
     results.append(run_one(g_old, v_old, phimrp, args.seed, args.nmc_edb,
                            args.nmc_fit, "Driver+22, old GAMA (v10)",
-                           "old (Driver+22)", OLD_C, "o"))
+                           "old (Driver+22)", OLD_C, "o",
+                           nboot=args.nboot, mmax=args.fit_max))
 
     if args.zmax_control:
         print("\nCONTROL: old GAMA, zmax recomputed with the k+e polynomial")
         g_c, v_c = build_groups_old_recomputed_zmax()
         results.append(run_one(g_c, v_c, phimrp, args.seed, args.nmc_edb, 0,
                                "old GAMA, recomputed zmax", "old (poly zmax)",
-                               "#888888", "^"))
+                               "#888888", "^", nboot=args.nboot,
+                               mmax=args.fit_max))
 
     print(f"\nNEW GAMA (Nessie DMU, 4 regions incl. G23, {NEW_AREA} deg^2, "
           f"r<{NEW_MAGLIM})")
     g_new, v_new = build_groups_new()
     results.append(run_one(g_new, v_new, phimrp, args.seed, args.nmc_edb,
                            args.nmc_fit, "This work, new GAMA DMU",
-                           "new (Nessie DMU)", NEW_C, "s"))
+                           "new (Nessie DMU)", NEW_C, "s",
+                           nboot=args.nboot, mmax=args.fit_max))
 
     print_binned_comparison(results)
     report(results)

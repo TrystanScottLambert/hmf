@@ -725,15 +725,25 @@ def fit_mrp(allx, ally, allf, vlimit, phimrp, maxit=500):
                       maxit=maxit, reltol=1e-8, parscale=np.array([1.0, 1.0, 1.0, 0.5]))
 
 
-def fit_selection(b, gamay=None):
-    """Only bins with gamay > 0 and gamax > mlimit enter the fit (line 394)."""
+def fit_selection(b, gamay=None, mmax=None):
+    """Only bins with gamay > 0 and gamax > mlimit enter the fit (line 394).
+
+    ``mmax`` is not in gamahmf.r.  It caps the fitted range from above so that
+    two catalogues reaching different maximum masses can be compared like with
+    like: the penalty term integrates from ``max(allx)`` upward, so a single
+    group in a higher bin shifts the penalty and moves the answer even though it
+    contributes almost nothing to chi^2.  Leave it None to reproduce Driver.
+    """
     y = b.gamay if gamay is None else gamay
     sel = (y > 0) & ~np.isnan(b.gamay) & (b.gamax > MLIMIT)
+    if mmax is not None:
+        sel = sel & (b.gamax < mmax)
     with np.errstate(divide="ignore"):
         return b.gamax[sel], np.log10(y[sel]), b.gamaf[sel]
 
 
-def monte_carlo_fits(b, rng, phimrp, nmc=10001, maxit=500, verbose=True):
+def monte_carlo_fits(b, rng, phimrp, nmc=10001, maxit=500, verbose=True,
+                     mmax=None):
     """gamahmf.r lines 408-422: perturb the binned points and refit.
 
     The perturbation is the combined fractional error plus a cosmic-variance
@@ -749,7 +759,9 @@ def monte_carlo_fits(b, rng, phimrp, nmc=10001, maxit=500, verbose=True):
     for i in range(nmc):
         cv = b.gamay * rng.norm(n, b.cosvariance)
         mockgamay = b.gamay + b.gamay * rng.norm(n, b.gamaf) + cv
-        ax, ay, af = fit_selection(b, gamay=mockgamay)
+        ax, ay, af = fit_selection(b, gamay=mockgamay, mmax=mmax)
+        if len(ax) < 5:
+            continue
         par, _, _, _ = fit_mrp(ax, ay, af, b.vlimit, phimrp, maxit=maxit)
         mstar[i], phistar[i], alphastar[i], betastar[i] = par
         if i < 1000:
