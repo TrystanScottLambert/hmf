@@ -1150,6 +1150,50 @@ his own table 2, so he is internally consistent; but the SDSS normalisation
 rests on that convention being the right reading. Worth settling before any
 absolute mass scale is quoted.
 
+### The offset that actually matters: NFW vs NFW
+
+Everything above quoted the raw +0.28 dex between Nessie's `estimated_mass` and
+Tempel's `col15`. **That number is not meaningful** — it compares a Hernquist
+mass with an NFW mass. Once both legs are NFW (`--mass-mode tempel_nfw`), on
+2500 identical-membership groups with N >= 5:
+
+| comparison | dex |
+|---|---|
+| **Nessie NFW vs Tempel col15** | **+0.153** |
+| of which, gapper → rms | +0.098 |
+| of which, Nessie sigma_sky → his sigma_sky | +0.047 |
+| both swapped, i.e. the closure check | **+0.0008** |
+
+The closure line is the important one: swap both ingredients and Nessie's
+pipeline reproduces his published `col15` to 0.0008 dex. **Nothing else is
+unaccounted for.** The dispersion estimator is ~64% of the residual and
+sigma_sky the rest.
+
+Strongly multiplicity dependent, as expected:
+
+| N | dex |
+|---|---|
+| 5-6 | **+0.192** |
+| 7-9 | +0.133 |
+| 10-14 | +0.092 |
+| 15+ | +0.043 |
+
+**Is +0.153 dex a lot?** Per group, no — it is half the random error at N = 5
+(sigma_log10M = 0.326). As a systematic on 4824 groups, yes: the statistical
+error on the mean is 0.008 dex, so it is ~19 sigma. And where the HMF is steep
+it dominates:
+
+| logM | dlogphi/dlogM | phi shift from +0.153 dex |
+|---|---|---|
+| 13.0-13.5 | −0.24 | 0.04 dex |
+| 13.5-14.0 | −0.36 | 0.06 dex |
+| **14.0-14.5** | **−1.81** | **0.28 dex (x1.9)** |
+| **14.5-15.0** | **−1.89** | **0.29 dex (x1.9)** |
+
+Below the knee it is negligible; above logM 14 it is a factor of ~1.9 in number
+density, in exactly the range REFLEX anchors the fit. That is why the mass scale
+kept surfacing as an anchoring problem.
+
 ---
 
 ## Multi-start: none of these are global minima
