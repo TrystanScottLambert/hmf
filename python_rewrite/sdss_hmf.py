@@ -71,7 +71,8 @@ def survey_volume(z):
     return AREA / FULLSKY * 1e9 * co_vol(np.atleast_1d(z))
 
 
-def build_groups(gal_file=GALS, group_file=GROUPS, verbose=True):
+def build_groups(gal_file=GALS, group_file=GROUPS, verbose=True,
+                 vmax_floor_frac=1e-3):
     """sdsshmf.r lines 263-307."""
     g = Table.read(gal_file)
     gal = pd.DataFrame({k: _native(g[c]) for k, c in GAL_COLS.items()})
@@ -112,7 +113,7 @@ def build_groups(gal_file=GALS, group_file=GROUPS, verbose=True):
     grp["vmax"] = vmax
     volumesdss = (survey_volume(np.array([ZLIMIT]))[0]
                   - survey_volume(np.array([ZMIN]))[0])          # line 248
-    volumesdssmin = volumesdss / 1000.0
+    volumesdssmin = volumesdss * vmax_floor_frac
 
     # lines 304-305: the same overwrite bug as gamahmf.r 307-308
     _ = np.where(vmax > volumesdss, volumesdss, vmax)
@@ -225,9 +226,10 @@ def fit(b, volumesdss, phimrp, maxit=500):
     return par, val, nfe, conv, len(allx)
 
 
-def build(seed=10, nmc=1001, verbose=True, nboot=0):
+def build(seed=10, nmc=1001, verbose=True, nboot=0, vmax_floor_frac=1e-3):
     """Convenience: everything, returning the V1..V8 table and the volume."""
-    grp, volumesdss = build_groups(verbose=verbose)
+    grp, volumesdss = build_groups(verbose=verbose,
+                                   vmax_floor_frac=vmax_floor_frac)
     b = bin_hmf(grp, volumesdss, seed=seed, nmc=nmc, verbose=verbose, nboot=nboot)
     return table(b), volumesdss, b
 

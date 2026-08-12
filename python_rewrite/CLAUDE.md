@@ -833,6 +833,94 @@ the mass from `Rad50` and `VelDisp` rather than reading those columns.
 
 ---
 
+## Why the Nessie masses run high — the full picture
+
+Two independent effects, and they compound. Measured on the **7258 SDSS groups
+whose membership is byte-identical** in both catalogues, so the group finder is
+excluded by construction. The decomposition is exact per group (residual median
+−0.00000):
+
+| N | log10(σ_N/σ_T) | log10(M_N/M_T) |
+|---|---|---|
+| 5-6 | +0.073 | **+0.327** |
+| 7-9 | +0.050 | +0.260 |
+| 10-14 | +0.035 | +0.200 |
+| 15-24 | +0.020 | +0.148 |
+| 25+ | **+0.007** | **+0.101** |
+
+**1. A constant ~+0.10 dex floor.** It survives at N ≥ 25 where the dispersions
+agree to 1.6%, so it is not a σ effect. It is the `grav_rad` coefficient:
+Nessie hardcodes **4.582 × sky_disp** (`fof/src/group_properties.rs`, in
+`temple_mass` and in the catalogue build) where Tempel effectively uses
+**3.914**. That constant was recovered by inverting Tempel's own eq. 8 against
+his published σ (`col12`) and sky dispersion (`col13`); the ratio scatter is
+0.048, so it is a genuine constant and not a fit. log10(4.582/3.914) = +0.068,
+with the remainder from a residual difference in the sky-dispersion measure
+itself (+0.054 median).
+
+**This single constant is the first thing to check against Tempel+2014.**
+
+**2. A small-N bias in the gapper σ**, adding up to +0.22 dex more at N = 5-6.
+M ∝ σ², so a 17% σ overestimate is 0.15 dex of mass. Nessie's
+`velocity_dispersion_gapper` subtracts a *constant* velocity-error term
+(`sigma_err_squared`, which is why `velocity_dispersion_gap_err` is 7.071068 =
+sqrt(50) for every group) and applies no small-N correction.
+
+Because the SDSS sample is dominated by N = 5-6 groups, the population median
+lands at +0.27 to +0.285.
+
+### The GAMA leg looks the same, though the test is weaker
+
+Nessie's GAMA dispersions also run above Driver's v10, at every multiplicity:
+
+| Nfof | v10 median σ | Nessie median σ | Δ log10 σ | Δ log10 M |
+|---|---|---|---|---|
+| 5 | 201.1 | 243.0 | +0.082 | **+0.176** |
+| 6 | 225.3 | 252.2 | +0.049 | +0.074 |
+| 7-9 | 252.9 | 286.6 | +0.054 | +0.070 |
+| 10-14 | 284.4 | 334.8 | +0.071 | +0.083 |
+| 15+ | 446.9 | 551.3 | +0.091 | +0.061 |
+
+**Caveat: the group finders differ, so memberships differ — this is not the
+clean estimator test the SDSS comparison is.** Different membership legitimately
+changes σ. But the direction matches, and the largest offset is at Nfof = 5,
+which is exactly where the pathological groups live. Treat as a strong hint, not
+a measurement.
+
+Note the GAMA leg does **not** use `estimated_mass`; it rebuilds Robotham+A from
+`VelDisp` and `Rad50`, the same formula Driver uses. So effect 1 above (the
+4.582 constant) does **not** apply to GAMA — only the dispersion difference
+does.
+
+### The Vmax floor is now reachable from the pipeline
+
+`--vmax-floor` on `combined_hmf.py` (default 1e-3 = Driver's `vlimitmin`, which
+never binds), threaded through the GAMA and both SDSS legs. Raising it caps
+1/Vmax. Effect on the GAMA 14.2 bin, seed 10:
+
+| floor | groups capped | 14.2 log φ | 205509's share |
+|---|---|---|---|
+| 0.001 (Driver's) | 3 | −3.464 | **37.7%** |
+| 0.005 | 14 | −3.624 | 22.2% |
+| 0.010 | 23 | −3.752 | 13.3% |
+| 0.020 | 39 | −3.863 | 7.9% |
+| 0.050 | 95 | −3.945 | 3.7% |
+
+**The floor does not close the gap with Driver.** His 14.2 bin is −4.20. Even at
+a floor of 0.05, which crushes 205509 to a 3.7% share and clips 95 groups, the
+bin only reaches −3.945 — still 0.25 dex high. So the 14.2 excess is **not one
+group**; it is consistent with the broader mass offset above, which raises the
+whole distribution and moves groups up into the bin.
+
+That reframes the fix: the floor is cosmetic for this bin. The mass scale is the
+real lever.
+
+Do **not** read fitted parameters off a floor scan — the GAMA-only fit is
+ill-posed and single-seed, and in the scan above α swings −0.56 → +0.33
+non-monotonically, which is noise, not a trend.
+
+---
+
 ## Deliverables
 
 1. **GAMA-only plot** — binned points with errors, the fitted MRP with its

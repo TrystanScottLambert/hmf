@@ -138,7 +138,7 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
 
 
 def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True,
-                 mass_mode="tempel_eq8", mass_shift=0.0):
+                 mass_mode="tempel_eq8", mass_shift=0.0, vmax_floor_frac=1e-3):
     """The Nessie analogue of ``sdss_hmf.build_groups`` (sdsshmf.r 263-307)."""
     gal = pd.read_parquet(gal_file)
     gal = gal[gal.group_id != UNGROUPED].copy()
@@ -184,7 +184,7 @@ def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True,
     grp["vmax"] = vmax
     volumesdss = (survey_volume(np.array([ZLIMIT]))[0]
                   - survey_volume(np.array([ZMIN]))[0])
-    volumesdssmin = volumesdss / 1000.0
+    volumesdssmin = volumesdss * vmax_floor_frac
 
     # lines 304-305, overwrite bug included; line 306's hand-fix deliberately not
     _ = np.where(vmax > volumesdss, volumesdss, vmax)
@@ -224,9 +224,10 @@ def fit(b, volumesdss, phimrp, maxit=500, fit_max=None):
 
 
 def build(seed=10, nmc=1001, verbose=True, nboot=0, mass_mode="tempel_eq8",
-          mass_shift=0.0):
+          mass_shift=0.0, vmax_floor_frac=1e-3):
     grp, volumesdss = build_groups(verbose=verbose, mass_mode=mass_mode,
-                                   mass_shift=mass_shift)
+                                   mass_shift=mass_shift,
+                                   vmax_floor_frac=vmax_floor_frac)
     b = bin_hmf(grp, volumesdss, seed=seed, nmc=nmc, verbose=verbose,
                 nboot=nboot)
     return table(b), volumesdss, b

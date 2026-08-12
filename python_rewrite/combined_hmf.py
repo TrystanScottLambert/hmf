@@ -497,6 +497,14 @@ def main():
                         "penalty integrates over max(allx), and Nessie SDSS "
                         "reaches 15.65 against Tempel's 15.05, so this is the "
                         "range check group 300223 taught us to run.")
+    p.add_argument("--vmax-floor", type=float, default=1e-3,
+                   help="minimum Vmax as a fraction of the survey volume, i.e. "
+                        "a cap on 1/Vmax.  Driver's own vlimitmin is 1e-3, "
+                        "which never binds.  Raising it suppresses nearby "
+                        "low-Vmax groups (e.g. GAMA 205509, 38%% of the 14.2 "
+                        "bin) but is a BIASED estimator whose bias is "
+                        "mass-dependent -- see CLAUDE.md before using it for "
+                        "anything but a robustness check.")
     p.add_argument("--fit-max", type=float, default=None,
                    help="clamp BOTH survey legs (GAMA and SDSS) at this logM.  "
                         "The high-mass tails are single-group bins with "
@@ -531,6 +539,8 @@ def main():
             tag += "_nosdss"
         elif args.sdss != "auto":
             tag += "_sdssfile"
+        if args.vmax_floor != 1e-3:
+            tag += f"_vfloor{args.vmax_floor:g}"
         if args.fit_max is not None:
             tag += f"_clamp{args.fit_max:g}"
         elif args.sdss_max is not None:
@@ -549,11 +559,13 @@ def main():
     print(f"  myoption = {args.myoption}   OmegaM prior = {omega_prior}")
 
     # --- GAMA: new Nessie DMU (fitted) and Driver's (comparison only) --------
-    g_new, v_new = ng.build_groups_new(verbose=False)
+    g_new, v_new = ng.build_groups_new(verbose=False,
+                                       vmax_floor_frac=args.vmax_floor)
     gset, b_new = gama_set(g_new, v_new, ng.NEW_AREA, args.seed, args.nmc_edb,
                            args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
     g_old, v_old = dr.build_groups("../data/G3CFoFGroupv10.fits",
-                                   "../data/GAMAGalsInGroups.csv", verbose=False)
+                                   "../data/GAMAGalsInGroups.csv", verbose=False,
+                                   vmax_floor_frac=args.vmax_floor)
     oset, b_old = gama_set(g_old, v_old, AREA_GAMA_DRIVER, args.seed, args.nmc_edb,
                            args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
     print(f"  GAMA (Nessie)  : {len(gset[0])} bins, area {ng.NEW_AREA} deg^2, "
@@ -569,13 +581,15 @@ def main():
     if args.sdss != "none":
         if args.sdss == "auto":
             s, _, _ = sdss_hmf.build(seed=args.seed, nmc=args.nmc_edb,
-                                     verbose=False, nboot=args.nboot)
+                                     verbose=False, nboot=args.nboot,
+                                     vmax_floor_frac=args.vmax_floor)
             sdss_label = "SDSS DR10 (Tempel+14)"
         elif args.sdss == "nessie":
             # Same footprint (7221 deg^2) and the same galaxies -- the Nessie
             # file is Tempel's table 1 -- so only the grouping differs.
             s, _, _ = nsd.build(seed=args.seed, nmc=args.nmc_edb,
-                                verbose=False, nboot=args.nboot)
+                                verbose=False, nboot=args.nboot,
+                                vmax_floor_frac=args.vmax_floor)
             sdss_label = "SDSS (Nessie)"
         else:
             s = pd.read_csv(args.sdss)
