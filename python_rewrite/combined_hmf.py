@@ -490,8 +490,23 @@ def main():
     args = p.parse_args()
 
     if args.out is None:
-        args.out = ("hmf_combined_nessie_sdss.pdf" if args.sdss == "nessie"
-                    else "hmf_combined_nessie.pdf")
+        # Only the canonical GSR runs get the canonical names.  Anything else --
+        # a different myoption, a dropped SDSS leg, a capped range -- earns a
+        # suffix, so a quick diagnostic cannot silently overwrite a deliverable.
+        tag = "" if args.myoption == "GSR" else f"_{args.myoption}"
+        if args.sdss == "nessie":
+            tag += "_sdss"
+        elif args.sdss == "none":
+            tag += "_nosdss"
+        elif args.sdss != "auto":
+            tag += "_sdssfile"
+        if args.sdss_max is not None:
+            tag += f"_max{args.sdss_max:g}"
+        if args.omega_prior:
+            tag += "_omega"
+        if args.iters != 1001:
+            tag += f"_it{args.iters}"
+        args.out = f"hmf_combined_nessie{tag}.pdf"
 
     omega_prior = args.omega_prior or args.myoption == "Omega"
     mrpx, mrpy, factor, phimrp = lcdm_curve()
