@@ -1386,40 +1386,44 @@ not show up as a coherent shift in the HMF and should not be treated as one.
 
 ---
 
-## Two figure sets: consistent masses vs comparable masses
+## Forcing a common mass estimator: tried, rejected
 
-There are two defensible ways to mass the Nessie SDSS leg, answering different
-questions. Both sets exist; neither replaces the other.
+Both directions were built, and both are worse than leaving each catalogue on
+its own calibration. **The code and figures have been removed**; recover them
+from commits `2eb8b8c` and `f170229` if ever needed. Recorded here so nobody
+spends the time again.
 
-| set | SDSS mass | question it answers |
-|---|---|---|
-| `*_nfw.pdf` | NFW, `--mass-mode tempel_nfw` | how does Nessie compare with **Driver's** SDSS leg, on his mass scale? |
-| `*_robotham.pdf` | Robotham+A, `--mass-mode robotham` | what does the HMF look like with **both Nessie legs on the same estimator**? |
-
-`robotham` is `mass_proxy * 13.9 / 10^masscorr`, i.e. exactly what
-`new_gama_hmf.py` line 104 does for the GAMA leg, so the two Nessie catalogues
-are then internally consistent.
-
-**Internal consistency costs external consistency.** GSR chi^2 at maxit=500:
-
-| SDSS leg | χ² |
+| configuration | GSR chi^2 |
 |---|---|
-| Tempel col15 | 244.2 |
-| Nessie, NFW | **234.6** |
-| Nessie, Robotham (as GAMA) | **719.7** |
-| Nessie, Robotham + M/L cut | 797.7 |
-| Nessie, Robotham, GS (no REFLEX) | 255.0 |
+| GAMA Robotham + SDSS Nessie NFW *(the mix Driver effectively uses)* | **234.6** |
+| GAMA Robotham + SDSS Tempel col15 | 244.2 |
+| GAMA NFW + SDSS Nessie NFW | 327.1 |
+| GAMA NFW + SDSS Nessie NFW + M/L cut | 409.6 |
+| GAMA Robotham + SDSS Nessie Robotham | 719.7 |
 
-The Robotham+A masses sit ~0.39 dex above Tempel's, so the SDSS points lift
-clear of the REFLEX x-ray sequence — visible directly in
-`hmf_combined_nessie_sdss_robotham.pdf`, where the purple points ride above the
-green from 13.5 to 15.0. Note the GS number (255.0, no REFLEX) is far better
-than the GSR one (719.7): it is specifically the x-ray anchor that the Robotham
-scale disagrees with, which is the same diagnosis as everywhere else in this
-file.
+* **SDSS put on GAMA's Robotham+A**: masses land **+0.39 dex** above Tempel's,
+  lifting the SDSS points clear of the REFLEX sequence. Without REFLEX (GS) the
+  chi^2 is 255.0 against 719.7 with it, so it is specifically the x-ray anchor
+  that disagrees.
+* **GAMA put on Tempel's NFW**: masses drop **-0.41 dex** (-0.46 at N_fof = 5,
+  -0.35 above 30) and the GAMA points fall *below* REFLEX, SDSS and 2PIGG above
+  logM 14.
 
-So: quote the NFW set when comparing with Driver; show the Robotham set when the
-question is about the two Nessie catalogues on a common footing. Say which.
+The two estimators differ by ~0.4 dex in a consistent sense, and each
+catalogue's **native** calibration agrees with REFLEX better than either forced
+common recipe. Driver's A = 13.9 was tuned so GAMA masses match external mass
+scales; Tempel's NFW was tuned for his own survey. Imposing either on the other
+breaks that agreement, in both directions.
+
+**So the mass scale is not something a change of formula fixes.** The offsets
+are calibration choices, each internally coherent with the survey it was built
+for. Keep each leg on its own calibration, state which was used, and treat the
+~0.4 dex between them as a systematic to be quoted rather than removed.
+
+One caveat that limited the GAMA-NFW test and is still unresolved: Tempel's
+kappa was calibrated on *his* sigma_sky, which is in h^-1 Mpc comoving, while
+the GAMA sigma_sky was computed in Mpc. M is linear in sigma_sky, so ~0.17 dex
+of that -0.41 is uncertain. See "An unresolved units problem in sigma_sky".
 
 ## The reference line is fixed, and does not follow --myoption
 

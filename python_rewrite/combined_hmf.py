@@ -325,7 +325,7 @@ def monte_carlo(sets, myoption, omega_prior, phimrp, mstarmrp, alphamrp, betamrp
 
 def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
                   outfile, myoption, omega_prior, fit_par_driver=None,
-                  sdss_label="SDSS DR10 (Tempel+14)", gama_label=""):
+                  sdss_label="SDSS DR10 (Tempel+14)"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -405,8 +405,7 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     ax.tick_params(direction="in", top=True, right=True, which="both", labelsize=9)
     ax.minorticks_on()
 
-    keys = [("o", "red", f"GAMA (Nessie DMU{gama_label}) z<{ZLIMIT} and N>4",
-             False),
+    keys = [("o", "red", f"GAMA (Nessie DMU) z<{ZLIMIT} and N>4", False),
             ("o", ng.OLD_C, "GAMA (Driver+22) z<0.25 and N>4", True)]
     if "S" in sets:
         keys.append(("P", "purple",
@@ -514,13 +513,6 @@ def main():
                         "Driver's SDSS leg uses.")
     p.add_argument("--mass-shift", type=float, default=0.0,
                    help="dex shift, with --mass-mode shift")
-    p.add_argument("--gama-mass-mode", default="robotham",
-                   choices=["robotham", "tempel_nfw"],
-                   help="mass estimator for the Nessie GAMA leg. 'robotham' is "
-                        "Driver's (13.9 R50 sigma^2/G / masscorr); "
-                        "'tempel_nfw' applies Tempel eq. 8 with the NFW kappa, "
-                        "the same recipe as the SDSS leg, so both Nessie legs "
-                        "share one mass definition.")
     p.add_argument("--ml-cut", type=float, default=None,
                    help="drop groups whose mass-to-light ratio exceeds the "
                         "running median at their mass by more than this many "
@@ -570,8 +562,6 @@ def main():
             tag += "_nosdss"
         elif args.sdss != "auto":
             tag += "_sdssfile"
-        if args.gama_mass_mode != "robotham":
-            tag += "_gamanfw"
         if args.ml_cut is not None:
             tag += f"_mlcut{args.ml_cut:g}"
         if args.mass_mode != "tempel_eq8":
@@ -597,8 +587,7 @@ def main():
 
     # --- GAMA: new Nessie DMU (fitted) and Driver's (comparison only) --------
     g_new, v_new = ng.build_groups_new(verbose=False,
-                                       vmax_floor_frac=args.vmax_floor,
-                                       mass_mode=args.gama_mass_mode)
+                                       vmax_floor_frac=args.vmax_floor)
     g_new, _ = ng.apply_ml_cut(g_new, args.ml_cut, verbose=args.ml_cut is not None)
     gset, b_new = gama_set(g_new, v_new, ng.NEW_AREA, args.seed, args.nmc_edb,
                            args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
@@ -729,9 +718,7 @@ def main():
 
     plot_combined(par, mc, sets, oset[:3], extras, mrpx, mrpy, factor, args.out,
                   args.myoption, omega_prior, fit_par_driver=par_d,
-                  sdss_label=sdss_label or "SDSS DR10 (Tempel+14)",
-                  gama_label=(", NFW mass"
-                              if args.gama_mass_mode == "tempel_nfw" else ""))
+                  sdss_label=sdss_label or "SDSS DR10 (Tempel+14)")
 
 
 if __name__ == "__main__":
