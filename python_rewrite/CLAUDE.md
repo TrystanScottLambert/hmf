@@ -1034,6 +1034,53 @@ Effect on identical-membership groups (N >= 5, 3000 groups):
 The remaining +0.23 is the sigma and sigma_sky estimator difference — the
 small-N gapper bias — which is a separate problem and still open.
 
+### The NFW-mass combined figures
+
+`combined_hmf.py --sdss nessie --mass-mode tempel_nfw`. Affects the Nessie SDSS
+leg only; the Tempel runs are untouched.
+
+| figure | option |
+|---|---|
+| `hmf_combined_nessie_sdss_nfw.pdf` | GSR |
+| `hmf_combined_nessie_GS_sdss_nfw.pdf` | GS |
+| `hmf_combined_nessie_GS_sdss_nfw_clamp15.pdf` | GS, clamped 15.0 |
+
+**The NFW masses genuinely improve the data-model agreement.** GSR chi^2 at
+Driver's `maxit=500`:
+
+| SDSS leg | logM\* | α | χ² |
+|---|---|---|---|
+| Nessie as-is (buggy Hernquist) | 13.967 | −1.521 | 274.8 |
+| **Nessie → NFW** | **13.900** | **−1.461** | **234.6** |
+| Tempel col15 | 14.362 | −1.807 | 244.2 |
+
+So on the corrected mass scale the Nessie SDSS leg now fits *better than
+Tempel's own*, and its binned points track REFLEX visibly more closely from 13.5
+to 15.5. That is the real result here.
+
+**It does not fix the ill-posedness, and an earlier claim in this file that it
+did was wrong.** That claim came from a crude constant-ratio version of the
+conversion; with the correct mass-dependent kappa the fit behaves like all the
+others:
+
+| start | maxit | logM\* | α | χ² | conv |
+|---|---|---|---|---|---|
+| Murray+21 | 500 | 13.900 | −1.461 | 234.6 | **1** |
+| Murray+21 | 5000 | **12.345** | −0.852 | **218.2** | 0 |
+| 13.0 | 5000 | 14.378 | −1.917 | 294.9 | 0 |
+| 12.0 | 5000 | **10.945** | −0.324 | **214.8** | 0 |
+
+Released from the budget it still runs away, and the lowest chi^2 is still at
+low M\*. The 14.287 / conv=0 result reported earlier does not survive the
+correct calculation — it was an artefact of the uniform-shift approximation
+landing in a different basin.
+
+**Bottom line:** use `tempel_nfw` because it is the right mass scale for
+comparison with Driver's leg and it demonstrably fits better. Do not use it as
+evidence that the combined fit is well-posed. All three NFW figures report
+`convergence = 1`, so their fitted curves are `maxit=500` artefacts like every
+other GAMA-or-Nessie configuration in this project.
+
 ---
 
 ## Multi-start: none of these are global minima

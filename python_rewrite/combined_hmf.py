@@ -497,6 +497,16 @@ def main():
                         "penalty integrates over max(allx), and Nessie SDSS "
                         "reaches 15.65 against Tempel's 15.05, so this is the "
                         "range check group 300223 taught us to run.")
+    p.add_argument("--mass-mode", default="tempel_eq8",
+                   choices=["tempel_eq8", "tempel_nfw", "robotham", "shift"],
+                   help="mass estimator for the NESSIE SDSS leg only (--sdss "
+                        "nessie).  'tempel_eq8' is the catalogue default, a "
+                        "Hernquist mass with Nessie's cbrt(3) bug. "
+                        "'tempel_nfw' corrects both and puts it on the same "
+                        "NFW scale as Tempel's published col15, which is what "
+                        "Driver's SDSS leg uses.")
+    p.add_argument("--mass-shift", type=float, default=0.0,
+                   help="dex shift, with --mass-mode shift")
     p.add_argument("--vmax-floor", type=float, default=1e-3,
                    help="minimum Vmax as a fraction of the survey volume, i.e. "
                         "a cap on 1/Vmax.  Driver's own vlimitmin is 1e-3, "
@@ -539,6 +549,8 @@ def main():
             tag += "_nosdss"
         elif args.sdss != "auto":
             tag += "_sdssfile"
+        if args.mass_mode != "tempel_eq8":
+            tag += f"_{args.mass_mode.replace('tempel_', '')}"
         if args.vmax_floor != 1e-3:
             tag += f"_vfloor{args.vmax_floor:g}"
         if args.fit_max is not None:
@@ -589,8 +601,11 @@ def main():
             # file is Tempel's table 1 -- so only the grouping differs.
             s, _, _ = nsd.build(seed=args.seed, nmc=args.nmc_edb,
                                 verbose=False, nboot=args.nboot,
-                                vmax_floor_frac=args.vmax_floor)
-            sdss_label = "SDSS (Nessie)"
+                                vmax_floor_frac=args.vmax_floor,
+                                mass_mode=args.mass_mode,
+                                mass_shift=args.mass_shift)
+            sdss_label = ("SDSS (Nessie, NFW mass)"
+                          if args.mass_mode == "tempel_nfw" else "SDSS (Nessie)")
         else:
             s = pd.read_csv(args.sdss)
             sdss_label = "SDSS (file)"
