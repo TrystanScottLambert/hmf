@@ -17,10 +17,12 @@ SDSS-only *fit* is ill-posed; see "The Nessie SDSS leg".
 **Step 4 (Nessie SDSS in the combined fit) is done** — two separate figures,
 `--sdss auto` and `--sdss nessie`. Everything else is built and validated.
 
-**Outstanding:** why the Nessie SDSS leg fails to anchor the combined fit (it
-does not; Tempel's does). See "In the combined fit". The likely cause is now
-identified: Nessie's mass estimator sits +0.285 dex above Tempel's for the very
-same groups. See "Why the Nessie SDSS masses are high".
+**Outstanding:** the mass scale. Nessie's SDSS masses sit +0.285 dex above
+Tempel's for the very same groups, and correcting that shift **restores the
+combined fit's interior minimum** — so the anchoring failure is a mass-scale
+problem, now confirmed. The two Nessie legs also use different estimators and
+different cosmologies. See "Why the Nessie SDSS masses are high" and "The mass
+estimator is what breaks the anchor".
 
 Do not "fix" the things the old version of this file listed as problems. Most of
 them were either resolved or were never problems. Read "The central finding"
@@ -719,6 +721,73 @@ the empirical asymmetric kernel.
 Nothing in the HMF pipeline uses these numbers yet; `sdss_masserr.csv` is
 produced and left for a deliberate opt-in, per the rule that new behaviour does
 not change verified defaults.
+
+---
+
+## The mass estimator is what breaks the anchor — confirmed
+
+Shifting the Nessie SDSS masses onto Tempel's scale **restores the interior
+minimum**. GSR, Nessie GAMA + REFLEX, seed 10:
+
+| SDSS leg | maxit=500 | maxit=5000 | fevals | conv |
+|---|---|---|---|---|
+| Tempel (reference) | 14.362 | **14.362 identical** | 247 | 0 |
+| Nessie as-is | 13.967 | 12.431 | 895 | runs away |
+| Nessie shifted −0.102 | 14.116 | 11.002 | 2169 | runs away |
+| **Nessie shifted −0.285** | 14.121 | **14.112** | 549 | **0** |
+| Nessie `robotham` | 11.961 | 10.989, χ²=709 | 909 | catastrophic |
+
+Only the **−0.285** shift works — the offset measured on identical-membership
+groups, i.e. the true *estimator* offset. The −0.102 sample-median offset does
+not. That distinction is the evidence: it is the estimator, not a normalisation
+mismatch, and correcting it recovers logM\* = 14.11 against Tempel's 14.36 and
+Driver's published 14.13.
+
+χ² is 352.6 there against Tempel's 244.2, so it is a *converged* fit, not a
+better one. Do not read −0.285 as a calibration to adopt; it is a diagnostic
+that localises the problem to the mass scale.
+
+### The two Nessie legs do not use the same estimator
+
+They never did, and this was not deliberate:
+
+| leg | estimator | debiasing |
+|---|---|---|
+| Nessie GAMA (`new_gama_hmf.py` line 104) | Robotham+2011, `13.9 * R50 * sigma^2 / G` | ÷ `10^masscorr` |
+| Nessie SDSS (`nessie_sdss_hmf.py`) | Tempel+2014 eq. 8, `4.582 * sky_disp` | none |
+
+Driver mixes them the same way — Robotham for GAMA, Tempel's own for SDSS — so
+each leg is faithful to *its* parent catalogue. But the two Nessie legs are then
+not on a common scale, which matters as soon as they are fitted together.
+
+**Making them consistent makes it worse, not better.** `--mass-mode robotham`
+puts the SDSS leg on the GAMA estimator (`mass_proxy * 13.9 / 10^masscorr`) and
+gives masses **+0.391 dex** above Tempel, max logM 15.85, χ² 709, and a fit that
+collapses to logM\* 10.99. So the inconsistency is not the thing to fix by
+harmonising upward.
+
+**This implicates the GAMA leg.** The Nessie GAMA leg uses exactly the estimator
+that, applied to SDSS, lands 0.39 dex high. If the same inflation is present in
+the GAMA masses it would push the binned points up and flatten the fitted slope
+— which is the direction of the unexplained GAMA-only α discrepancy (+0.45,
+shallower than Driver's). Untested, and the obvious next thing to test.
+
+### The two Nessie catalogues are built in different cosmologies
+
+* GAMA DMU: `FlatCosmology(1.0, 0.25)` — h = 1.0, Ω_M = 0.25
+  (`make_gama_dmu/config.py` line 9)
+* Nessie SDSS: h = 0.7, Ω_M = 0.30 (recovered from `co_dist` to 4e−8)
+
+Each leg's h conversion is applied correctly for its own catalogue — `(100/ho)`
+inside `mymass` for GAMA, `(70/ho)` for SDSS — so the masses do land in the same
+ho = 67.37 system. But the Ω_M difference (0.25 vs 0.30) propagates into radii
+and volumes at the per-cent level and is not corrected anywhere. Worth
+straightening out before the two Nessie legs are quoted against each other.
+
+Also note `make_gama_dmu/config.py` sets `MASS_A = 10`, where Driver uses
+A = 13.9. The DMU's own `MassA`/`MassAfunc` columns therefore differ from what
+this pipeline computes — which is harmless only because `new_gama_hmf` rebuilds
+the mass from `Rad50` and `VelDisp` rather than reading those columns.
 
 ---
 

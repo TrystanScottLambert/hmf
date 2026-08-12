@@ -101,7 +101,44 @@ def _absmag_by_join(gal, gal_file=sdss_hmf.GALS, verbose=True):
     return out.drop(columns="_k")
 
 
-def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True):
+def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
+    """The mass column, with the estimator made explicit.
+
+    Nessie carries more than one estimator and they are **not** interchangeable:
+
+    * ``tempel_eq8`` -- ``estimated_mass``, i.e. Tempel+2014 eq. 8 with
+      ``grav_rad = 4.582 * sky_disp``.  This is the catalogue's own default and
+      the analogue of Tempel's published masses, so it mirrors what Driver does
+      for his SDSS leg (take the catalogue's native mass).
+    * ``robotham`` -- ``mass_proxy * MAGICA``, i.e. the Robotham+2011 form
+      ``A * R50 * sigma^2 / G`` with A = 13.9, then divided by ``10^masscorr``.
+      This is **the estimator the GAMA leg uses** (``new_gama_hmf`` line 104),
+      so it is the internally consistent choice when comparing the two Nessie
+      legs to each other rather than to their parent catalogues.
+    * ``shift`` -- ``tempel_eq8`` displaced by ``mass_shift`` dex, for testing
+      the +0.285 dex offset against Tempel directly.
+
+    Driver himself mixes estimators (Robotham for GAMA, Tempel's own for SDSS),
+    so ``tempel_eq8`` is the faithful default; ``robotham`` is the consistent
+    one.  Which is right depends on the question being asked.
+    """
+    if mass_mode == "tempel_eq8":
+        m = grp.estimated_mass.astype(float).values
+    elif mass_mode == "shift":
+        m = grp.estimated_mass.astype(float).values * 10.0 ** mass_shift
+    elif mass_mode == "robotham":
+        m = grp.mass_proxy.astype(float).values * dr.MAGICA
+        nf = grp.nrich.values.astype(int)
+        mc = np.where(nf <= len(dr.MASSCORR),
+                      dr.MASSCORR[np.clip(nf, 1, len(dr.MASSCORR)) - 1], np.nan)
+        m = m / 10.0 ** np.where(np.isnan(mc), 0.0, mc)
+    else:
+        raise ValueError(f"unknown mass_mode {mass_mode!r}")
+    return m * (NESSIE_H / sdss_hmf.HO)
+
+
+def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True,
+                 mass_mode="tempel_eq8", mass_shift=0.0):
     """The Nessie analogue of ``sdss_hmf.build_groups`` (sdsshmf.r 263-307)."""
     gal = pd.read_parquet(gal_file)
     gal = gal[gal.group_id != UNGROUPED].copy()
@@ -124,7 +161,7 @@ def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True):
               & (grp.multiplicity > MULTI - 1)].copy().reset_index(drop=True)
     grp = grp.rename(columns={"group_id": "idcl", "multiplicity": "nrich",
                               "median_redshift": "zcl"})
-    grp["mass"] = grp.estimated_mass.astype(float) * (NESSIE_H / sdss_hmf.HO)
+    grp["mass"] = group_masses(grp, mass_mode, mass_shift)
 
     err = r_approx(grp.nrich.values.astype(float), dr.NFOF_XX, dr.NFOF_YY)
     err = np.where(np.isnan(err), 0.03, err)
@@ -186,8 +223,10 @@ def fit(b, volumesdss, phimrp, maxit=500, fit_max=None):
     return par, val, nfe, conv, len(allx)
 
 
-def build(seed=10, nmc=1001, verbose=True, nboot=0):
-    grp, volumesdss = build_groups(verbose=verbose)
+def build(seed=10, nmc=1001, verbose=True, nboot=0, mass_mode="tempel_eq8",
+          mass_shift=0.0):
+    grp, volumesdss = build_groups(verbose=verbose, mass_mode=mass_mode,
+                                   mass_shift=mass_shift)
     b = bin_hmf(grp, volumesdss, seed=seed, nmc=nmc, verbose=verbose,
                 nboot=nboot)
     return table(b), volumesdss, b
@@ -213,6 +252,11 @@ def main():
                    help="bootstrap errors instead of Poisson")
     p.add_argument("--fit-max", type=float, default=None,
                    help="cap the fitted/penalty mass range, e.g. 15.0")
+    p.add_argument("--mass-mode", default="tempel_eq8",
+                   choices=["tempel_eq8", "robotham", "shift"],
+                   help="which mass estimator; 'robotham' matches the GAMA leg")
+    p.add_argument("--mass-shift", type=float, default=0.0,
+                   help="dex shift, with --mass-mode shift")
     p.add_argument("--compare", action="store_true",
                    help="also run Driver's Tempel leg for a side-by-side")
     p.add_argument("--out", default="sdsshmfNessie5.csv")
@@ -220,7 +264,9 @@ def main():
 
     _, _, _, phimrp = lcdm_curve()
     print("Nessie SDSS HMF (sdsshmf.r method, new group catalogue)")
-    t, volumesdss, b = build(seed=args.seed, nmc=args.nmc, nboot=args.nboot)
+    t, volumesdss, b = build(seed=args.seed, nmc=args.nmc, nboot=args.nboot,
+                             mass_mode=args.mass_mode,
+                             mass_shift=args.mass_shift)
 
     print("\n  logM      N   log10(wc)  log10(phi)     edb  rootnerr   mcerr"
           "   sdssf")
