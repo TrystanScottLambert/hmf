@@ -1081,6 +1081,55 @@ evidence that the combined fit is well-posed. All three NFW figures report
 `convergence = 1`, so their fitted curves are `maxit=500` artefacts like every
 other GAMA-or-Nessie configuration in this project.
 
+### The sigma difference is gapper vs rms, not the velocity error
+
+Tempel does **not** use the gapper. His eq. 3 is the plain rms:
+
+```
+sigma_v^2 = 1/[(1+z_m)^2 (n-1)] * sum (v_i - v_mean)^2
+```
+
+Recomputed from the members on 2000 identical-membership groups (N >= 5):
+
+| estimator | median log10(est / col12) |
+|---|---|
+| gapper minus 50, i.e. Nessie's | +0.0533 |
+| gapper with **no** error subtraction | +0.0534 |
+| **Tempel eq. 3 rms, recomputed** | **+0.0003** |
+
+Two conclusions:
+
+* **The velocity-error term is irrelevant.** Removing it entirely moves sigma by
+  0.0001 dex — 50 (km/s)^2 against a typical sigma^2 of 40 000 is 0.06%. The
+  constant `velocity_dispersion_gap_err = 7.071068` is a red herring.
+* **Eq. 3 reproduces his column exactly** (+0.0003 at every multiplicity), so
+  the identification of `col12` is certain and the whole difference is
+  gapper vs rms. The gap is N-dependent (+0.071 at N = 5-6, +0.018 at N >= 15),
+  which is the two estimators diverging where the statistics are poor.
+
+That accounts for ~+0.107 dex of the mass offset, since M goes as sigma^2.
+
+### An unresolved units problem in sigma_sky
+
+`col13` is in **h^-1 Mpc** (eq. 4, comoving; the paper uses H0 = 100h,
+Omega_m = 0.27). Nessie's `sky_disp` is in **physical Mpc** at h = 0.7. That is
+a 0.169 dex unit difference that nothing in our chain accounts for.
+
+Recomputing eq. 4 in his units with Nessie's centre gives **−0.111 dex** against
+`col13`, so h alone does not explain it either — there is a residual difference
+in the measure itself, most likely the group-centre definition, since he uses
+his own FoF centre. The two effects net to the +0.054 measured between Nessie's
+`sky_disp` and `col13`. **This one is not fully isolated.**
+
+**This touches Driver's leg, not just ours.** If `col15` is in 1e12 h^-1 M_sun
+then the physical mass is `col15 * 1e12 / h`, but `sdsshmf.r` line 278 does
+`mass * 1e12 * (67.8/ho)` — treating it as already physical and applying only a
+1.006 rescale. That is a potential **0.17 dex on the absolute mass scale of the
+entire SDSS leg**, his published one included. His combined fit does reproduce
+his own table 2, so he is internally consistent; but the SDSS normalisation
+rests on that convention being the right reading. Worth settling before any
+absolute mass scale is quoted.
+
 ---
 
 ## Multi-start: none of these are global minima
