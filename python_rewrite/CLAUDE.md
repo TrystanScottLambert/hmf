@@ -1322,6 +1322,48 @@ does not work here: even at a floor of 0.05, which clips 95 groups, the bin only
 reaches −3.945. The M/L cut removes objects whose mass is not credible in the
 first place, which is the actual problem.
 
+### Effect on the fit
+
+GSR with Driver's Tempel SDSS, seed 10:
+
+| | logM\* | α | χ² | fevals | conv |
+|---|---|---|---|---|---|
+| no cut | 14.362 | −1.807 | 244.17 | 247 | 0 |
+| **M/L cut 1.0** | **14.361** | **−1.800** | **227.41** | 235 | 0 |
+
+**The answer does not move (0.001 in logM\*, 0.007 in α) but χ² falls by 17.**
+That is the signature of a good outlier cut: it removes points that were
+genuinely discrepant rather than reshaping the fit.
+
+It does **not** fix the multi-modality. Starting from M\* = 12 still finds
+χ² = 225.86 against 227.41, so the low-M\* basin is still marginally preferred —
+by 1.55 now, against 0.56 before the cut. See "Multi-start".
+
+### Figures with the cut applied
+
+| figure | contents |
+|---|---|
+| `hmf_old_vs_new_mlcut1.pdf` | GAMA-only, old vs new |
+| `hmf_combined_nessie_mlcut1.pdf` | GSR, SDSS = Tempel |
+| `hmf_combined_nessie_sdss_mlcut1_nfw.pdf` | GSR, SDSS = Nessie on the NFW scale |
+| `hmf_combined_nessie_GS_sdss_mlcut1_nfw.pdf` | GS, SDSS = Nessie on the NFW scale |
+
+`flagged_ml_outliers.csv` lists the dropped groups.
+
+### What "drop" means, precisely
+
+The group is removed from the sample before binning: it contributes no counts
+and no 1/Vmax weight, and it is excluded from the Eddington Monte-Carlo. **The
+survey volume is unchanged**, so phi genuinely falls in the bin it occupied.
+
+It is **not** relocated to a lower mass. Re-added at the mass implied by the
+median M/L for its luminosity, 205509 and 205469 would land near logM 12.70 — a
+1.56 dex drop — and the affected low-mass bins would move by under 0.01 dex,
+since they hold hundreds of groups. Not doing so is deliberate: assigning a mass
+*from* luminosity and then measuring the halo mass function would be circular.
+Dropping keeps the estimator purely dynamical and claims only that the mass is
+not believed.
+
 ### A mass shift is NOT the residual explanation
 
 After the cut, Nessie's 14.0 bin sits 0.215 dex *below* Driver's and its 14.2

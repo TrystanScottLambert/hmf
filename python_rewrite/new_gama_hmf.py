@@ -462,6 +462,7 @@ def main():
     print("OLD GAMA (G3C v10, 3 equatorial fields, 179.92 deg^2, r<19.8)")
     g_old, v_old = dr.build_groups("../data/G3CFoFGroupv10.fits",
                                    "../data/GAMAGalsInGroups.csv")
+    g_old, _ = apply_ml_cut(g_old, args.ml_cut)
     results.append(run_one(g_old, v_old, phimrp, args.seed, args.nmc_edb,
                            args.nmc_fit, "Driver+22, old GAMA (v10)",
                            "old (Driver+22)", OLD_C, "o",
@@ -478,6 +479,10 @@ def main():
     print(f"\nNEW GAMA (Nessie DMU, 4 regions incl. G23, {NEW_AREA} deg^2, "
           f"r<{NEW_MAGLIM})")
     g_new, v_new = build_groups_new()
+    g_new, flagged_ml = apply_ml_cut(g_new, args.ml_cut)
+    if flagged_ml is not None and len(flagged_ml):
+        flagged_ml.to_csv("flagged_ml_outliers.csv", index=False)
+        print(f"  wrote flagged_ml_outliers.csv ({len(flagged_ml)} groups)")
     results.append(run_one(g_new, v_new, phimrp, args.seed, args.nmc_edb,
                            args.nmc_fit, "This work, new GAMA DMU",
                            "new (Nessie DMU)", NEW_C, "s",
