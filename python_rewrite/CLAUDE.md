@@ -14,8 +14,11 @@ through the identical method, both GAMA-only and in the combined fit.
 three blockers turned out to be answerable from the data. Like GAMA-only, the
 SDSS-only *fit* is ill-posed; see "The Nessie SDSS leg".
 
-**Outstanding:** swapping the Nessie SDSS leg into `combined_hmf.py` as an
-alternative `S`. Everything else is built and validated.
+**Step 4 (Nessie SDSS in the combined fit) is done** — two separate figures,
+`--sdss auto` and `--sdss nessie`. Everything else is built and validated.
+
+**Outstanding:** why the Nessie SDSS leg fails to anchor the combined fit (it
+does not; Tempel's does). See "In the combined fit".
 
 Do not "fix" the things the old version of this file listed as problems. Most of
 them were either resolved or were never problems. Read "The central finding"
@@ -484,10 +487,61 @@ Driver's own SDSS (Tempel+14) remains the `S` leg: 4847 groups, `volumesdss` =
 galaxies), z < 0.08, r < 17.77, `logbin = 0.1`, masses `mass * 1e12 * (67.8/ho)`
 with no A factor and no multiplicity debiasing.
 
-**Still to do:** swap the Nessie SDSS leg into `combined_hmf.py` as an
-alternative `S`, and check it against the GR/GSR fits. The combined fit is the
-one with a genuine interior minimum, so that is where this leg can actually say
-something.
+### In the combined fit — and the finding that matters
+
+`combined_hmf.py --sdss` now takes `nessie` alongside `auto` (Tempel+14). The
+two are kept as **separate figures**, never overlaid, and the default `--out`
+follows `--sdss` so they cannot overwrite each other:
+
+| figure | GAMA | SDSS |
+|---|---|---|
+| `hmf_combined_nessie.pdf` | Nessie | Tempel+14 |
+| `hmf_combined_nessie_sdss.pdf` | Nessie | Nessie |
+
+Swapping only the SDSS leg (GSR, Nessie GAMA, seed 10, Driver's `maxit=500`)
+moves logM\* by −0.40 and α by +0.29:
+
+| | logM\* | log φ\* | α | β | χ² |
+|---|---|---|---|---|---|
+| SDSS = Tempel | 14.362 | −4.368 | −1.807 | 0.738 | 244.2 |
+| SDSS = Nessie | 13.967 | −3.697 | −1.521 | 0.597 | 274.8 |
+
+**But only Driver's Tempel leg actually anchors the fit.** Released from the
+budget, the two behave completely differently:
+
+| SDSS leg | maxit=500 | maxit=5000 | fevals | χ² released |
+|---|---|---|---|---|
+| Tempel | 14.362, conv=**0** | **14.362, identical** | 247 | 244.2 |
+| Nessie (full, 15.65) | 13.967, conv=1 | **12.431**, α=−0.879 | 895 | 241.1 |
+| Nessie capped 15.05 | 14.064, conv=1 | **9.844**, α=+0.278 | 2769 | 186.6 |
+| Nessie capped 15.0 | 13.729, conv=1 | **12.647**, α=−0.822 | 749 | 186.0 |
+
+Tempel's SDSS gives a **genuine interior minimum** — converged in 247 fevals,
+bit-identical at maxit 500 and 5000. Every Nessie SDSS variant stops on the
+budget at 500 and, released, **runs away to low M\* with a lower χ²** — the
+exact signature "The central finding" describes for GAMA-only. Capping the range
+does not rescue it; capped at 15.05 it goes further, to logM\* = 9.84.
+
+So **the fitted curve in `hmf_combined_nessie_sdss.pdf` is the `maxit=500`
+accident, not a measurement** — the Murray+21 start point decaying, same as
+Driver's GAMA-only number. Both figures use identical settings, so they are
+honestly comparable as *figures*; but only the Tempel one carries a quotable
+fit.
+
+Read together with the SDSS-only scans, the pattern is consistent: the Nessie
+SDSS **binned points are usable and interesting** — above 14.5 they track REFLEX
+noticeably better than Tempel's, which fall below it, and they extend to 15.65 —
+but the Nessie SDSS catalogue does not constrain the MRP cutoff well enough to
+pin M\* and β. Driver's Tempel leg does. **Quote the Tempel combined fit; show
+the Nessie SDSS points.**
+
+`--maxit` (added for this check) and `--sdss-max` are both wired through.
+Anything reporting `convergence = 1` should be re-run at maxit 2000-5000 before
+it is believed.
+
+**Still to do:** why the Nessie SDSS leg fails to anchor. The excess at
+13.0-14.3 relative to Tempel and the extra 0.6 dex of high-mass reach are the
+obvious suspects; the `--sdss-max` scan shows it is not the reach alone.
 
 ---
 
@@ -496,6 +550,9 @@ something.
 1. **GAMA-only plot** — binned points with errors, the fitted MRP with its
    Monte-Carlo band, Driver's result for comparison. `hmf_gama_only_nessie.pdf`.
 2. **Combined plot** — GAMA + SDSS + REFLEX II fitted, 2PIGG and Tempel shown but
-   not fitted, following `allhmf.r`. `hmf_combined_nessie.pdf`.
+   not fitted, following `allhmf.r`. Two of them, same pipeline, differing only
+   in the SDSS leg: `hmf_combined_nessie.pdf` (SDSS = Tempel+14) and
+   `hmf_combined_nessie_sdss.pdf` (SDSS = Nessie). Only the first carries a
+   quotable fit — see "In the combined fit".
 
 Keep them as separate figures.

@@ -22,8 +22,21 @@ SDSS
 ----
 ``sdsshmf5.csv`` was never available, but ``sdsshmf.r`` is, so the SDSS leg is
 rebuilt from the Tempel+14 DR10 catalogues by ``sdss_hmf.py`` and used directly.
-``--sdss`` takes ``auto`` (default, rebuild), ``none``, or a path to a V1..V8
-table if you later get Driver's own file.
+``--sdss`` takes ``auto`` (default, Tempel+14), ``nessie`` (the Nessie SDSS
+catalogue via ``nessie_sdss_hmf.py``), ``none``, or a path to a V1..V8 table if
+you later get Driver's own file.
+
+The two SDSS variants are kept as **separate figures**, not overlaid: they share
+a footprint and a galaxy sample and differ only in the group finder, so the
+honest comparison is two runs of the identical pipeline.  The default ``--out``
+follows ``--sdss`` so they cannot overwrite each other:
+
+    hmf_combined_nessie.pdf       GAMA = Nessie, SDSS = Tempel+14
+    hmf_combined_nessie_sdss.pdf  GAMA = Nessie, SDSS = Nessie
+
+``--sdss-max`` caps the SDSS bins entering the fit.  Nessie SDSS reaches logM
+15.65 against Tempel's 15.05 and the penalty integrates over ``max(allx)``, so
+the two runs do not see the same penalty range unless you set it.
 
 Validation
 ----------
@@ -47,6 +60,7 @@ import numpy as np
 import pandas as pd
 
 import driver_recovery as dr
+import nessie_sdss_hmf as nsd
 import new_gama_hmf as ng
 import sdss_hmf
 from driver_recovery import (FULLSKY, G, MSOL, PARSEC, RRandom, bin_hmf, co_vol,
@@ -301,7 +315,8 @@ def monte_carlo(sets, myoption, omega_prior, phimrp, mstarmrp, alphamrp, betamrp
 # ---------------------------------------------------------------------------
 
 def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
-                  outfile, myoption, omega_prior, fit_par_driver=None):
+                  outfile, myoption, omega_prior, fit_par_driver=None,
+                  sdss_label="SDSS DR10 (Tempel+14)"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -376,7 +391,7 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
             ("o", ng.OLD_C, "GAMA (Driver+22) z<0.25 and N>4", True)]
     if "S" in sets:
         keys.append(("P", "purple",
-                     f"SDSS DR10 (Tempel+14) z<{ZLIMITSDSS} and N>4", False))
+                     f"{sdss_label} z<{ZLIMITSDSS} and N>4", False))
     keys += [("D", "forestgreen",
               "REFLEX II, x-ray, z~0.1 (Bohringer et al. 2017)", False),
              ("o", "grey", "2PIGG z < 0.12 (Eke et al. 2008)", False)]
@@ -450,17 +465,33 @@ def main():
     p.add_argument("--omega-prior", action="store_true",
                    help="add the OmegaM term (implied by --myoption Omega)")
     p.add_argument("--sdss", default="auto",
-                   help="'auto' rebuilds it with sdss_hmf.py, 'none' disables, "
-                        "or a path to a V1..V8 table")
+                   help="'auto' rebuilds Tempel+14 with sdss_hmf.py, 'nessie' "
+                        "uses the Nessie SDSS catalogue, 'none' disables, or a "
+                        "path to a V1..V8 table")
+    p.add_argument("--sdss-max", type=float, default=None,
+                   help="drop SDSS bins above this logM before fitting.  The "
+                        "penalty integrates over max(allx), and Nessie SDSS "
+                        "reaches 15.65 against Tempel's 15.05, so this is the "
+                        "range check group 300223 taught us to run.")
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--nmc-edb", type=int, default=1001)
     p.add_argument("--nboot", type=int, default=0,
                    help="group-bootstrap errors instead of Poisson, applied to "
                         "both the GAMA and SDSS legs (0 = as Driver)")
     p.add_argument("--iters", type=int, default=1001)
-    p.add_argument("--out", default="hmf_combined_nessie.pdf")
+    p.add_argument("--maxit", type=int, default=500,
+                   help="optim budget (allhmf.r uses 500).  GSR needs ~2000 to "
+                        "actually converge; check whether a convergence=1 "
+                        "result is a minimum or just a stopped simplex.")
+    p.add_argument("--out", default=None,
+                   help="default depends on --sdss so the two SDSS variants "
+                        "cannot overwrite each other")
     p.add_argument("--write-tables", action="store_true")
     args = p.parse_args()
+
+    if args.out is None:
+        args.out = ("hmf_combined_nessie_sdss.pdf" if args.sdss == "nessie"
+                    else "hmf_combined_nessie.pdf")
 
     omega_prior = args.omega_prior or args.myoption == "Omega"
     mrpx, mrpy, factor, phimrp = lcdm_curve()
@@ -486,19 +517,30 @@ def main():
     sets = {"G": gset, "R": (rx, ry, rf, VOLUME_REFLEXII)}
     print(f"  REFLEX II      : {len(rx)} points, volume {VOLUME_REFLEXII:.3e} Mpc^3")
 
+    sdss_label = None
     if args.sdss != "none":
         if args.sdss == "auto":
             s, _, _ = sdss_hmf.build(seed=args.seed, nmc=args.nmc_edb,
                                      verbose=False, nboot=args.nboot)
+            sdss_label = "SDSS DR10 (Tempel+14)"
+        elif args.sdss == "nessie":
+            # Same footprint (7221 deg^2) and the same galaxies -- the Nessie
+            # file is Tempel's table 1 -- so only the grouping differs.
+            s, _, _ = nsd.build(seed=args.seed, nmc=args.nmc_edb,
+                                verbose=False, nboot=args.nboot)
+            sdss_label = "SDSS (Nessie)"
         else:
             s = pd.read_csv(args.sdss)
+            sdss_label = "SDSS (file)"
         s = s[(s.V1 > MLIMIT_SDSS) & np.isfinite(s.V4)]
+        if args.sdss_max is not None:
+            s = s[s.V1 <= args.sdss_max]
         # allhmf.r line 264 does NOT subtract the zmin volume here, though
         # sdsshmf.r line 248 does.  His value is kept in his place.
         sets["S"] = (s.V1.values, s.V4.values, s.V8.values,
                      survey_volume(ZLIMITSDSS, AREA_SDSS))
-        print(f"  SDSS (Tempel+14): {len(s)} bins, area {AREA_SDSS} deg^2, "
-              f"z<{ZLIMITSDSS}, logbin 0.1")
+        print(f"  {sdss_label:<16}: {len(s)} bins, area {AREA_SDSS} deg^2, "
+              f"z<{ZLIMITSDSS}, logbin 0.1, max bin {s.V1.max():.2f}")
 
     extras = dict(tpigg=load_tpigg(), elmo=load_elmo())
 
@@ -517,7 +559,7 @@ def main():
     allf = np.where(allf >= 1.0, 0.9999, allf)
     par, val, nfe, conv = fit_combined(allx, ally, allf, vols, args.myoption,
                                        omega_prior, phimrp, mstarmrp, alphamrp,
-                                       betamrp)
+                                       betamrp, maxit=args.maxit)
     print(f"\n  fitting {len(allx)} points from {args.myoption}")
     print(f"  Monte-Carlo: {args.iters} refits ...")
     mc = monte_carlo(sets, args.myoption, omega_prior, phimrp, mstarmrp, alphamrp,
@@ -530,7 +572,7 @@ def main():
     af_d = np.where(af_d >= 1.0, 0.9999, af_d)
     par_d, val_d, _, conv_d = fit_combined(ax_d, ay_d, af_d, vol_d, args.myoption,
                                            omega_prior, phimrp, mstarmrp, alphamrp,
-                                           betamrp)
+                                           betamrp, maxit=args.maxit)
 
     print("\n  --- combined MRP fit ---")
     print(f"  {'':<13}{'Nessie DMU':>10}{'Driver+22':>11}{'diff':>8}")
@@ -569,7 +611,8 @@ def main():
     print(f"  fraction of OmegaM={OMEGAM} in haloes above 12.7: {om2 / OMEGAM:.3f}")
 
     plot_combined(par, mc, sets, oset[:3], extras, mrpx, mrpy, factor, args.out,
-                  args.myoption, omega_prior, fit_par_driver=par_d)
+                  args.myoption, omega_prior, fit_par_driver=par_d,
+                  sdss_label=sdss_label or "SDSS DR10 (Tempel+14)")
 
 
 if __name__ == "__main__":
