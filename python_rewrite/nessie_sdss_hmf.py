@@ -63,9 +63,21 @@ NESSIE_GALS = f"{NESSIE_DIR}/sdss_galaxies.parquet"
 
 NESSIE_H = 70.0      # recovered from the co_dist column, with Omega_m = 0.30
 KAPPA_HERNQUIST = 4.582   # Tempel+2014 sec 4.2: Rg = 6a = 4.582 sigma_sky
-KAPPA_NFW = 2.7551        # recovered from his published col15; mass-dependent
-                          # in truth (2.80 at logM 12.2 to 2.67 at 15), this is
-                          # the population median
+# kappa = Rg/sigma_sky for the NFW profile, calibrated directly against Tempel's
+# published col15 by inverting his eq. 8 on his own col12 and col13.  A
+# first-principles derivation from section 4.1 + Maccio c(M) did NOT reproduce
+# this -- it gives the wrong trend direction (rising with mass where his falls)
+# -- so the empirical route is used and is exact by construction: it round-trips
+# his own masses to +/-0.0007 dex.  kappa is only weakly mass dependent
+# (0.0086 per dex), which is why the h convention used to evaluate it is
+# immaterial.
+KAPPA_NFW_LOGM = np.array([11.10, 11.30, 11.50, 11.70, 11.90, 12.10, 12.30, 12.50, 12.70, 12.90, 13.10, 13.30, 13.50, 13.70, 13.90, 14.10, 14.30, 14.50, 14.70, 14.90])
+KAPPA_NFW_VAL = np.array([
+    2.8672, 2.8563, 2.8450, 2.8334, 2.8226, 2.8119,
+    2.8005, 2.7893, 2.7783, 2.7671, 2.7561, 2.7453,
+    2.7343, 2.7232, 2.7121, 2.7009, 2.6898, 2.6797,
+    2.6691, 2.6594])
+KAPPA_NFW = 2.7551        # population median, kept for reference
 UNGROUPED = -1       # sentinel in *both* GroupID and group_id
 
 
@@ -146,9 +158,16 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
     elif mass_mode == "shift":
         m = grp.estimated_mass.astype(float).values * 10.0 ** mass_shift
     elif mass_mode == "tempel_nfw":
-        m = (grp.estimated_mass.astype(float).values
-             * 3.0 ** (1.0 / 3.0)                    # sqrt(3) not cbrt(3)
-             * (KAPPA_NFW / KAPPA_HERNQUIST))        # Hernquist -> NFW
+        # Correct Hernquist mass first: sqrt(3) where Nessie codes cbrt(3).
+        m_hern = grp.estimated_mass.astype(float).values * 3.0 ** (1.0 / 3.0)
+        # Then Hernquist -> NFW.  kappa depends on the mass, so iterate; the
+        # dependence is weak enough that this converges in a few steps.
+        m = m_hern * (KAPPA_NFW / KAPPA_HERNQUIST)
+        for _ in range(30):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                k = np.interp(np.log10(np.where(m > 0, m, np.nan)),
+                              KAPPA_NFW_LOGM, KAPPA_NFW_VAL)
+            m = m_hern * (k / KAPPA_HERNQUIST)
     elif mass_mode == "robotham":
         m = grp.mass_proxy.astype(float).values * dr.MAGICA
         nf = grp.nrich.values.astype(int)

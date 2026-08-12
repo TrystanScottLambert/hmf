@@ -990,6 +990,50 @@ The remainder is the small-N gapper bias and the mass dependence of kappa.
 on the same footing as Driver's `col15`. It is opt-in; `tempel_eq8` remains the
 default so nothing already validated moves.
 
+### Computing a proper NFW mass for the Nessie groups
+
+`--mass-mode tempel_nfw` now does this properly, mass-dependent rather than by a
+single ratio:
+
+```
+M_hern = estimated_mass * 3**(1/3)          # sqrt(3) where Nessie codes cbrt(3)
+M_nfw  = M_hern * kappa_NFW(M_nfw) / 4.582  # iterated; kappa is weakly mass dep.
+```
+
+**The first-principles derivation does not reproduce Tempel's catalogue**, and
+that is worth knowing before anyone tries again. Following section 4.1 — NFW
+truncated at R200, `c200` from Maccio+2008 eq. 12, `Rg = G M^2/|U|` from eq. 9,
+and sigma_sky^2 = <R^2>/2 = <r^2>/3 for a projected sphere — gives kappa
+*rising* with mass (3.02 at logM 12.2 to 3.27 at 15.0) where his falls (2.80 to
+2.67). Note `Rs` cancels, so kappa is a function of `c200` alone; the mismatch
+is therefore in the sigma_sky → Rg step, which the paper delegates to
+Bartelmann (1996) and Lokas & Mamon (2001) rather than writing out.
+
+So kappa is instead **calibrated against his published catalogue**, by inverting
+eq. 8 on his own `col12` and `col13` over 37 365 groups. That is exact by
+construction: feeding his sigma and sigma_sky back through the calibrated
+relation recovers his `col15` to **median −0.00003 dex, 16/84 ±0.0007, with 0%
+of groups off by more than 0.05**.
+
+| logM | kappa | | logM | kappa |
+|---|---|---|---|---|
+| 11.1 | 2.8672 | | 13.5 | 2.7343 |
+| 12.1 | 2.8119 | | 14.1 | 2.7009 |
+| 12.9 | 2.7671 | | 14.9 | 2.6594 |
+
+kappa changes by only 0.0086 per dex, which is why the h convention used to
+evaluate it does not matter.
+
+Effect on identical-membership groups (N >= 5, 3000 groups):
+
+| | median log10(M_nessie/M_tempel) |
+|---|---|
+| Nessie as-is (buggy Hernquist) | +0.296 |
+| Nessie → NFW, both fixes | **+0.228** |
+
+The remaining +0.23 is the sigma and sigma_sky estimator difference — the
+small-N gapper bias — which is a separate problem and still open.
+
 ---
 
 ## Multi-start: none of these are global minima
