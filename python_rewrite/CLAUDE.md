@@ -10,8 +10,12 @@ better than 0.035 in every parameter.
 **Step 2 (new GAMA DMU) is done for GAMA.** The Nessie catalogue has been run
 through the identical method, both GAMA-only and in the combined fit.
 
-**Outstanding:** the Nessie SDSS leg (see "Remaining work"). Everything else is
-built and validated.
+**Step 3 (Nessie SDSS) is now built** — `nessie_sdss_hmf.py`, 4824 groups. All
+three blockers turned out to be answerable from the data. Like GAMA-only, the
+SDSS-only *fit* is ill-posed; see "The Nessie SDSS leg".
+
+**Outstanding:** swapping the Nessie SDSS leg into `combined_hmf.py` as an
+alternative `S`. Everything else is built and validated.
 
 Do not "fix" the things the old version of this file listed as problems. Most of
 them were either resolved or were never problems. Read "The central finding"
@@ -75,6 +79,8 @@ difference being measured.
 | `driver_recovery.py` | Fig. 4 reproduction, and the shared R-compatibility layer everything else imports |
 | `new_gama_hmf.py` | Nessie GAMA DMU through the identical method; old-vs-new GAMA-only figure; `compute_zmax` |
 | `sdss_hmf.py` | Port of `sdsshmf.r`; generates `sdsshmf5.csv` |
+| `nessie_sdss_hmf.py` | Nessie SDSS through the identical method; generates `sdsshmfNessie5.csv` |
+| `scan_nessie_sdss.py` | Seed and penalty-range scans for the SDSS legs |
 | `combined_hmf.py` | Port of `allhmf.r`; the GSR fit and Ω_M inset |
 | `robust_hmf.py` | Bootstrap errors, Vmax floor scan, flagged-group table |
 
@@ -367,30 +373,121 @@ with `gamay > 0` and `gamax > mlimit` enter.
 
 ---
 
-## Remaining work: the Nessie SDSS leg
+## The Nessie SDSS leg — built
 
-`sdss_groups.parquet` (84,890 groups) and `sdss_galaxies.parquet` (584,447
-galaxies) in `/Users/00115372/Desktop/my_tools/nessie_tutorials/python/SDSS/`.
-Groups carry `multiplicity`, `median_redshift`, `r50`,
-`velocity_dispersion_gap`, `mass_proxy`, `estimated_mass`.
+`nessie_sdss_hmf.py`, with `scan_nessie_sdss.py` for the seed/range scans. Only
+group construction differs from `sdss_hmf.py`; the binning, table and fit are
+**imported** from it so the two legs cannot drift apart. 4824 groups against
+Tempel's 4847.
 
-Resolve before building:
+The three questions the old version of this file raised were all answerable from
+the data, and none needed a convention chosen:
 
-1. **No absolute magnitude, no k+e.** Galaxies have `rmag` and `zobs` only, so
-   the zmax inversion needs a k-correction decided on — unlike the GAMA DMU,
-   where the correction was recoverable from `make_gama_dmu` and self-consistent
-   by construction.
-2. **Two ID columns**, `GroupID` and `group_id` (Tempel's original vs Nessie's
-   presumably). Disambiguate before joining.
-3. **Masses reach logM 15.7**, roughly 1.4 dex above REFLEX at the same mass. In
-   that volume you would expect ~0.01 haloes above 10^15.7. Given what group
-   300223 did to the GAMA fit through the penalty range, check this before it
-   goes anywhere near `max(allx)`. Consider capping at logM < 15.
+1. **No k-correction had to be invented.** The Nessie galaxy file *is* Tempel's
+   table 1 — all 584,447 rows match `sdssdr10table1.fits` on (RA, Dec) with
+   **identical** `rmag` (max |Δ| = 0.0) — so `absmag_r` comes across by join and
+   `sdsshmf.r` line 269's analytic `dmax` is used verbatim. Tempel's `col9`
+   redshift is used inside `dmax`, not Nessie's `zobs`: the two differ by up to
+   0.0012 (frame convention) and the formula must stay self-consistent with the
+   absolute magnitude it is paired with.
+2. **The two ID columns are two different group finders.** `GroupID` is Tempel's
+   (max 88662, matching `sdssdr10table2.fits`); `group_id` is Nessie's (max
+   84890, matching `sdss_groups.parquet`). Both use **`-1`** for ungrouped —
+   297,202 and 300,068 galaxies respectively. Only `group_id` joins the parquet
+   pair. They agree for just 49% of rows, so joining on the wrong one silently
+   mixes the two catalogues.
+3. **The mass range was much less alarming than it looked.** 10^16.1 is real but
+   comes from pairs and triples at high z. Within the selection actually used
+   (multiplicity ≥ 5, z < 0.08) `estimated_mass` runs to 10^15.64 against
+   Tempel's 10^15.08, with 19 groups above 10^15 against Tempel's 4, and a
+   median only 0.09 dex above his. **`mass_proxy` is not the analogue** — it
+   sits ~0.9 dex low and is uncalibrated. Use `estimated_mass`.
 
-Driver's own SDSS (Tempel+14) stays as the `S` leg meanwhile: 4847 groups,
-`volumesdss` = 3.100035e+07 Mpc³, area 7221 deg², z < 0.08, r < 17.77,
-`logbin = 0.1`, masses `mass * 1e12 * (67.8/ho)` with no A factor and no
-multiplicity debiasing.
+Other facts pinned down while building:
+
+* **Nessie's cosmology is H0 = 70, Ω_M = 0.30**, recovered from its own
+  `co_dist` column to 4e−8. Masses therefore carry `(70/ho)`, mirroring
+  Driver's `(67.8/ho)` for Tempel.
+* **Tempel's `rank` is by absolute magnitude**, ascending — verified exactly
+  (1.000) on his own groups, against 0.545 for apparent. `nessie_sdss_hmf`
+  reproduces that ranking inside each Nessie group to pick the rank-5 member.
+* `sdsshmf.r`'s hand-fix of `idcl == 81455` is **not** applied to Nessie. Same
+  lesson as GAMA's `GroupID 100622`: the ID exists in the new catalogue but is a
+  different object.
+* Column decode for `sdssdr10table1.fits`: `col4` idcl, `col6` rank, `col9` z,
+  `col13` RA, `col14` Dec, `col26` r, `col31` M_r.
+* `sdsshmf.r` was missing from `python_rewrite/` despite this file claiming
+  otherwise; restored from `~/Downloads`.
+
+### The SDSS-only fit is ill-posed too
+
+Same disease as GAMA-only, and if anything worse. Nessie SDSS reaches logM 15.65
+against Tempel's 15.05, and `make_massfn` integrates its penalty over
+`max(allx) + 1..10 bins`, so **where you cut sets the answer** (seed 10):
+
+| `--fit-max` | bins | logM\* | α | β | χ² | conv |
+|---|---|---|---|---|---|---|
+| none (15.65) | 28 | 13.306 | −1.170 | 0.442 | 126.7 | 1 |
+| 15.4 | 25 | **14.128** | −1.440 | 0.731 | 103.3 | 1 |
+| 15.2 | 23 | **12.395** | −0.537 | 0.388 | 76.7 | 1 |
+| 15.0 | 21 | 12.849 | −0.579 | 0.467 | 67.4 | 0 |
+| 14.8 | 19 | 13.700 | −0.943 | 0.731 | 71.5 | 0 |
+
+logM\* swings 1.7 dex and α swings 0.9 on the range choice alone — far larger
+than the seed scatter. **Do not quote a Nessie SDSS-only fitted parameter.**
+`--fit-max` is provided for exactly this check.
+
+Over 8 MC seeds, full range, Poisson errors — **0/8 converged for both**, the
+`maxit=500` story again:
+
+| | Tempel | Nessie |
+|---|---|---|
+| logM\* | 13.793 ± 0.168 | 13.762 ± 0.428 |
+| log φ\* | −3.570 ± 0.251 | −3.402 ± 0.512 |
+| α | **−1.746 ± 0.078** | **−1.431 ± 0.181** |
+| β | 0.557 ± 0.043 | 0.507 ± 0.101 |
+| χ² | 59.4 | 133.8 |
+| bins | 22 | 28 |
+
+Nessie's α is shallower by **+0.315** (1.6× the pooled scatter), with ~2.3×
+Tempel's seed-to-seed scatter. Same direction as the GAMA discrepancy (+0.45) —
+two independent surveys, same sign.
+
+**But matching the range does not reconcile them, it amplifies the gap** — which
+is what identifies the problem. 8 seeds, both capped at logM ≤ 15.0, 21 bins
+each:
+
+| α | Tempel | Nessie | diff |
+|---|---|---|---|
+| Poisson | −1.657 ± 0.087 | −0.585 ± 0.079 | **+1.072** (9.1×) |
+| bootstrap | −1.863 ± 0.084 | −0.606 ± 0.083 | **+1.258** (10.6×) |
+
+So the measured old/new difference is itself a function of the range chosen:
++0.32 at full range, +1.07 matched at 15.0. Read the two scans together and the
+diagnosis is clean:
+
+* **At a fixed range, the seeds are tight** — α scatters by only ±0.08.
+* **Across range choices, α moves by ~0.9.** The systematic is an order of
+  magnitude larger than the statistical error, and it is not reduced by matching
+  ranges, bootstrapping, or averaging seeds.
+
+That is the signature of an ill-posed fit, not of a measured catalogue
+difference. The GAMA-only lesson transfers intact: **the SDSS-only binned points
+are fine; the four-parameter fit to them is not.** Quote the combined fit.
+
+Note seed 10 alone gives α = −1.170, outside the entire seed 1–8 range. The
+"never quote one seed" rule earned its place again — but note it is the *range*,
+not the seed, that does the real damage here.
+
+Driver's own SDSS (Tempel+14) remains the `S` leg: 4847 groups, `volumesdss` =
+3.100035e+07 Mpc³, area 7221 deg² (Nessie shares the footprint exactly — same
+galaxies), z < 0.08, r < 17.77, `logbin = 0.1`, masses `mass * 1e12 * (67.8/ho)`
+with no A factor and no multiplicity debiasing.
+
+**Still to do:** swap the Nessie SDSS leg into `combined_hmf.py` as an
+alternative `S`, and check it against the GR/GSR fits. The combined fit is the
+one with a genuine interior minimum, so that is where this leg can actually say
+something.
 
 ---
 
