@@ -581,6 +581,54 @@ correct errors — but their fitted curves are `maxit=500` artefacts and neither
 quotable. The x-ray anchor is not optional; it is the whole reason the combined
 fit works.
 
+### Clamping the noisy high-mass tail — `--fit-max`
+
+The high-mass ends of both survey legs are single-group bins whose fractional
+errors have hit the 0.9999 ceiling, so they add no constraint while still
+setting `max(allx)` and therefore the penalty range:
+
+| leg | bins above 15.0 | raw N in them |
+|---|---|---|
+| GAMA (Nessie) | 15.60, 15.40 | 1, 1 |
+| SDSS (Nessie) | 15.65, 15.55, 15.45, 15.35, 15.25, 15.15, 15.05 | 1, 1, 2, 1, 3, 2, 10 |
+| SDSS (Tempel) | 15.05 | 4 |
+
+`--fit-max` clamps **both survey legs** at a given logM. REFLEX is deliberately
+left uncapped — it is the anchor and its high-mass points are the constraint,
+not noise. `--sdss-max` still clamps SDSS alone; when both are given the tighter
+wins. Clamped runs get a `_clamp<value>` filename suffix.
+
+A clamp of **15.0 is the principled choice**: it is the largest cut that leaves
+every retained bin with N ≥ 4, in all three legs. Do not pick the clamp by which
+value converges.
+
+**Clamping lowers χ² but does not, in general, restore an interior minimum:**
+
+| SDSS | clamp | maxit=500 | maxit=5000 | conv |
+|---|---|---|---|---|
+| Tempel | none | 14.076 | 10.541 | 0 |
+| Tempel | 15.2 | 14.046 | 9.122 | 0 |
+| Tempel | 15.0 | 13.570 | 11.418 | 0 |
+| Tempel | 14.8 | 13.914 | 12.016 | 0 |
+| Nessie | none | 13.735 | 7.044 | 1 (!) |
+| Nessie | 15.2 | 12.712 | 10.343 | 0 |
+| Nessie | 15.0 | 12.895 | 10.874 | 0 |
+| Nessie | **14.8** | **13.565** | **13.565, identical** | **0, 305 fevals** |
+
+Every Tempel GS variant still runs away no matter where it is clamped. Exactly
+one configuration converges — Nessie SDSS clamped at 14.8, giving logM\* =
+13.565, α = −0.861, β = 0.659 in 305 evaluations, bit-identical at 500 and 5000.
+
+**Treat that single convergence with suspicion rather than relief.** It appears
+at 14.8 but not at 15.0 or 15.2, and not at all for Tempel; an answer that
+depends that sharply on where you truncate is the ill-posedness showing itself,
+not a measurement emerging. Quoting it would be picking the clamp that produces
+a converged number, which is the error this file has warned about twice already.
+
+The useful conclusion is the honest one: the noisy tail *is* worth clamping — it
+drops GS χ² from 188 to 108 for Nessie — but clamping does not make GS
+well-posed. Only `GSR` with Tempel SDSS is.
+
 **Still to do:** why the Nessie SDSS leg fails to anchor. The excess at
 13.0-14.3 relative to Tempel and the extra 0.6 dex of high-mass reach are the
 obvious suspects; the `--sdss-max` scan shows it is not the reach alone.

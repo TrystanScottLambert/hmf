@@ -447,11 +447,13 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
 
 # ---------------------------------------------------------------------------
 
-def gama_set(g3c, vlimit, area, seed, nmc_edb, nboot, mlimit):
+def gama_set(g3c, vlimit, area, seed, nmc_edb, nboot, mlimit, fit_max=None):
     """Bin a GAMA catalogue and reduce it to allhmf.r's (V1, V4, V8) + volume."""
     b, _ = bin_hmf(g3c, vlimit, seed=seed, nmc=nmc_edb, verbose=False, nboot=nboot)
     t = driver_table(b)
     keep = (t.V1 > mlimit) & np.isfinite(t.V4)          # allhmf.r line 276
+    if fit_max is not None:
+        keep &= t.V1 <= fit_max
     t = t[keep]
     return (t.V1.values, t.V4.values, t.V8.values,
             survey_volume(ZLIMIT, area)), b
@@ -473,6 +475,13 @@ def main():
                         "penalty integrates over max(allx), and Nessie SDSS "
                         "reaches 15.65 against Tempel's 15.05, so this is the "
                         "range check group 300223 taught us to run.")
+    p.add_argument("--fit-max", type=float, default=None,
+                   help="clamp BOTH survey legs (GAMA and SDSS) at this logM.  "
+                        "The high-mass tails are single-group bins with "
+                        "fractional errors of ~1, so they add no constraint but "
+                        "do set max(allx) and hence the penalty range.  REFLEX "
+                        "is deliberately left uncapped: it is the anchor, and "
+                        "its high-mass points are the constraint, not noise.")
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--nmc-edb", type=int, default=1001)
     p.add_argument("--nboot", type=int, default=0,
@@ -500,7 +509,9 @@ def main():
             tag += "_nosdss"
         elif args.sdss != "auto":
             tag += "_sdssfile"
-        if args.sdss_max is not None:
+        if args.fit_max is not None:
+            tag += f"_clamp{args.fit_max:g}"
+        elif args.sdss_max is not None:
             tag += f"_max{args.sdss_max:g}"
         if args.omega_prior:
             tag += "_omega"
@@ -518,11 +529,11 @@ def main():
     # --- GAMA: new Nessie DMU (fitted) and Driver's (comparison only) --------
     g_new, v_new = ng.build_groups_new(verbose=False)
     gset, b_new = gama_set(g_new, v_new, ng.NEW_AREA, args.seed, args.nmc_edb,
-                           args.nboot, MLIMIT_GAMA)
+                           args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
     g_old, v_old = dr.build_groups("../data/G3CFoFGroupv10.fits",
                                    "../data/GAMAGalsInGroups.csv", verbose=False)
     oset, b_old = gama_set(g_old, v_old, AREA_GAMA_DRIVER, args.seed, args.nmc_edb,
-                           args.nboot, MLIMIT_GAMA)
+                           args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
     print(f"  GAMA (Nessie)  : {len(gset[0])} bins, area {ng.NEW_AREA} deg^2, "
           f"volume {gset[3]:.4e} Mpc^3")
     print(f"  GAMA (Driver)  : {len(oset[0])} bins, area {AREA_GAMA_DRIVER} deg^2 "
@@ -548,8 +559,10 @@ def main():
             s = pd.read_csv(args.sdss)
             sdss_label = "SDSS (file)"
         s = s[(s.V1 > MLIMIT_SDSS) & np.isfinite(s.V4)]
-        if args.sdss_max is not None:
-            s = s[s.V1 <= args.sdss_max]
+        cap = min([c for c in (args.sdss_max, args.fit_max) if c is not None],
+                  default=None)
+        if cap is not None:
+            s = s[s.V1 <= cap]
         # allhmf.r line 264 does NOT subtract the zmin volume here, though
         # sdsshmf.r line 248 does.  His value is kept in his place.
         sets["S"] = (s.V1.values, s.V4.values, s.V8.values,
@@ -598,7 +611,13 @@ def main():
     print(f"  {'chi2':<13}{val:10.2f}{val_d:11.2f}"
           f"   (convergence {conv} / {conv_d})")
     pub = PUBLISHED_TABLE2.get(args.myoption)
-    if pub is not None and not omega_prior:
+    clamped = args.fit_max is not None or args.sdss_max is not None
+    if pub is not None and not omega_prior and clamped:
+        print("\n  (published table 2 comparison suppressed: Driver does not "
+              "clamp the mass\n   range, so a clamped fit is not comparable "
+              "with it.  Re-run without\n   --fit-max/--sdss-max to validate "
+              "the port.)")
+    elif pub is not None and not omega_prior:
         print(f"\n  Validation -- Driver's GAMA against his published table 2 "
               f"({args.myoption}):")
         print(f"  {'':<13}{'this port':>10}{'published':>11}{'diff':>8}")
