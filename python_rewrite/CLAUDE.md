@@ -1557,11 +1557,41 @@ per-object effective volume `V_i = vmax_i`, so `Lambda = int phi(m) <V(m)> dm`
 with the per-group volumes rather than a shell decomposition behind a fitted
 mass limit. That removes `turnover_mlim` entirely along with items 1, 2 and 4.
 
+### The run itself is healthy — the problem is bias, not sampling
+
+Run to completion (`python -u`; without `-u` the output buffers and it looks
+hung, which it is not):
+
+```
+[marg] Rhat=1.005  min ESS=976  divergences=0  treedepth>=10: 0%
+```
+
+The sampler is fine. What is wrong is the answer:
+
+| param | "true" | median | sd | bias (sd) |
+|---|---|---|---|---|
+| `ms` | 13.958 | 14.286 | 0.276 | **+1.19** |
+| `lp` | −3.445 | −4.168 | 0.447 | **−1.62** |
+| `al` | −1.680 | −1.819 | 0.095 | **−1.46** |
+| `be` | 0.630 | 0.553 | 0.140 | −0.55 |
+
+M\* high, phi\* low, alpha steep — a *coherent* 1.2-1.6 sigma pull, not noise.
+That is what a model sees when it believes the sample is truncated at `mlim`
+while half of it actually lies below: the objects below the limit stop
+contributing, so the fit compensates by steepening the slope and dropping the
+normalisation.
+
+The script prints the warning itself — `N above mlim: 846 / 1833 (46.2%)` —
+right before it fits.
+
 ### Suggested order
 
 1. **Re-run with `--gama-model marg_comp`.** One flag, uses the model already
    written for the boundary problem. Establishes whether the sharp cut is the
-   whole story.
+   whole story. **Budget time**: it is much slower than `marg` — the
+   completeness integral has no lower cut, so each evaluation spans a wider
+   range. It did not finish in 50 minutes where `marg` took ~20. Iterations are
+   hardcoded at 1500/1500 (line 3662); there is no CLI flag to shorten them.
 2. **Drop `--mass-col MassA`**, or scale it by +0.315 dex, so the masses and the
    `ms` prior are on the same scale.
 3. **Replace `mlim(z)` with the per-group Vmax.** The real fix; needs a Stan
