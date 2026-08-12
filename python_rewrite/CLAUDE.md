@@ -1386,6 +1386,60 @@ not show up as a coherent shift in the HMF and should not be treated as one.
 
 ---
 
+## Two figure sets: consistent masses vs comparable masses
+
+There are two defensible ways to mass the Nessie SDSS leg, answering different
+questions. Both sets exist; neither replaces the other.
+
+| set | SDSS mass | question it answers |
+|---|---|---|
+| `*_nfw.pdf` | NFW, `--mass-mode tempel_nfw` | how does Nessie compare with **Driver's** SDSS leg, on his mass scale? |
+| `*_robotham.pdf` | Robotham+A, `--mass-mode robotham` | what does the HMF look like with **both Nessie legs on the same estimator**? |
+
+`robotham` is `mass_proxy * 13.9 / 10^masscorr`, i.e. exactly what
+`new_gama_hmf.py` line 104 does for the GAMA leg, so the two Nessie catalogues
+are then internally consistent.
+
+**Internal consistency costs external consistency.** GSR chi^2 at maxit=500:
+
+| SDSS leg | χ² |
+|---|---|
+| Tempel col15 | 244.2 |
+| Nessie, NFW | **234.6** |
+| Nessie, Robotham (as GAMA) | **719.7** |
+| Nessie, Robotham + M/L cut | 797.7 |
+| Nessie, Robotham, GS (no REFLEX) | 255.0 |
+
+The Robotham+A masses sit ~0.39 dex above Tempel's, so the SDSS points lift
+clear of the REFLEX x-ray sequence — visible directly in
+`hmf_combined_nessie_sdss_robotham.pdf`, where the purple points ride above the
+green from 13.5 to 15.0. Note the GS number (255.0, no REFLEX) is far better
+than the GSR one (719.7): it is specifically the x-ray anchor that the Robotham
+scale disagrees with, which is the same diagnosis as everywhere else in this
+file.
+
+So: quote the NFW set when comparing with Driver; show the Robotham set when the
+question is about the two Nessie catalogues on a common footing. Say which.
+
+## The reference line is fixed, and does not follow --myoption
+
+`DRIVER_ABSTRACT_FIT = (14.13, -3.96, -1.68, 0.63)` in both `combined_hmf.py`
+and `new_gama_hmf.py` — Driver's headline GSR result as quoted in his abstract
+and table 2. **Every figure draws this same curve**, whatever `--myoption` is
+set to, labelled "Driver+22 published GSR fit".
+
+It previously used `PUBLISHED_TABLE2[myoption]`, so the reference moved from
+plot to plot (GS was drawing 14.35, −4.38, −1.96, 0.60). That made figures
+non-comparable at a glance.
+
+Note the abstract states log10(phi\*) = **−3.96**, not −3.95.
+
+The *validation printout* still uses `PUBLISHED_TABLE2[myoption]`, which is a
+different question: there we check the port against his fit to the same sample
+combination. Do not unify those two.
+
+---
+
 ## Deliverables
 
 1. **GAMA-only plot** — binned points with errors, the fitted MRP with its

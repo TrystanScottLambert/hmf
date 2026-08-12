@@ -92,6 +92,14 @@ COSVAR_REFLEX = 0.05         # line 348
 DRIVER_FIT_C = "#24507a"     # the same fit run on Driver's GAMA, shown faintly
 PUBLISHED_C = "#c8781e"      # Driver+22's *published* fit, drawn in the background
 
+# Driver+22's headline result, quoted in his abstract and table 2 as the GSR
+# row: log10(M*) = 14.13, log10(phi*) = -3.96, alpha = -1.68, beta = 0.63.
+# This ONE line is drawn on every figure, whatever --myoption is set to, so the
+# reference does not move from plot to plot.  (The validation printout still
+# uses PUBLISHED_TABLE2[myoption], which is a different question -- there we are
+# checking our port against his fit to that same sample combination.)
+DRIVER_ABSTRACT_FIT = (14.13, -3.96, -1.68, 0.63)
+
 MLIMIT_GAMA = 12.7           # line 276
 MLIMIT_SDSS = 12.9           # line 278
 
@@ -345,12 +353,11 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     # Driver+22's *published* table 2 fit for this sample combination, drawn
     # first so it sits behind the data.  This is his printed answer, not our
     # refit of it -- the two are different lines and are labelled as such.
-    pub = PUBLISHED_TABLE2.get(myoption)
-    if pub is not None:
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ax.plot(xfit, np.log10(dr.mrp(xfit, pub[0], 10 ** pub[1], pub[2],
-                                          pub[3])),
-                    color=PUBLISHED_C, lw=3.2, alpha=0.9, zorder=2)
+    pub = DRIVER_ABSTRACT_FIT
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ax.plot(xfit, np.log10(dr.mrp(xfit, pub[0], 10 ** pub[1], pub[2],
+                                      pub[3])),
+                color=PUBLISHED_C, lw=3.2, alpha=0.9, zorder=2)
 
     ax.fill_between(el_x, el_lo, el_hi, color=(0.5, 0.5, 0.5, 0.10), lw=0)
     ax.plot(el_x, el_y, color="cyan", lw=1.2, zorder=2)
@@ -410,7 +417,7 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     # entries this particular combination produces -- otherwise adding one
     # (as the published fit did) pushes the last row off the bottom of the
     # axes and into the tick labels.
-    n_rows = len(keys) + 2 + (fit_par_driver is not None) + (pub is not None)
+    n_rows = len(keys) + 3 + (fit_par_driver is not None)
     y0, y_floor = -4.95, -7.62
     dy = min(0.325, (y0 - y_floor) / max(n_rows - 1, 1))
     for k, (mk, c, lab, hollow) in enumerate(keys):
@@ -433,11 +440,10 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
                 ls=(0, (7, 2, 1.5, 2)), alpha=0.75)
         ax.text(12.95, yy, " same fit using Driver+22 GAMA", va="center",
                 fontsize=8, color=DRIVER_FIT_C)
-    if pub is not None:
-        yy -= dy
-        ax.plot([12.8, 12.9], [yy, yy], color=PUBLISHED_C, lw=3.2, alpha=0.9)
-        ax.text(12.95, yy, f" Driver+22 published fit ({myoption})", va="center",
-                fontsize=8, color=PUBLISHED_C)
+    yy -= dy
+    ax.plot([12.8, 12.9], [yy, yy], color=PUBLISHED_C, lw=3.2, alpha=0.9)
+    ax.text(12.95, yy, " Driver+22 published GSR fit", va="center",
+            fontsize=8, color=PUBLISHED_C)
     yy -= dy
     ax.plot([12.8, 12.9], [yy, yy], color="black", ls="--", lw=2)
     ax.text(12.95, yy, " LCDM expectation from MRP", va="center", fontsize=8)
@@ -615,8 +621,12 @@ def main():
                                 vmax_floor_frac=args.vmax_floor,
                                 mass_mode=args.mass_mode,
                                 mass_shift=args.mass_shift)
-            sdss_label = ("SDSS (Nessie, NFW mass)"
-                          if args.mass_mode == "tempel_nfw" else "SDSS (Nessie)")
+            sdss_label = {
+                "tempel_eq8": "SDSS (Nessie)",
+                "tempel_nfw": "SDSS (Nessie, NFW mass)",
+                "robotham": "SDSS (Nessie, Robotham mass as GAMA)",
+                "shift": f"SDSS (Nessie, {args.mass_shift:+.3f} dex)",
+            }[args.mass_mode]
         else:
             s = pd.read_csv(args.sdss)
             sdss_label = "SDSS (file)"
