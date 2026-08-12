@@ -539,6 +539,48 @@ the Nessie SDSS points.**
 Anything reporting `convergence = 1` should be re-run at maxit 2000-5000 before
 it is believed.
 
+### GS — dropping REFLEX II entirely
+
+`--myoption GS` fits GAMA + SDSS only. REFLEX and 2PIGG are still *plotted*, as
+Driver plots things he does not fit; the legend reads "Best fit MRP function to
+GS".
+
+| figure | GAMA | SDSS fitted |
+|---|---|---|
+| `hmf_combined_nessie_GS_sdss.pdf` | Nessie | Nessie |
+| `hmf_combined_nessie_GS.pdf` | Nessie | Tempel+14 |
+
+At Driver's `maxit=500`, seed 10:
+
+| | logM\* | log φ\* | α | β | χ² | pts |
+|---|---|---|---|---|---|---|
+| GS, SDSS = Nessie | 13.735 | −3.383 | −1.339 | 0.511 | 188.3 | 43 |
+| GS, SDSS = Tempel | 14.076 | −3.950 | −1.863 | 0.558 | 152.2 | 37 |
+
+The configuration itself is sound — run on Driver's GAMA + his SDSS it
+reproduces published GS (14.35, −4.38, −1.96, 0.60) as 14.265, −4.225, −1.915,
+0.576, worst parameter 0.155.
+
+**But without REFLEX nothing anchors the fit, for either SDSS catalogue.** This
+is the sharpest demonstration of "The central finding" in the file:
+
+| config | maxit=500 | maxit=5000 | fevals | conv |
+|---|---|---|---|---|
+| GS, SDSS = Tempel | 14.076, conv=1 | **10.541**, α=−0.841, χ² 133 | 1497 | 0 |
+| GS, SDSS = Nessie | 13.735, conv=1 | **7.044**, α=+0.739, χ² 150 | 5001 | **1** |
+| GSR, SDSS = Tempel | 14.362, conv=**0** | **14.362, identical** | 247 | 0 |
+| GSR, SDSS = Nessie | 13.967, conv=1 | 12.431, α=−0.879 | 895 | 0 |
+
+Both GS fits stop on the budget and, released, collapse to nonsense with a lower
+χ² — Tempel's to logM\* 10.5, Nessie's to 7.0, where it has still not converged
+after 5001 evaluations. **`GSR` with Driver's Tempel SDSS is the only
+configuration anywhere in this project with a genuine interior minimum.**
+
+So the two GS figures are honest *figures* — identical pipeline, correct points,
+correct errors — but their fitted curves are `maxit=500` artefacts and neither is
+quotable. The x-ray anchor is not optional; it is the whole reason the combined
+fit works.
+
 **Still to do:** why the Nessie SDSS leg fails to anchor. The excess at
 13.0-14.3 relative to Tempel and the extra 0.6 dex of high-mass reach are the
 obvious suspects; the `--sdss-max` scan shows it is not the reach alone.
@@ -554,5 +596,10 @@ obvious suspects; the `--sdss-max` scan shows it is not the reach alone.
    in the SDSS leg: `hmf_combined_nessie.pdf` (SDSS = Tempel+14) and
    `hmf_combined_nessie_sdss.pdf` (SDSS = Nessie). Only the first carries a
    quotable fit — see "In the combined fit".
+3. **GAMA + SDSS only, no REFLEX** (`--myoption GS`) —
+   `hmf_combined_nessie_GS_sdss.pdf` (SDSS = Nessie) and
+   `hmf_combined_nessie_GS.pdf` (SDSS = Tempel+14). Points are sound; neither
+   fit is quotable, because dropping the x-ray anchor makes the fit ill-posed
+   for both catalogues. See "GS — dropping REFLEX II entirely".
 
 Keep them as separate figures.
