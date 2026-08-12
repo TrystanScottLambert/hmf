@@ -1248,6 +1248,102 @@ over a wide range produces garbage rows rather than errors.
 
 ---
 
+## The 14.2 bin — solved
+
+The bin sat at log phi = −3.464 against Driver's −4.204, with **one group
+carrying 38% of it**. The cause is now identified and the fix is a one-line
+cut.
+
+### What group 205509 actually is
+
+N_fof = 5 at z = 0.019, sigma = 482 km/s, logM = 14.26, vmax/vlimit = 2.4e−3.
+Its five members:
+
+| M_r | dv (km/s) |
+|---|---|
+| −19.54 | −559 |
+| −15.34 | −300 |
+| −17.17 | 0 |
+| −15.88 | +327 |
+| −18.61 | +344 |
+
+One bright galaxy and four dwarfs spread over 900 km/s. **At z = 0.019 GAMA
+reaches M_r ~ −15**, so a genuine 10^14.3 halo here would have *hundreds* of
+members, not five. The dispersion is being set by two galaxies at the extremes
+of a loose association. 205469 (N = 8, dv −627 to +557, all dwarfs) is the same
+story.
+
+So the mass is not real — and because the group sits at z = 0.019 its Vmax is
+0.2% of the survey, giving it a colossal 1/Vmax weight. A wrong mass *and* an
+extreme weight.
+
+### The diagnostic: mass-to-light
+
+M/L is the one quantity that says whether a *mass* is credible independently of
+its Vmax. Real systems sit near log10(M/L_r) ~ 2.5-3.5 and the ratio rises
+smoothly with mass, so the residual against a running median is a clean, nearly
+mass-independent outlier statistic.
+
+| group | share of the 14.2 bin | log10(M/L) | median at that mass |
+|---|---|---|---|
+| 205509 | **37.7%** | **4.38** | 3.22 |
+| 205469 | **13.5%** | **4.70** | 3.22 |
+| 301298 | 5.9% | 4.17 | 3.22 |
+
+Those three are 57% of the bin, at 10-30x the M/L of comparable systems.
+
+### The cut
+
+`ml_excess()` and `apply_ml_cut()` in `new_gama_hmf.py`, exposed as `--ml-cut`
+on `new_gama_hmf.py` and `combined_hmf.py`. **1.0 dex is the recommended
+value** — well beyond the 97.5th percentile of the excess distribution (+0.60),
+so it removes only extreme outliers.
+
+| cut | groups dropped | 14.2 phi | 14.0 phi | 13.0 phi |
+|---|---|---|---|---|
+| none | 0 | −3.464 | −4.118 | −3.549 |
+| **1.0** | **5 of 1833** | **−3.993** | −4.070 | −3.510 |
+| 0.8 | 11 | −4.081 | −4.075 | −3.498 |
+| 0.6 | 47 | −4.104 | −4.098 | −3.493 |
+
+Surgical: 5 groups (0.27%) move the 14.2 bin by 0.53 dex while every other bin
+moves by <= 0.05.
+
+**It is not forcing agreement.** The same cut on Driver's v10 removes 1 group
+and changes his 14.2 bin by 0.001 dex — his catalogue does not have this
+pathology, so the cut is removing something specific to Nessie. Apply it to
+both regardless, so the comparison stays fair.
+
+### Why this rather than a Vmax floor
+
+The floor caps the *weight* of a group whose mass is still believed, and it is a
+biased estimator whose bias is mass-dependent (see "The Vmax floor"). It also
+does not work here: even at a floor of 0.05, which clips 95 groups, the bin only
+reaches −3.945. The M/L cut removes objects whose mass is not credible in the
+first place, which is the actual problem.
+
+### A mass shift is NOT the residual explanation
+
+After the cut, Nessie's 14.0 bin sits 0.215 dex *below* Driver's and its 14.2
+bin 0.212 dex *above*, which looks like the function displaced along the mass
+axis. **Tested and refuted.** Scanning a uniform shift applied to the Nessie
+masses, agreement is *best with no shift*:
+
+| shift | rms diff, 12.8-15.0 |
+|---|---|
+| **0.00** | **0.150** |
+| −0.05 | 0.239 |
+| −0.10 | 0.319 |
+| −0.20 | 0.356 |
+
+The two binned HMFs agree to 0.150 dex rms with medians of −0.058 (13-14) and
++0.082 (14-15) — small and of *opposite* sign, i.e. scatter, not a systematic
+offset. The earlier note that Nessie GAMA masses run +0.176 dex high at
+N_fof = 5 was a population median across two different group finders; it does
+not show up as a coherent shift in the HMF and should not be treated as one.
+
+---
+
 ## Deliverables
 
 1. **GAMA-only plot** — binned points with errors, the fitted MRP with its

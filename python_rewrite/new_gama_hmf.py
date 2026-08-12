@@ -223,6 +223,68 @@ PUBLISHED_C = "#c8781e"                        # Driver+22's published fit
 NEW_C = "#c2185b"
 
 
+MSUN_R = 4.65      # absolute r-band magnitude of the Sun, for M/L only
+
+
+def ml_excess(g3c, nmin=15, edges=None):
+    """dex by which each group's mass-to-light ratio exceeds the running median
+    at the same mass.
+
+    A group's M/L is the one quantity that says whether its *mass* is credible
+    independently of its Vmax.  Real clusters sit near log10(M/L_r) ~ 2.5-3.5
+    and the ratio rises smoothly with mass, so the residual against a running
+    median is a clean, nearly mass-independent outlier statistic.
+
+    This exists because of GAMA 205509: N_fof = 5 at z = 0.019 with
+    sigma = 482 km/s, giving logM = 14.26 from one M_r = -19.5 galaxy and four
+    dwarfs spread over 900 km/s.  At that redshift GAMA reaches M_r ~ -15, so a
+    genuine 10^14.3 halo would have hundreds of members, not five.  Its
+    log10(M/L) is 4.38 against a median of 3.22 for its mass -- a factor of 14.
+    Sitting at vmax/vlimit = 2.4e-3 it then carried **38% of the 14.2 bin**.
+
+    Only the *relative* excess is used, so the absolute M/L zero point (and
+    hence ``MSUN_R``) does not matter.
+    """
+    lm = np.log10(g3c.MassAfunc.values)
+    lum = 10 ** (-0.4 * (g3c.TotRmag.values - MSUN_R))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lml = np.log10(g3c.MassAfunc.values / lum)
+    if edges is None:
+        edges = np.arange(12.4, 15.9, 0.2)
+    cen, med = [], []
+    for a, b in zip(edges[:-1], edges[1:]):
+        m = (lm >= a) & (lm < b) & np.isfinite(lml)
+        if m.sum() > nmin:
+            cen.append(0.5 * (a + b))
+            med.append(np.median(lml[m]))
+    if len(cen) < 2:
+        return np.zeros(len(g3c))
+    return lml - np.interp(lm, cen, med)
+
+
+def apply_ml_cut(g3c, thresh, verbose=True):
+    """Drop groups whose M/L exceeds the running median by more than ``thresh``.
+
+    ``thresh = 1.0`` is the recommended value: an order of magnitude more mass
+    per unit light than comparable systems, well beyond the 97.5th percentile
+    of the excess distribution (+0.60), so it removes only extreme outliers --
+    5 of 1833 groups.  It is a statement about the mass being wrong, which is
+    why it is preferred to a Vmax floor: the floor caps the *weight* of a group
+    whose mass is still believed, and is a biased estimator, while this removes
+    objects whose mass is not credible in the first place.
+    """
+    if thresh is None:
+        return g3c, None
+    ex = ml_excess(g3c)
+    bad = ex > thresh
+    if verbose:
+        print(f"  M/L cut > {thresh} dex           : {int(bad.sum())} of "
+              f"{len(g3c)} groups dropped")
+    flagged = g3c[bad].copy()
+    flagged["ml_excess"] = ex[bad]
+    return g3c[~bad].copy(), flagged
+
+
 def plot_comparison(results, mrpx, mrpy, factor, outfile):
     import matplotlib
     matplotlib.use("Agg")
@@ -374,6 +436,12 @@ def print_binned_comparison(results):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--ml-cut", type=float, default=None,
+                   help="drop groups whose mass-to-light ratio exceeds the "
+                        "running median at their mass by more than this many "
+                        "dex.  1.0 is the recommended value; it removes 5 of "
+                        "1833 groups and fixes the 14.2 bin.  Applied to BOTH "
+                        "catalogues so the comparison stays fair.")
     p.add_argument("--out", default="hmf_old_vs_new.pdf")
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--nmc-edb", type=int, default=1001)

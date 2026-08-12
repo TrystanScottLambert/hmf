@@ -507,6 +507,13 @@ def main():
                         "Driver's SDSS leg uses.")
     p.add_argument("--mass-shift", type=float, default=0.0,
                    help="dex shift, with --mass-mode shift")
+    p.add_argument("--ml-cut", type=float, default=None,
+                   help="drop groups whose mass-to-light ratio exceeds the "
+                        "running median at their mass by more than this many "
+                        "dex (1.0 recommended).  Targets the mass being wrong "
+                        "rather than capping the weight of a mass that is "
+                        "believed, so it is preferred to --vmax-floor, which "
+                        "is a biased estimator.  Applied to both GAMA legs.")
     p.add_argument("--vmax-floor", type=float, default=1e-3,
                    help="minimum Vmax as a fraction of the survey volume, i.e. "
                         "a cap on 1/Vmax.  Driver's own vlimitmin is 1e-3, "
@@ -549,6 +556,8 @@ def main():
             tag += "_nosdss"
         elif args.sdss != "auto":
             tag += "_sdssfile"
+        if args.ml_cut is not None:
+            tag += f"_mlcut{args.ml_cut:g}"
         if args.mass_mode != "tempel_eq8":
             tag += f"_{args.mass_mode.replace('tempel_', '')}"
         if args.vmax_floor != 1e-3:
@@ -573,11 +582,13 @@ def main():
     # --- GAMA: new Nessie DMU (fitted) and Driver's (comparison only) --------
     g_new, v_new = ng.build_groups_new(verbose=False,
                                        vmax_floor_frac=args.vmax_floor)
+    g_new, _ = ng.apply_ml_cut(g_new, args.ml_cut, verbose=args.ml_cut is not None)
     gset, b_new = gama_set(g_new, v_new, ng.NEW_AREA, args.seed, args.nmc_edb,
                            args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
     g_old, v_old = dr.build_groups("../data/G3CFoFGroupv10.fits",
                                    "../data/GAMAGalsInGroups.csv", verbose=False,
                                    vmax_floor_frac=args.vmax_floor)
+    g_old, _ = ng.apply_ml_cut(g_old, args.ml_cut, verbose=False)
     oset, b_old = gama_set(g_old, v_old, AREA_GAMA_DRIVER, args.seed, args.nmc_edb,
                            args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
     print(f"  GAMA (Nessie)  : {len(gset[0])} bins, area {ng.NEW_AREA} deg^2, "
