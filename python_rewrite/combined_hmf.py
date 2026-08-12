@@ -90,6 +90,7 @@ VOLUME_REFLEXII = 13000000.0  # line 265, hardcoded
 ALPHA_FIX = -1.864908        # line 257, used by myoption="FIX"
 COSVAR_REFLEX = 0.05         # line 348
 DRIVER_FIT_C = "#24507a"     # the same fit run on Driver's GAMA, shown faintly
+PUBLISHED_C = "#c8781e"      # Driver+22's *published* fit, drawn in the background
 
 MLIMIT_GAMA = 12.7           # line 276
 MLIMIT_SDSS = 12.9           # line 278
@@ -341,6 +342,16 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
         ax.add_collection(LineCollection(segs, colors=[cf], linewidths=0.6,
                                          alpha=0.01))
 
+    # Driver+22's *published* table 2 fit for this sample combination, drawn
+    # first so it sits behind the data.  This is his printed answer, not our
+    # refit of it -- the two are different lines and are labelled as such.
+    pub = PUBLISHED_TABLE2.get(myoption)
+    if pub is not None:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ax.plot(xfit, np.log10(dr.mrp(xfit, pub[0], 10 ** pub[1], pub[2],
+                                          pub[3])),
+                    color=PUBLISHED_C, lw=3.2, alpha=0.9, zorder=2)
+
     ax.fill_between(el_x, el_lo, el_hi, color=(0.5, 0.5, 0.5, 0.10), lw=0)
     ax.plot(el_x, el_y, color="cyan", lw=1.2, zorder=2)
     with np.errstate(divide="ignore"):
@@ -395,7 +406,13 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     keys += [("D", "forestgreen",
               "REFLEX II, x-ray, z~0.1 (Bohringer et al. 2017)", False),
              ("o", "grey", "2PIGG z < 0.12 (Eke et al. 2008)", False)]
-    y0, dy = -5.15, 0.325
+    # The legend is hand-laid-out, so its spacing has to adapt to how many
+    # entries this particular combination produces -- otherwise adding one
+    # (as the published fit did) pushes the last row off the bottom of the
+    # axes and into the tick labels.
+    n_rows = len(keys) + 2 + (fit_par_driver is not None) + (pub is not None)
+    y0, y_floor = -4.95, -7.62
+    dy = min(0.325, (y0 - y_floor) / max(n_rows - 1, 1))
     for k, (mk, c, lab, hollow) in enumerate(keys):
         yy = y0 - dy * k
         ax.plot([12.85], [yy], marker=mk, ms=5, color=c,
@@ -416,6 +433,11 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
                 ls=(0, (7, 2, 1.5, 2)), alpha=0.75)
         ax.text(12.95, yy, " same fit using Driver+22 GAMA", va="center",
                 fontsize=8, color=DRIVER_FIT_C)
+    if pub is not None:
+        yy -= dy
+        ax.plot([12.8, 12.9], [yy, yy], color=PUBLISHED_C, lw=3.2, alpha=0.9)
+        ax.text(12.95, yy, f" Driver+22 published fit ({myoption})", va="center",
+                fontsize=8, color=PUBLISHED_C)
     yy -= dy
     ax.plot([12.8, 12.9], [yy, yy], color="black", ls="--", lw=2)
     ax.text(12.95, yy, " LCDM expectation from MRP", va="center", fontsize=8)

@@ -219,6 +219,7 @@ def build_groups_old_recomputed_zmax(verbose=True):
 # ---------------------------------------------------------------------------
 
 OLD_C = (100 / 255, 149 / 255, 237 / 255)      # Driver's cornflower
+PUBLISHED_C = "#c8781e"                        # Driver+22's published fit
 NEW_C = "#c2185b"
 
 
@@ -257,6 +258,16 @@ def plot_comparison(results, mrpx, mrpy, factor, outfile):
                 segs.append(np.column_stack([xfit[m], yy[m]]))
         ax.add_collection(LineCollection(segs, colors=[res["colour"]],
                                          linewidths=0.6, alpha=0.012))
+
+    # Driver+22's published GAMA5 fit (table 2), behind the data for reference.
+    # This is his printed answer, not our refit of his catalogue.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ax.plot(xfit, np.log10(mrp(xfit, dr.PUBLISHED_FIT["logmstar"],
+                                   10 ** dr.PUBLISHED_FIT["logphistar"],
+                                   dr.PUBLISHED_FIT["alpha"],
+                                   dr.PUBLISHED_FIT["beta"])),
+                color=PUBLISHED_C, lw=3.2, alpha=0.9, zorder=2,
+                label="Driver+22 published fit (GAMA5)")
 
     with np.errstate(divide="ignore"):
         ax.plot(mrpx - 0.08, np.log10(mrpy) - np.log10(factor) + 0.08,

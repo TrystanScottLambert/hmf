@@ -251,6 +251,25 @@ Table 2 is his fits for every sample combination. Extract with
 
 ### Figures
 
+**Every deliverable figure carries Driver+22's published best fit in the
+background**, in tan (`PUBLISHED_C = "#c8781e"`, lw 3, alpha 0.55, lowest
+zorder). It is his *printed* answer from table 2 — `PUBLISHED_TABLE2[myoption]`
+for the combined figures, `dr.PUBLISHED_FIT` (GAMA5) for the GAMA-only one — and
+is a **different line** from the existing dash-dot "same fit using Driver+22
+GAMA", which is our refit of his catalogue. Both are labelled so they cannot be
+confused.
+
+`combined_hmf.plot_combined` lays its legend out by hand, so the row spacing is
+computed from the number of entries (`n_rows`, `y0 = -4.95`, `y_floor = -7.62`).
+Adding the published entry as a fixed-`dy` row pushed the last line off the axes
+and into the tick labels. If you add another legend row, that arithmetic is what
+keeps it on the canvas — do not hardcode `dy` again.
+
+`driver_fig4.pdf` deliberately does **not** get the extra line: it is the
+reproduction of Driver's own figure, and our fit already matches his to 10
+significant figures, so a second curve would be indistinguishable noise.
+
+
 `driver_fig4.pdf` (reproduction), `hmf_gama_only_nessie.pdf` (old vs new,
 GAMA-only, with MC draws), `hmf_combined_nessie.pdf` (combined, with Driver's fit
 faint behind), `hmf_robust*.pdf`.
