@@ -152,7 +152,7 @@ def _vmax_from_members(g3c, zmax_by_group, area, verbose=True, vmax_floor_frac=1
 
 
 def build_groups_new(group_file=GROUPS_NEW, gal_file=GALS_NEW, verbose=True,
-                     vmax_floor_frac=1e-3):
+                     vmax_floor_frac=1e-3, mass_mode="robotham"):
     """The new DMU, put through Driver's selection and Vmax construction."""
     g = Table.read(group_file).to_pandas()
     g["GAMARegion"] = g.GAMARegion.str.decode("utf-8") if g.GAMARegion.dtype == object \
@@ -186,6 +186,23 @@ def build_groups_new(group_file=GROUPS_NEW, gal_file=GALS_NEW, verbose=True,
         by = g3c.GAMARegion.value_counts().reindex(NEW_REGIONS, fill_value=0)
         print("  by region              : "
               + ", ".join(f"{k} {int(v)}" for k, v in by.items()))
+    if mass_mode == "tempel_nfw":
+        # Same mass recipe as the Nessie SDSS leg: Tempel eq. 8 with the
+        # mass-dependent NFW kappa, sigma_v = sqrt(3) sigma_1D, and sigma_sky
+        # measured from the members.  Nessie's gapper dispersion is kept, so
+        # only the *mass formula* changes.  Note this drops the masscorr
+        # multiplicity debiasing, matching Tempel, who applies none.
+        sk = sigma_sky_gama(g3c, gal_file, verbose=verbose)
+        g3c = g3c.copy()
+        g3c["MassAfunc"] = nfw_mass_gama(g3c, sk)
+        g3c = g3c[np.isfinite(g3c.MassAfunc) & (g3c.MassAfunc > 1e1)]
+        if verbose:
+            lm = np.log10(g3c.MassAfunc.values)
+            print(f"  GAMA masses -> Tempel NFW   : median {np.median(lm):.3f}, "
+                  f"max {lm.max():.2f}  ({len(g3c)} groups)")
+    elif mass_mode != "robotham":
+        raise ValueError(f"unknown mass_mode {mass_mode!r}")
+
     return _vmax_from_members(g3c, zmax_by_group, NEW_AREA, verbose,
                               vmax_floor_frac)
 
@@ -223,6 +240,62 @@ PUBLISHED_C = "#c8781e"                        # Driver+22's published fit
 # his abstract / table 2 GSR row -- one fixed reference line on every figure
 DRIVER_ABSTRACT_FIT = (14.13, -3.96, -1.68, 0.63)
 NEW_C = "#c2185b"
+
+
+def sigma_sky_gama(g3c, gal_file=GALS_NEW, verbose=True):
+    """Tempel+2014 eq. 4 for the GAMA groups, from their member positions.
+
+    ``sigma_sky^2 = 1/(2 n (1+z_m)^2) * sum r_i^2``, r_i the projected distance
+    from the group centre.  Computed here in comoving Mpc with the **pipeline**
+    cosmology (``dr.co_dist``, ho = 67.37, Omega_M = 0.3147), so it is
+    consistent with the volumes.
+
+    Note the Nessie SDSS leg computes its sky dispersion with Nessie's own
+    h = 0.7 cosmology, a ~4% distance difference and so ~0.017 dex in mass.
+    Negligible next to everything else, but it is a real inconsistency between
+    the two legs and is recorded rather than hidden.
+    """
+    gal = Table.read(gal_file).to_pandas()
+    gal = gal[gal.GroupID.isin(set(g3c.GroupID.values))]
+    cen = g3c.set_index("GroupID")[["IterCenRA", "IterCenDec", "Zfof"]]
+    out = {}
+    for gid, m in gal.groupby("GroupID"):
+        if gid not in cen.index:
+            continue
+        c = cen.loc[gid]
+        zm = float(np.mean(m.Z.values))
+        d = float(dr.co_dist(np.array([zm]))[0])          # comoving Mpc
+        dra = (m.RAcen.values - c.IterCenRA) * np.cos(np.radians(c.IterCenDec))
+        ddec = m.Deccen.values - c.IterCenDec
+        r = np.radians(np.hypot(dra, ddec)) * d
+        out[gid] = np.sqrt(np.sum(r ** 2) / (2.0 * len(m) * (1.0 + zm) ** 2))
+    sk = g3c.GroupID.map(out).values.astype(float)
+    if verbose:
+        ok = np.isfinite(sk)
+        print(f"  sigma_sky from members      : {int(ok.sum())}/{len(g3c)} "
+              f"groups, median {np.nanmedian(sk):.4f} Mpc")
+    return sk
+
+
+def nfw_mass_gama(g3c, sigma_sky):
+    """Tempel eq. 8 with the NFW kappa, for the GAMA groups.
+
+    Same recipe as ``nessie_sdss_hmf`` ``--mass-mode tempel_nfw``: sigma_v is
+    the 3D dispersion ``sqrt(3) * sigma_1D`` (hence the factor 3), and kappa is
+    the mass-dependent NFW value calibrated against Tempel's published col15.
+
+    ``VelDisp`` is Nessie's gapper 1D dispersion, so this changes the *mass
+    formula* only -- the dispersion estimator is untouched.
+    """
+    import nessie_sdss_hmf as nsd
+    sig = g3c.VelDisp.values.astype(float)
+    m = np.full(len(g3c), 1e13)
+    for _ in range(40):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            k = np.interp(np.log10(np.where(m > 0, m, np.nan)),
+                          nsd.KAPPA_NFW_LOGM, nsd.KAPPA_NFW_VAL)
+        m = 2.325e12 * k * sigma_sky * 3.0 * (sig / 100.0) ** 2
+    return m
 
 
 MSUN_R = 4.65      # absolute r-band magnitude of the Sun, for M/L only
