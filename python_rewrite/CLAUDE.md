@@ -778,11 +778,34 @@ shallower than Driver's). Untested, and the obvious next thing to test.
   (`make_gama_dmu/config.py` line 9)
 * Nessie SDSS: h = 0.7, Ω_M = 0.30 (recovered from `co_dist` to 4e−8)
 
-Each leg's h conversion is applied correctly for its own catalogue — `(100/ho)`
-inside `mymass` for GAMA, `(70/ho)` for SDSS — so the masses do land in the same
-ho = 67.37 system. But the Ω_M difference (0.25 vs 0.30) propagates into radii
-and volumes at the per-cent level and is not corrected anywhere. Worth
-straightening out before the two Nessie legs are quoted against each other.
+**The h scaling is handled correctly and every leg lands in the same
+ho = 67.37 system:**
+
+| leg | radius units | conversion | why |
+|---|---|---|---|
+| Nessie GAMA | `Rad50` in Mpc/h (DMU built at H0 = 100) | `(100/ho)` inside `mymass` | M ∝ R, and R[Mpc/h] → R[Mpc] is `×100/ho` |
+| Nessie SDSS | `r50`, `sky_disp` in physical Mpc at h = 0.7 | `(70/ho)` | D ∝ 1/H0 at fixed z and angle |
+| Tempel | Tempel's own, h = 0.678 | `(67.8/ho)` | Driver's, unchanged |
+
+**The Ω_M difference is not corrected, but it is negligible** — an earlier
+version of this file called it "worth straightening out", which overstated it.
+Mass goes as radius, radius as distance, so the error is `d log10 D` at the
+group redshift:
+
+| leg | Ω_M used | at z | error |
+|---|---|---|---|
+| Nessie GAMA | 0.25 vs 0.3147 | 0.05 → 0.25 | +0.001 → **+0.005 dex** |
+| Nessie SDSS | 0.30 vs 0.3147 | 0.02 → 0.08 | +0.0001 → **+0.0004 dex** |
+
+At most 0.005 dex, against a 0.285 dex estimator offset — two orders of
+magnitude smaller than the effect that actually matters. Not worth fixing.
+
+**Volumes are all in one cosmology.** Every `vmax`, `vlimit` and `volumesdss`
+comes from `co_dist`/`co_vol` at ho = 67.37, Ω_M = 0.3147, for every leg. The
+new GAMA `zmax` is derived in the DMU's own cosmology, but that is correct
+rather than inconsistent: it inverts the DMU's own selection, and a redshift at
+which a galaxy drops out of a flux-limited sample is not cosmology-dependent
+(verified to 3e-6 mag).
 
 Also note `make_gama_dmu/config.py` sets `MASS_A = 10`, where Driver uses
 A = 13.9. The DMU's own `MassA`/`MassAfunc` columns therefore differ from what
