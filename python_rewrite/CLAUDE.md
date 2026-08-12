@@ -89,6 +89,7 @@ difference being measured.
 | `nessie_sdss_hmf.py` | Nessie SDSS through the identical method; generates `sdsshmfNessie5.csv` |
 | `scan_nessie_sdss.py` | Seed and penalty-range scans for the SDSS legs |
 | `vuvuzela.py` | SDSS-specific version of Driver's fig. 3 mass-error calibration; also `--mass-audit` |
+| `compare_dispersion_estimators.py` | gapper vs Tempel's rms at fixed everything else; referee figure |
 | `combined_hmf.py` | Port of `allhmf.r`; the GSR fit and Ω_M inset |
 | `robust_hmf.py` | Bootstrap errors, Vmax floor scan, flagged-group table |
 
@@ -1108,6 +1109,25 @@ Two conclusions:
   which is the two estimators diverging where the statistics are poor.
 
 That accounts for ~+0.107 dex of the mass offset, since M goes as sigma^2.
+
+`compare_dispersion_estimators.py` isolates exactly this for a referee:
+`dispersion_estimator_comparison.pdf` puts NFW mass from the gapper against NFW
+mass from eq. 3, on the **same groups, same members, same sigma_sky, same
+kappa(M)** -- the only thing changing is sigma_v. 4000 identical-membership
+groups, coloured by multiplicity:
+
+| N | median Δlog10 M |
+|---|---|
+| 5-6 | **+0.141** |
+| 7-9 | +0.095 |
+| 10-14 | +0.065 |
+| 15-24 | +0.038 |
+| 25+ | +0.026 |
+| **all** | **+0.108** |
+
+The N-dependence is the whole story, and it is monotonic: the two estimators
+agree for rich groups and diverge where the statistics are poor. Since the SDSS
+sample is dominated by N = 5-6, the population offset lands at +0.108.
 
 ### An unresolved units problem in sigma_sky
 
