@@ -540,9 +540,11 @@ budget, the two behave completely differently:
 | Nessie capped 15.05 | 14.064, conv=1 | **9.844**, α=+0.278 | 2769 | 186.6 |
 | Nessie capped 15.0 | 13.729, conv=1 | **12.647**, α=−0.822 | 749 | 186.0 |
 
-Tempel's SDSS gives a **genuine interior minimum** — converged in 247 fevals,
-bit-identical at maxit 500 and 5000. Every Nessie SDSS variant stops on the
-budget at 500 and, released, **runs away to low M\* with a lower χ²** — the
+Tempel's SDSS gives an interior minimum that is stable under the budget —
+converged in 247 fevals, bit-identical at maxit 500 and 5000. **It is not the
+global minimum**; see "Multi-start: none of these are global minima".
+
+Every Nessie SDSS variant stops on the budget at 500 and, released, **runs away to low M\* with a lower χ²** — the
 exact signature "The central finding" describes for GAMA-only. Capping the range
 does not rescue it; capped at 15.05 it goes further, to logM\* = 9.84.
 
@@ -597,8 +599,9 @@ is the sharpest demonstration of "The central finding" in the file:
 
 Both GS fits stop on the budget and, released, collapse to nonsense with a lower
 χ² — Tempel's to logM\* 10.5, Nessie's to 7.0, where it has still not converged
-after 5001 evaluations. **`GSR` with Driver's Tempel SDSS is the only
-configuration anywhere in this project with a genuine interior minimum.**
+after 5001 evaluations. **`GSR` with Driver's Tempel SDSS is the only configuration that is stable
+under the optimiser budget** — but multi-start shows even it is only a local
+minimum (see below).
 
 So the two GS figures are honest *figures* — identical pipeline, correct points,
 correct errors — but their fitted curves are `maxit=500` artefacts and neither is
@@ -986,6 +989,58 @@ The remainder is the small-N gapper bias and the mass dependence of kappa.
 `--mass-mode tempel_nfw` applies both corrections, putting the Nessie SDSS leg
 on the same footing as Driver's `col15`. It is opt-in; `tempel_eq8` remains the
 default so nothing already validated moves.
+
+---
+
+## Multi-start: none of these are global minima
+
+`conv = 0` means the simplex stopped, not that it found the best answer. Every
+convergence claim in this file was made from Driver's single Murray+21 start
+point. Restarting elsewhere (GSR, seed 10, maxit 5000):
+
+| SDSS leg | start M\* | logM\* | α | χ² |
+|---|---|---|---|---|
+| Tempel col15 | Murray+21 | 14.362 | −1.807 | 244.17 |
+| Tempel col15 | 13.0 | 14.385 | −1.922 | 257.65 |
+| **Tempel col15** | **12.0** | **12.535** | −1.077 | **243.61** |
+| Nessie → NFW | Murray+21 | 14.287 | −1.683 | 237.71 |
+| Nessie → NFW | 13.0 | 14.373 | −1.914 | 283.01 |
+| **Nessie → NFW** | **12.0** | **11.023** | −0.325 | **201.29** |
+
+**Even Driver's own GSR configuration has a lower-χ² solution at low M\***
+(243.61 against 244.17). The margin is only 0.56, so the two basins are close to
+degenerate — which is why it looked stable. For the corrected Nessie leg the
+low-M\* basin is preferred by 36 in χ², decisively.
+
+The same knife-edge shows in a uniform mass shift. At maxit 5000 every shift
+"converges", but bimodally and non-monotonically:
+
+| shift | logM\* | χ² | | shift | logM\* | χ² |
+|---|---|---|---|---|---|---|
+| 0.000 | 12.431 | 241.1 | | −0.080 | 11.009 | 230.8 |
+| −0.020 | 9.710 | 214.4 | | −0.100 | 11.350 | 223.9 |
+| −0.040 | 12.073 | 230.6 | | −0.150 | **14.290** | 269.4 |
+| −0.062 | **14.287** | 237.0 | | −0.200 | **14.296** | 275.9 |
+
+Landing at ~14.29 versus ~11 depends on where you start and how far the mass
+scale moved, not on which fits better — the low-M\* answers consistently have
+the *lower* χ².
+
+**So the mass corrections do not fix the ill-posedness.** What
+`--mass-mode tempel_nfw` does is make the high-M\* basin reachable and stable
+from Driver's standard start point, giving logM\* = 14.287, α = −1.683 — which
+sits essentially on his published 14.13, −1.68. That is a meaningful result
+about *consistency with Driver*, but it is not evidence that 14.29 is the best
+fit to the data.
+
+This is the same story as "The central finding", now shown to apply to the
+combined fit as well as the GAMA-only one: `maxit = 500` from Murray+21 is an
+accidental regulariser that keeps the answer physical. Driver's published
+numbers rest on it, and so does any number we quote by the same route.
+
+Below start M\* ≈ 11 the penalty term overflows and χ² returns ~1e35 after a
+handful of evaluations. Numerical, not physical, but it means naive multi-start
+over a wide range produces garbage rows rather than errors.
 
 ---
 
