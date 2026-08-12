@@ -848,17 +848,11 @@ excluded by construction. The decomposition is exact per group (residual median
 | 15-24 | +0.020 | +0.148 |
 | 25+ | **+0.007** | **+0.101** |
 
-**1. A constant ~+0.10 dex floor.** It survives at N ≥ 25 where the dispersions
-agree to 1.6%, so it is not a σ effect. It is the `grav_rad` coefficient:
-Nessie hardcodes **4.582 × sky_disp** (`fof/src/group_properties.rs`, in
-`temple_mass` and in the catalogue build) where Tempel effectively uses
-**3.914**. That constant was recovered by inverting Tempel's own eq. 8 against
-his published σ (`col12`) and sky dispersion (`col13`); the ratio scatter is
-0.048, so it is a genuine constant and not a fit. log10(4.582/3.914) = +0.068,
-with the remainder from a residual difference in the sky-dispersion measure
-itself (+0.054 median).
+**1. A constant ~+0.10 dex floor.** It survives at N >= 25 where the dispersions
+agree to 1.6%, so it is not a sigma effect. `tempel2014.pdf` settles what it is,
+and it is **two** errors that partly cancel — see "Hernquist vs NFW" below.
 
-**This single constant is the first thing to check against Tempel+2014.**
+
 
 **2. A small-N bias in the gapper σ**, adding up to +0.22 dex more at N = 5-6.
 M ∝ σ², so a 17% σ overestimate is 0.15 dex of mass. Nessie's
@@ -918,6 +912,80 @@ real lever.
 Do **not** read fitted parameters off a floor scan — the GAMA-only fit is
 ill-posed and single-seed, and in the scan above α swings −0.56 → +0.33
 non-monotonically, which is noise, not a trend.
+
+---
+
+## Hernquist vs NFW — the constant offset, settled from `tempel2014.pdf`
+
+Two independent errors, running opposite ways, which is why the naive "same
+formula" comparison looked nearly right while being wrong twice over.
+
+### 1. Nessie's 4.582 is correct — for Hernquist
+
+Section 4.2, verbatim: *"Equating this with the Hernquist Re above, we obtain
+Re = 1.386 sigma_sky = 1.8153a, hence a = 0.764 sigma_sky and **Rg = 6a =
+4.582 sigma_sky**."* Nessie implements the coefficient correctly.
+
+### 2. But Nessie has a real bug in the sigma factor
+
+Eq. 8 is `Mtot = 2.325e12 (Rg/Mpc) (sigma_v / 100 km/s)^2`, and section 4 says
+*"Assuming dynamical symmetry, the real (3D) velocity dispersion in groups would
+thus be **sigma_v = sqrt(3) sigma_v1D**."*
+
+`fof/src/group_properties.rs` codes:
+
+```rust
+2.325e12 * gravitational_radius
+        * ((3_f64.powf(1. / 3.)) * los_velocity_dispersion / 100.).powi(2)
+```
+
+`3f64.powf(1./3.)` is the **cube** root, 1.4422. It must be the **square** root,
+1.7321. Since M goes as the square of that factor, Nessie's masses are low by
+`3^(2/3)/3 = 3^(-1/3)`, i.e. **−0.159 dex**. This is a genuine bug and worth
+reporting upstream.
+
+### 3. The published column Driver uses is NFW, not Hernquist
+
+The paper releases both — appendix column list `[11] mass_nfw` and
+`[12] mass_her`. Three independent lines of evidence say `col15` of
+`sdssdr10table2.fits` is `mass_nfw`:
+
+* Inverting eq. 8 on his own `col12` (sigma_v) and `col13` (sigma_sky) with the
+  correct sqrt(3) gives **kappa = Rg/sigma_sky = 2.755**, nowhere near the
+  Hernquist 4.582.
+* Hernquist kappa is a **constant**; NFW kappa is solved iteratively per group
+  and so is **mass-dependent**. The implied kappa trends 2.802 → 2.671 from
+  logM 12.2 to 15.0, i.e. not constant.
+* `4.582 / kappa` runs **1.636 → 1.715 rising with mass**, matching Fig. 7's
+  *"the Hernquist masses are 1.55−1.75 more massive, depending on the system
+  mass"* including the direction of the trend.
+
+Scanning all 25 FITS columns, `col15` is the only one whose implied kappa is
+even approximately constant (relative scatter 0.016). **The extract we have does
+not contain `mass_her` at all** — worth requesting, since it would make the
+comparison direct.
+
+### The reconciliation
+
+On 2500 identical-membership groups with N >= 5:
+
+| term | dex |
+|---|---|
+| observed log10(M_nessie / M_tempel col15) | **+0.277** |
+| correcting cbrt(3) → sqrt(3) *raises* Nessie by | +0.159 |
+| converting Hernquist → NFW *lowers* Nessie by | −0.221 |
+| net of the two | **−0.062** |
+| so a fully corrected Nessie sits at | +0.215 |
+| measured sigma + sigma_sky differences account for | +0.158 |
+
+The remainder is the small-N gapper bias and the mass dependence of kappa.
+
+**Fixing only the sqrt(3) bug would make the disagreement worse**, +0.277 →
++0.436. The two must be handled together.
+
+`--mass-mode tempel_nfw` applies both corrections, putting the Nessie SDSS leg
+on the same footing as Driver's `col15`. It is opt-in; `tempel_eq8` remains the
+default so nothing already validated moves.
 
 ---
 

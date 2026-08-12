@@ -62,6 +62,10 @@ NESSIE_GROUPS = f"{NESSIE_DIR}/sdss_groups.parquet"
 NESSIE_GALS = f"{NESSIE_DIR}/sdss_galaxies.parquet"
 
 NESSIE_H = 70.0      # recovered from the co_dist column, with Omega_m = 0.30
+KAPPA_HERNQUIST = 4.582   # Tempel+2014 sec 4.2: Rg = 6a = 4.582 sigma_sky
+KAPPA_NFW = 2.7551        # recovered from his published col15; mass-dependent
+                          # in truth (2.80 at logM 12.2 to 2.67 at 15), this is
+                          # the population median
 UNGROUPED = -1       # sentinel in *both* GroupID and group_id
 
 
@@ -117,6 +121,21 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
       legs to each other rather than to their parent catalogues.
     * ``shift`` -- ``tempel_eq8`` displaced by ``mass_shift`` dex, for testing
       the +0.285 dex offset against Tempel directly.
+    * ``tempel_nfw`` -- ``estimated_mass`` put on the same footing as Tempel's
+      published ``col15``, by applying two corrections established from
+      Tempel+2014 itself (see CLAUDE.md, "Hernquist vs NFW"):
+
+      1. ``* 3 ** (1/3)``.  Eq. 8 takes the **3D** dispersion, and section 4
+         states sigma_v = sqrt(3) sigma_1D.  Nessie codes ``3f64.powf(1./3.)``
+         -- a cube root where a square root is required -- so its masses are
+         low by 0.159 dex.  This is a genuine bug in the Rust.
+      2. ``* KAPPA_NFW / 4.582``.  Nessie's 4.582 is the correct Hernquist
+         coefficient (paper section 4.2, Rg = 6a = 4.582 sigma_sky), but the
+         column Driver uses is ``mass_nfw``, not ``mass_her``.
+
+      The two corrections run opposite ways and largely cancel (net -0.062
+      dex), which is why the naive "same formula" comparison looked almost
+      right while being wrong twice over.
 
     Driver himself mixes estimators (Robotham for GAMA, Tempel's own for SDSS),
     so ``tempel_eq8`` is the faithful default; ``robotham`` is the consistent
@@ -126,6 +145,10 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
         m = grp.estimated_mass.astype(float).values
     elif mass_mode == "shift":
         m = grp.estimated_mass.astype(float).values * 10.0 ** mass_shift
+    elif mass_mode == "tempel_nfw":
+        m = (grp.estimated_mass.astype(float).values
+             * 3.0 ** (1.0 / 3.0)                    # sqrt(3) not cbrt(3)
+             * (KAPPA_NFW / KAPPA_HERNQUIST))        # Hernquist -> NFW
     elif mass_mode == "robotham":
         m = grp.mass_proxy.astype(float).values * dr.MAGICA
         nf = grp.nrich.values.astype(int)
@@ -254,7 +277,7 @@ def main():
     p.add_argument("--fit-max", type=float, default=None,
                    help="cap the fitted/penalty mass range, e.g. 15.0")
     p.add_argument("--mass-mode", default="tempel_eq8",
-                   choices=["tempel_eq8", "robotham", "shift"],
+                   choices=["tempel_eq8", "tempel_nfw", "robotham", "shift"],
                    help="which mass estimator; 'robotham' matches the GAMA leg")
     p.add_argument("--mass-shift", type=float, default=0.0,
                    help="dex shift, with --mass-mode shift")
