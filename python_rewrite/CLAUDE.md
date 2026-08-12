@@ -18,7 +18,9 @@ SDSS-only *fit* is ill-posed; see "The Nessie SDSS leg".
 `--sdss auto` and `--sdss nessie`. Everything else is built and validated.
 
 **Outstanding:** why the Nessie SDSS leg fails to anchor the combined fit (it
-does not; Tempel's does). See "In the combined fit".
+does not; Tempel's does). See "In the combined fit". The likely cause is now
+identified: Nessie's mass estimator sits +0.285 dex above Tempel's for the very
+same groups. See "Why the Nessie SDSS masses are high".
 
 Do not "fix" the things the old version of this file listed as problems. Most of
 them were either resolved or were never problems. Read "The central finding"
@@ -84,6 +86,7 @@ difference being measured.
 | `sdss_hmf.py` | Port of `sdsshmf.r`; generates `sdsshmf5.csv` |
 | `nessie_sdss_hmf.py` | Nessie SDSS through the identical method; generates `sdsshmfNessie5.csv` |
 | `scan_nessie_sdss.py` | Seed and penalty-range scans for the SDSS legs |
+| `vuvuzela.py` | SDSS-specific version of Driver's fig. 3 mass-error calibration; also `--mass-audit` |
 | `combined_hmf.py` | Port of `allhmf.r`; the GSR fit and Ω_M inset |
 | `robust_hmf.py` | Bootstrap errors, Vmax floor scan, flagged-group table |
 
@@ -632,6 +635,90 @@ well-posed. Only `GSR` with Tempel SDSS is.
 **Still to do:** why the Nessie SDSS leg fails to anchor. The excess at
 13.0-14.3 relative to Tempel and the extra 0.6 dex of high-mass reach are the
 obvious suspects; the `--sdss-max` scan shows it is not the reach alone.
+
+---
+
+## Why the Nessie SDSS masses are high
+
+`estimated_mass` is Nessie's `m_total` (`fof/src/group_properties.rs`):
+
+```
+sky_disp = sqrt( sum r_proj^2 / (2N (1+z)^2) )
+grav_rad = 4.582 * sky_disp
+M        = 2.325e12 * grav_rad * (3^(1/3) * sigma_gapper / 100)^2
+```
+
+The last line is **Tempel+2014 equation 8** — the same formula Tempel himself
+uses. Only `(70/ho)` is applied on top, for the h difference. (`mass_proxy` is
+the Robotham+2011 raw mass `R50*sigma^2/G` with no A factor, which is why it
+sits ~0.9 dex low. It is not the analogue.)
+
+Tested on **7258 groups whose membership is byte-identical in both
+catalogues** — same galaxies, so the group finder cannot be the cause:
+
+| term | dex |
+|---|---|
+| **observed** log10(M_Nessie / M_Tempel) | **+0.285** (scatter 0.432) |
+| from sigma — Nessie's gapper runs 14% high, and M ∝ sigma² | +0.114 |
+| from the R_g constant — Nessie **4.582** vs Tempel's effective **3.932** | +0.066 |
+| residual — the sky-dispersion measure itself | +0.105 |
+
+Not an h slip: log10(1/0.7) = +0.155, which matches nothing here, and the h
+factor is already applied. Tempel's 3.932 was recovered by inverting his own
+Eq 8 against his published sigma (`col12`) and sky dispersion (`col13`); the
+ratio scatter is 0.045, so it is a genuine constant, not a fit.
+
+**A +0.285 dex shift on a slope this steep is what produces both the elevated
+points at 13.0-14.3 and the tail to 15.65.** So the Nessie SDSS HMF sits high
+because of the mass estimator, not the grouping. This also reframes the earlier
+note that Nessie tracks REFLEX better above 14.5 — that may be the offset, not
+better recovery. Reproduce with `python vuvuzela.py --mass-audit`.
+
+---
+
+## The SDSS vuvuzela — `vuvuzela.py`
+
+Driver applies the **GAMA-derived** mass-error curve to SDSS unchanged
+(`sdsshmf.r` line 281 = `gamahmf.r` line 270, same hardcoded `xx`/`yy`). The
+derivation code was never published — grepping the machine finds only copies of
+the resulting arrays. Nessie's Rust has the right idea
+(`calculate_error_function` documents the exact procedure) but
+`create_mass_error_track` is still `todo!()`.
+
+`vuvuzela.py` measures it directly for SDSS. Method, from the figure 3 caption:
+groups with N > 20, remove members one at a time, recompute the mass at each
+multiplicity, take the 16/50/84 quantiles. Members are removed **faintest-first
+in apparent magnitude**, since that is what happens to a group receding through
+a flux limit. 677 tracks.
+
+Nessie's estimator is ported to Python and **validated against Nessie's own
+output**: the gapper sigma is exact (max |Δ| = 0.00000) and, using Nessie's
+stored centre, the mass agrees to 0.0006 dex. The only discrepancy is a
+tie-break in `calculate_iterative_center_idx` affecting ~1% of groups.
+
+Results (`sdss_masserr.csv`, `vuvuzela_sdss.pdf`):
+
+| | ratio SDSS / GAMA |
+|---|---|
+| sigma vs Driver's `yy` | **0.995** |
+| bias (q50) vs Driver's `masscorr` | 1.119 |
+
+**Driver's reuse of the GAMA curve for SDSS is justified** — now empirically,
+rather than by assumption. The measured SDSS scatter is within half a per cent
+of his GAMA curve across N = 3-22, and the bias curve matches `masscorr` in sign
+and shape. Robotham+2011 is far too wide (0.866 at N=3 against our 0.575).
+
+**The one thing a single sigma cannot capture is the skew.** The tracks are
+strongly asymmetric — median |q16|/|q84| = **1.72**, e.g. at N=3 the quantiles
+are −0.852 / −0.171 / +0.298. Losing members drives mass *down* far more than up.
+Driver's Eddington Monte-Carlo smears with a symmetric Gaussian, so it models
+neither the skew nor the bias (he handles the bias separately, via `masscorr`).
+Whether that matters to the HMF is untested — it would need the MC redone with
+the empirical asymmetric kernel.
+
+Nothing in the HMF pipeline uses these numbers yet; `sdss_masserr.csv` is
+produced and left for a deliberate opt-in, per the rule that new behaviour does
+not change verified defaults.
 
 ---
 
