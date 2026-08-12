@@ -10,19 +10,46 @@ better than 0.035 in every parameter.
 **Step 2 (new GAMA DMU) is done for GAMA.** The Nessie catalogue has been run
 through the identical method, both GAMA-only and in the combined fit.
 
-**Step 3 (Nessie SDSS) is now built** — `nessie_sdss_hmf.py`, 4824 groups. All
-three blockers turned out to be answerable from the data. Like GAMA-only, the
-SDSS-only *fit* is ill-posed; see "The Nessie SDSS leg".
+**Step 3 (Nessie SDSS) is built** — `nessie_sdss_hmf.py`, 4824 groups. All
+three blockers were answerable from the data. Like GAMA-only, the SDSS-only
+*fit* is ill-posed; see "The Nessie SDSS leg".
 
-**Step 4 (Nessie SDSS in the combined fit) is done** — two separate figures,
-`--sdss auto` and `--sdss nessie`. Everything else is built and validated.
+**Step 4 (Nessie SDSS in the combined fit) is done** — separate figures for
+`--sdss auto` and `--sdss nessie`, plus GS (no REFLEX) and clamped variants.
 
-**Outstanding:** the mass scale. Nessie's SDSS masses sit +0.285 dex above
-Tempel's for the very same groups, and correcting that shift **restores the
-combined fit's interior minimum** — so the anchoring failure is a mass-scale
-problem, now confirmed. The two Nessie legs also use different estimators and
-different cosmologies. See "Why the Nessie SDSS masses are high" and "The mass
-estimator is what breaks the anchor".
+**Step 5 (the 14.2 bin) is solved** — a mass-to-light consistency cut,
+`--ml-cut 1.0`, drops 5 of 1833 groups and moves the bin 0.53 dex while every
+other bin moves ≤ 0.05. See "The 14.2 bin — solved".
+
+### What this session established about the mass scale
+
+This is the main result, and it is largely negative:
+
+* The Nessie/Tempel SDSS mass offset **decomposes exactly** (per-group residual
+  +0.0004 dex) into four terms: the Hernquist-vs-NFW profile choice, Nessie's
+  `cbrt(3)`-for-`sqrt(3)` bug, the gapper-vs-rms dispersion estimator, and
+  sigma_sky. On a like-for-like NFW-to-NFW basis the offset is **+0.153 dex**,
+  of which the dispersion estimator is ~64%.
+* **The estimator difference is not the velocity-error term.** Removing it
+  changes sigma by 0.0001 dex. Tempel uses the plain rms (his eq. 3), Nessie the
+  gapper. `compare_dispersion_estimators.py` isolates this for a referee.
+* **Forcing both legs onto one estimator makes things worse, in both
+  directions** — see "Forcing a common mass estimator: tried, rejected". Each
+  catalogue's native calibration agrees with REFLEX better than any common
+  recipe. The mass scale is a calibration choice, not a formula bug to fix.
+* **No configuration anywhere in this project is a global minimum.** Multi-start
+  shows even Driver's own GSR has a lower-chi^2 solution at low M\*. `conv = 0`
+  means the simplex stopped, not that it found the best answer. See
+  "Multi-start".
+
+An earlier version of this header claimed that correcting the mass shift
+"restores the combined fit's interior minimum". **That was wrong** — it came
+from a uniform-shift approximation landing in a different basin, and does not
+survive the mass-dependent calculation or a multi-start check.
+
+**Outstanding:** the sigma_sky units question (h^-1 Mpc vs Mpc, ~0.17 dex),
+which also bears on Driver's own SDSS normalisation; and Nessie's `sqrt(3)` bug,
+which should go upstream regardless.
 
 Do not "fix" the things the old version of this file listed as problems. Most of
 them were either resolved or were never problems. Read "The central finding"
@@ -1441,6 +1468,110 @@ Note the abstract states log10(phi\*) = **−3.96**, not −3.95.
 The *validation printout* still uses `PUBLISHED_TABLE2[myoption]`, which is a
 different question: there we check the port against his fit to the same sample
 combination. Do not unify those two.
+
+---
+
+## `recovery.py` — audit of the hierarchical Bayesian route
+
+Command audited:
+
+```
+uv run python recovery.py --realgama --gama-model marg --mass-col MassA \
+  --mlim-form linear \
+  --gama-fits .../make_gama_dmu/G3CFoFGroup.fits --gama-area 238.11
+```
+
+The model is a Poisson point process,
+`target = -Lambda + sum_i log(integral)`, with
+`Lambda = sum_j V_sh[j] * int_{mlim_sh[j]}^inf phi(m) dm`. **Everything hinges
+on `mlim(z)`** — it sets the normalisation and the per-object integration
+bounds.
+
+### 1. `mlim(z)` is the histogram *mode*, not a limit — 54% of groups fall below it
+
+`turnover_mlim()` takes the **mode of the observed mass histogram** in each
+z-bin. For a smooth distribution that sits near the middle, not at the faint
+edge. On this catalogue:
+
+| | |
+|---|---|
+| groups below their own `mlim(z)` | **987 / 1833 (53.8%)** |
+| more than 1 sigma below | 567 (30.9%) |
+| more than 2 sigma below | 238 (13.0%) |
+| more than 3 sigma below | 82 (4.5%) |
+| median `(m - mlim)/sigma` | −0.15 |
+
+`marg` integrates each object from `lo_i = mlim[i]` upward, so a group below
+`mlim` has its Gaussian peak **outside** the integration range. Beyond ~3 sigma
+the integrand underflows and Stan takes the `target += -100` branch — a constant
+carrying no information about the HMF, for ~4.5% of the catalogue, with 31%
+severely truncated. That is the failure mode.
+
+### 2. `--gama-model marg` is the sharp-cut model — the wrong one here
+
+The argparse help says it outright: *"'marg' (sharp cut), 'marg_comp'
+(completeness forward-model)"*. `MARG_CODE`'s own docstring describes
+`marg_comp` as replacing *"the sharp mlim cut with the measured completeness
+ramp ... all detected groups above the floor (no mlim cut). This is the boundary
+fix."* **`marg_comp` is the model built for exactly this problem and it is not
+being used.**
+
+### 3. `--mass-col MassA` silently drops 0.315 dex
+
+Reading the column bypasses the rebuild, and the DMU's `MassA` is not on
+Driver's scale:
+
+| term | dex |
+|---|---|
+| `MASS_A = 10` in `make_gama_dmu/config.py` vs Driver's 13.9 | +0.143 |
+| the column is never h-scaled; the rebuild applies `(100/H0)` | +0.172 |
+| **total** | **+0.315** (measured: +0.315) |
+
+`recovery.py` sets `A_SCALE = 10.0` and `H0 = 100.0`, so it is *internally*
+consistent with the DMU convention. But the prior `ms ~ normal(14.0, 1.5)` is
+written for Driver-scale masses, so with masses 0.3 dex low the prior is
+off-centre. Note the run's own printout ("MassA median 13.446, rebuilt would
+give 13.521") understates the gap, because that rebuild also uses A = 10.
+
+### 4. The `mlim` functional form is unstable
+
+Forcing `linear` vs `quad` moves `mlim(0.01)` from **13.03 to 12.40** — 0.63 dex
+— and AIC prefers quad (−69.3 vs −66.0). The code comments already flag this:
+*"a 0.075 dex shift in the masses flipped it linear -> quad and moved mlim by
+0.69 dex at low z"*. `--mlim-form linear` suppresses the symptom, not the cause.
+
+### 5. The structural problem, and the fix this project already has
+
+**GAMA's selection is not a mass limit.** A group enters when it has 5 members
+brighter than the flux limit, which depends on how its luminosity function is
+sampled, not on its mass. No smooth `mlim(z)` can represent that, which is why
+the mode-based estimate lands in the middle of the data.
+
+The 1/Vmax pipeline solves this exactly and per object: `zmax` from the **5th
+brightest member's own magnitude**, then `vmax = V(zmax) - V(zmin)` — see
+`new_gama_hmf._vmax_from_members` and "Method reference". That is the correct
+selection function, already computed, already validated.
+
+The hierarchical model should consume it: replace `V_sh` / `mlim_sh` with a
+per-object effective volume `V_i = vmax_i`, so `Lambda = int phi(m) <V(m)> dm`
+with the per-group volumes rather than a shell decomposition behind a fitted
+mass limit. That removes `turnover_mlim` entirely along with items 1, 2 and 4.
+
+### Suggested order
+
+1. **Re-run with `--gama-model marg_comp`.** One flag, uses the model already
+   written for the boundary problem. Establishes whether the sharp cut is the
+   whole story.
+2. **Drop `--mass-col MassA`**, or scale it by +0.315 dex, so the masses and the
+   `ms` prior are on the same scale.
+3. **Replace `mlim(z)` with the per-group Vmax.** The real fix; needs a Stan
+   data-block change and a new `V_i` input, but reuses code that is verified.
+4. **Re-derive the completeness ramp for this catalogue.** `COMP_D50_PTS` /
+   `COMP_W_PTS` were measured on a *mock* at r < 19.65 and are tabulated against
+   `Delta = m - mlim(z)`, so they inherit whatever `mlim` does. If step 3 lands,
+   they are not needed at all.
+
+Steps 1-2 are minutes; step 3 is the one that makes the method sound.
 
 ---
 
