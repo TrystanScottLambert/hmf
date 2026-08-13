@@ -1771,6 +1771,47 @@ from the data itself (each group's zmax from its own 5th-brightest member), so
 it is structurally immune to this. The hierarchical fit is a cross-check that
 corroborates the shallower-than-Driver slope without being able to measure it.
 
+### Can the hierarchical fit be run without a mock? No -- and here is why
+
+`selfcal.py` derives the selection from the data: a group is in the catalogue
+iff its 5th brightest member satisfies M5 <= Mlim(z), so
+C(m,z) = P(M5 <= Mlim(z) | m), with the M5-mass relation fitted by truncated ML
+on all 1833 groups. That part works -- the synthetic closed loop returns
+1.0058 -- and it needs no mock at all.
+
+Run on real GAMA it gives **alpha = -0.358 +/- 0.091**, which is not a plausible
+HMF slope. The reason is exact and worth keeping:
+
+**selfcal C is the MAGNITUDE selection only. It assumes that if 5 members are
+bright enough, the group is found.** The ratio selfcal/mock is therefore the
+group-FINDER efficiency, and it is strongly mass dependent:
+
+| logM | selfcal / mock |
+|---|---|
+| 13.0 | **6-9x** (the finder recovers ~11-16%) |
+| 13.5 | 1.2-3.1x |
+| 14.0 | ~1.0 |
+
+A mass-dependent completeness term maps straight onto alpha, and this one spans
+nearly an order of magnitude across the range that matters. Omitting it flattens
+alpha from ~-1.5 to -0.36.
+
+**So the group-finder efficiency cannot be measured from the data**: it requires
+knowing which halos were MISSED, which requires truth, which requires a mock.
+The magnitude selection is derivable; the finder efficiency is not.
+
+Consequences:
+
+* The hierarchical method **needs a faithful mock**. It is not optional, and the
+  current Shark one is not faithful enough (1.87x too few N=5-6 groups).
+* The 1/Vmax estimator does not need finder efficiency at all, because it works
+  per DETECTED object and never asks what was missed. That is a structural
+  advantage, not a stylistic one, and it is why it should remain primary.
+* `selfcal.py` remains useful as a **mock diagnostic**: selfcal/mock isolates
+  the finder efficiency directly, so it is the tool for checking whether a new
+  mock reproduces GAMA's group finding. That ratio at logM ~13 is the number a
+  replacement mock has to get right.
+
 ### Recommended position
 
 Use the incumbent (`--comp-mode delta`, purity cut restored) for anything

@@ -1799,7 +1799,23 @@ def plot_recovery(
 
     a = ax[0, 1]
     a.scatter(z_obs, m_obs, s=2, alpha=0.2, color="steelblue")
-    a.plot(z_plot, mlim_func(z_plot), "r-", lw=2, label="mlim(z)")
+    if mlim_func is not None:
+        a.plot(z_plot, mlim_func(z_plot), "r-", lw=2, label="mlim(z)")
+    elif COMP_MODE == "mz":
+        # No mlim(z) exists in this mode -- the selection is C(m, z).  Draw the
+        # 50% and 10% completeness masses instead, which is the same information
+        # in the form the model actually uses.
+        try:
+            _t = np.load(NESSIE_TABLE_MZ)
+            _m, _z, _C = _t["m"], _t["z"], _t["C"]
+            for _lvl, _ls in ((0.5, "r-"), (0.1, "r--")):
+                _mm = [
+                    np.interp(_lvl, _C[i], _m) if _C[i].max() >= _lvl else np.nan
+                    for i in range(_z.size)
+                ]
+                a.plot(_z, _mm, _ls, lw=2, label=f"C = {_lvl:g}")
+        except Exception as _e:
+            print(f"  [C(m,z) overlay skipped: {_e}]")
     if turn_pts is not None:
         zb, tb = turn_pts
         ok = np.isfinite(tb)
