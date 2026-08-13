@@ -74,7 +74,9 @@ import recovery as R
 # ----------------------------------------------------------------------
 B0, R0 = 0.06, 32  # FoF linking lengths
 MASS_A = 10  # MassA = mass_proxy * MASS_A
-APPARENT_MAG_LIM = 19.65  # input catalogue cut (config.py says 19.4 -- check!)
+APPARENT_MAG_LIM = 19.65  # VERIFIED: make_gama_dmu/config.py line 13 is 19.65,
+# and G3CGal.fits max ApparentMagR is exactly 19.6500. The old "config.py says
+# 19.4 -- check!" note was stale; the mock and the DMU agree.
 AB_CUT = -10
 OVERFACTOR = 400  # randoms oversampling
 VEL_ERROR = 50.0  # km/s, as make_gama_dmu uses
