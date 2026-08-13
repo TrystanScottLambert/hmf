@@ -1586,22 +1586,31 @@ right before it fits.
 
 ### Suggested order
 
-1. **Re-run with `--gama-model marg_comp`.** One flag, uses the model already
-   written for the boundary problem. Establishes whether the sharp cut is the
-   whole story. **Budget time**: it is much slower than `marg` — the
-   completeness integral has no lower cut, so each evaluation spans a wider
-   range. It did not finish in 50 minutes where `marg` took ~20. Iterations are
-   hardcoded at 1500/1500 (line 3662); there is no CLI flag to shorten them.
-2. **Drop `--mass-col MassA`**, or scale it by +0.315 dex, so the masses and the
-   `ms` prior are on the same scale.
-3. **Replace `mlim(z)` with the per-group Vmax.** The real fix; needs a Stan
-   data-block change and a new `V_i` input, but reuses code that is verified.
-4. **Re-derive the completeness ramp for this catalogue.** `COMP_D50_PTS` /
-   `COMP_W_PTS` were measured on a *mock* at r < 19.65 and are tabulated against
-   `Delta = m - mlim(z)`, so they inherit whatever `mlim` does. If step 3 lands,
-   they are not needed at all.
+1. **Fix the mass scale.** Drop `--mass-col MassA`, or add +0.315 dex, so the
+   masses and the `ms ~ normal(14.0, 1.5)` prior sit on the same scale.
+   *(minutes)*
+2. **Replace `mlim(z)` with the per-group Vmax.** This is the real fix and it
+   should now be done *first among the substantive changes*, not last.
+   `new_gama_hmf._vmax_from_members` already computes the exact selection per
+   object — `zmax` from the 5th brightest member, `vmax = V(zmax) − V(zmin)`.
+   Feed `V_i` into Stan in place of `V_sh` / `mlim_sh`, so
+   `Lambda = sum_i` over per-group volumes rather than shells behind a fitted
+   mass limit. That deletes `turnover_mlim` and removes problems 1, 2 and 4
+   together — **and it should be fast**, because the selection becomes a
+   precomputed per-object number instead of an integral over a soft boundary.
+3. **`marg_comp` is not a practical route.** It is the model written for the
+   boundary problem, but measured on this catalogue it runs at **48-67 seconds
+   per iteration** against ~0.4 s for `marg` — a ~125x slowdown. It reached
+   1000 of 3000 iterations in two hours; finishing would take **40+ hours per
+   chain**. Iterations are hardcoded at 1500/1500 (line 3662) with no CLI flag.
+   Do not plan around it unless the per-object integral is made much cheaper.
+4. **The completeness ramp** (`COMP_D50_PTS` / `COMP_W_PTS`) was measured on a
+   *mock* at r < 19.65 and is tabulated against `Delta = m - mlim(z)`, so it
+   inherits whatever `mlim` does. If step 2 lands it is not needed at all.
 
-Steps 1-2 are minutes; step 3 is the one that makes the method sound.
+Step 1 is minutes. Step 2 is the one that makes the method sound, and on the
+evidence above it is also the only one that is computationally viable.
+
 
 ---
 
