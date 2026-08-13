@@ -213,6 +213,43 @@ def driver_gama5(match_A=True):
     return (ms, lp, al, be)
 
 
+# ---------------------------------------------------------------------------
+# THE conversion between Driver's unit system and this module's.  Every shift
+# between the two must go through here -- doing it ad hoc at call sites has now
+# produced four separate bugs (LCDM Omega_M, the selfcal mass rebase, the 1/Vmax
+# density axis, and the LCDM cutoff placement).
+#
+#   driver_recovery / new_gama_hmf : A = 13.9, h = 0.6737, M in Msun,     V in Mpc^3
+#   recovery (this module)         : A = A_SCALE, h = 1,   M in h^-1 Msun, V in (h^-1 Mpc)^3
+#
+# Two distinct mass conversions, and using the wrong one is the trap:
+#   kind="dynamical" -- a mass built as A sigma^2 R / G (data, and any MRP fitted
+#                       to it, e.g. Driver's published M*).  Carries BOTH the h
+#                       factor and the A factor.
+#   kind="theory"    -- a true halo mass (the Murray+21 LCDM curve).  There is no
+#                       A in a theoretical HMF, so h ONLY.
+# Density is per dex, so a constant mass shift leaves it alone; only h enters.
+H_DRIVER_A = 13.9
+
+
+def driver_to_recovery(kind="dynamical"):
+    """(dM, dPHI) to add to Driver-system log10 M and log10 phi to land in this
+    module's units.  See the note above for why `kind` matters."""
+    dh = np.log10(1.0 / H_DRIVER)  # +0.1715 : Msun -> h^-1 Msun is -dh
+    dA = np.log10(H_DRIVER_A / A_SCALE)  # +0.1430 for A_SCALE = 10
+    if kind == "theory":
+        return -dh, 3.0 * dh
+    if kind == "dynamical":
+        return -(dh + dA), 3.0 * dh
+    raise ValueError(f"kind must be 'dynamical' or 'theory', got {kind!r}")
+
+
+def driver_mrp_to_recovery(ms, lp, al, be, kind="dynamical"):
+    """Driver-system MRP parameters -> this module's units."""
+    dM, dPHI = driver_to_recovery(kind)
+    return (ms + dM, lp + dPHI, al, be)
+
+
 def mrp_phi(x, ms, lp, al, be):
     """MRP number density per dex.  x = log10(M)."""
     u = x - ms
@@ -2702,6 +2739,12 @@ def run_real_gama(
     )
 
     _mz = COMP_MODE == "mz" and model_kind.startswith("marg_tab")
+    # Outputs are tagged with the selection mode.  Without this, two runs of the
+    # same model_kind under different --comp-mode write the same draws file and
+    # the same figures -- which is exactly how a failed selfcal run silently
+    # replaced a good delta-mode one, leaving figures and draws describing
+    # different fits.
+    _TAG = "" if not _mz else "_" + COMP_MODE
     if _mz:
         # The whole point of mz mode: the selection is carried by C(m, z), so
         # mlim(z) -- the histogram-mode estimator that put 54% of the catalogue
@@ -2873,13 +2916,13 @@ def run_real_gama(
         print(f"  [caveat: M* has a mild informative prior N(14.13,0.42); data-driven")
         print(f"   posterior ~0.1 dominates, so prior pull on A is small (~7%)]")
     np.savetxt(
-        f"gama_{model_kind}_draws.csv",
+        f"gama_{model_kind}{_TAG}_draws.csv",
         flat,
         delimiter=",",
         header="ms,lp,al,be",
         comments="",
     )
-    print(f"  saved draws -> gama_{model_kind}_draws.csv")
+    print(f"  saved draws -> gama_{model_kind}{_TAG}_draws.csv")
     plot_recovery(
         flat,
         z,
@@ -2888,7 +2931,7 @@ def run_real_gama(
         mlim_func,
         Vsurvey,
         turn_pts=turn_pts,
-        fname=f"recovery_gama_{model_kind}.pdf",
+        fname=f"recovery_gama_{model_kind}{_TAG}.pdf",
     )
     if model_kind.startswith("marg_tab"):
         try:
@@ -2896,7 +2939,7 @@ def run_real_gama(
                 flat,
                 data,
                 x_fit,
-                fname=f"ppc_gama_{model_kind}.pdf",
+                fname=f"ppc_gama_{model_kind}{_TAG}.pdf",
                 title=f"GAMA: observed vs predicted detections [{model_kind}]",
             )
         except Exception as e:
@@ -2904,7 +2947,7 @@ def run_real_gama(
     emit_publication(
         flat,
         {"GAMA": dict(x_fit=x_fit, Vsurvey=Vsurvey)},
-        tag=f"gama_{model_kind}",
+        tag=f"gama_{model_kind}{_TAG}",
         title="GAMA HMF",
         nessie_bias=(
             SHOW_HALO_MF_CURVE and model_kind in ("marg_tab", "marg_tab_serr")
@@ -3179,28 +3222,22 @@ def lcdm_curve():
     Driver+22 allhmf.r. Returns (x, log10 phi) for the curve plus the (M*, logphi*,
     alpha, beta) reference point for the corner plot.
 
-    Normalised with LCDM_OMEGA_M (Driver's 0.3147), not the module OMEGA_M."""
-    parsec, Gn, msol = 3.0857e16, 6.67408e-11, 1.988e30
-    rhocrit = 3 * (1000 * H0 / (1e6 * parsec)) ** 2 / (8 * np.pi * Gn)
-    be, A, ms, al = 0.7097976, 1.727006e-19, 14.42947, -1.864908
-    mrpx = np.arange(0, 17, 0.001) + np.log10(100 / H0)
-    mrpy = (
-        A
-        * be
-        * 10 ** ((al + 1) * (mrpx - ms))
-        * np.exp(-(10 ** (be * (mrpx - ms))))
-        * (H0 / 100) ** 3
-    )
-    factor = (
-        np.sum(10**mrpx * mrpy)
-        * 0.001
-        * msol
-        / (1e6 * parsec) ** 3
-        / (LCDM_OMEGA_M * rhocrit)
-    )
-    x = mrpx - 0.08
-    y = np.log10(mrpy) - np.log10(factor) + 0.08
-    ref = (ms - 0.075, np.log10(A / factor) + 0.075, al, be)  # Driver's corner refvals
+    Normalised with LCDM_OMEGA_M (Driver's 0.3147), not the module OMEGA_M.
+
+    DELEGATES to driver_recovery.lcdm_curve, which is verified bit-exactly against
+    allhmf.r, and converts the result into this module's units.  It used to re-run
+    the same algebra with H0 = 100 substituted, which silently placed the Murray
+    cutoff at logM = 14.42947 in h^-1 Msun instead of Msun -- a 0.172 dex SHAPE
+    error that grew to 0.9 dex by logM 15.5 and could not be absorbed by any
+    normalisation.  Do not reinstate a local copy."""
+    import driver_recovery as _dr
+
+    mrpx, mrpy, factor, _phimrp = _dr.lcdm_curve()
+    dM, dPHI = driver_to_recovery("theory")  # LCDM is a true-mass HMF: h only, no A
+    x = (mrpx - 0.08) + dM
+    y = (np.log10(mrpy) - np.log10(factor) + 0.08) + dPHI
+    A, ms, al, be = 1.727006e-19, 14.42947, -1.864908, 0.7097976
+    ref = (ms - 0.075 + dM, np.log10(A / factor) + 0.075 + dPHI, al, be)
     return x, y, ref
 
 
@@ -4025,6 +4062,12 @@ def run_mock_nessie(path="nessie_mock_groups.npz", model_kind="marg_tab"):
     )
 
     _mz = COMP_MODE == "mz" and model_kind.startswith("marg_tab")
+    # Outputs are tagged with the selection mode.  Without this, two runs of the
+    # same model_kind under different --comp-mode write the same draws file and
+    # the same figures -- which is exactly how a failed selfcal run silently
+    # replaced a good delta-mode one, leaving figures and draws describing
+    # different fits.
+    _TAG = "" if not _mz else "_" + COMP_MODE
     if _mz:
         print("mlim(z) NOT used: selection carried by C(m,z) [--comp-mode mz]")
         mlim_func = mlim_sh = turn_pts = None
