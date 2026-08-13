@@ -136,6 +136,16 @@ SHOW_ALPHA_CORRECTION = False
 # fit" when it is really just an uncorrected estimator. Off by default.
 SHOW_OWN_POINTS = False
 
+# The dark-green "bias-corrected (halo MF)" curve is the fit with the
+# closed-loop NESSIE_BIAS removed, i.e. an estimate of the underlying HALO mass
+# function rather than the density of DETECTED groups.  It legitimately does not
+# track the plotted points -- those are detected objects, and the two differ by
+# the completeness -- but on the figure it just reads as a third unexplained
+# line sitting off the data.  The corrected numbers are printed in the
+# "closed-loop bias-corrected" table regardless, which is where they belong.
+# Off by default; set True (or --show-halo-mf) to draw it.
+SHOW_HALO_MF_CURVE = False
+
 
 def alpha_bias(ms):
     """Fitted-minus-true alpha as a function of where M* sits (linear fit to
@@ -2880,7 +2890,9 @@ def run_real_gama(
         {"GAMA": dict(x_fit=x_fit, Vsurvey=Vsurvey)},
         tag=f"gama_{model_kind}",
         title="GAMA HMF",
-        nessie_bias=model_kind in ("marg_tab", "marg_tab_serr"),
+        nessie_bias=(
+            SHOW_HALO_MF_CURVE and model_kind in ("marg_tab", "marg_tab_serr")
+        ),
         mmax_data=float(np.percentile(x_fit, 99.5)),
     )
     return res
@@ -3136,10 +3148,22 @@ def plot_combined(flat, surveys, fname="recovery_combined.pdf"):
 # Publication plotting: LCDM curve (exact Murray+21, from Driver's allhmf.r),
 # a Driver-style multi-survey HMF figure, and a corner plot.
 # ---------------------------------------------------------------------------
+# The LCDM curve is normalised so that the integral of M phi(M) dM equals
+# Omega_M rho_crit.  That Omega_M must be the one Driver used (0.3147), NOT
+# recovery.py's OMEGA_M = 0.25, which is the MOCK's cosmology and is used here
+# only for comoving volumes.  Using 0.25 scaled the curve to hold 25% of the
+# critical density instead of 31.47%, putting it log10(0.3147/0.25) = 0.100 dex
+# low -- which is why the LCDM line sat ~0.12 dex BELOW Driver's GSR fit here
+# while the two lie on top of each other in his own figures.
+LCDM_OMEGA_M = 0.3147
+
+
 def lcdm_curve():
     """Murray+21 LCDM MRP, Omega_M-normalised and z=0.1-shifted, exactly as
     Driver+22 allhmf.r. Returns (x, log10 phi) for the curve plus the (M*, logphi*,
-    alpha, beta) reference point for the corner plot."""
+    alpha, beta) reference point for the corner plot.
+
+    Normalised with LCDM_OMEGA_M (Driver's 0.3147), not the module OMEGA_M."""
     parsec, Gn, msol = 3.0857e16, 6.67408e-11, 1.988e30
     rhocrit = 3 * (1000 * H0 / (1e6 * parsec)) ** 2 / (8 * np.pi * Gn)
     be, A, ms, al = 0.7097976, 1.727006e-19, 14.42947, -1.864908
@@ -3156,7 +3180,7 @@ def lcdm_curve():
         * 0.001
         * msol
         / (1e6 * parsec) ** 3
-        / (OMEGA_M * rhocrit)
+        / (LCDM_OMEGA_M * rhocrit)
     )
     x = mrpx - 0.08
     y = np.log10(mrpy) - np.log10(factor) + 0.08
@@ -3242,17 +3266,17 @@ def plot_publication(
     mgrid = np.linspace(12.5, 16, 400)
     fig, ax = plt.subplots(figsize=(8, 6))
 
-    # our posterior band
+    # our posterior: a 16-84 credible band, not 400 translucent curves.  The
+    # spaghetti version read as noise and hid the comparison lines.
     idx = np.random.default_rng(0).choice(
         flat.shape[0], size=min(400, flat.shape[0]), replace=False
     )
-    for k in idx:
-        ax.plot(
-            mgrid,
-            np.log10(mrp_phi(mgrid, *flat[k])),
-            color=(100 / 255, 149 / 255, 237 / 255),
-            alpha=0.02,
-        )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        _curves = np.array([np.log10(mrp_phi(mgrid, *flat[k])) for k in idx])
+    _lo, _hi = np.nanpercentile(_curves, [16, 84], axis=0)
+    ax.fill_between(
+        mgrid, _lo, _hi, color=(100 / 255, 149 / 255, 237 / 255), alpha=0.30, lw=0
+    )
     ax.plot(
         mgrid,
         np.log10(mrp_phi(mgrid, *med)),
@@ -4015,6 +4039,14 @@ def run_mock_nessie(path="nessie_mock_groups.npz", model_kind="marg_tab"):
         check_lambda(data, np.median(flat, axis=0))
     except Exception as e:
         print(f"  [Lambda check failed: {e}]")
+    # PPC on the MOCK, so the real-data chi2/bin has a baseline. Without it a
+    # value like 15.15 on GAMA is uninterpretable: it could mean the data reject
+    # the model, or simply that this statistic is not normalised to ~1.
+    try:
+        plot_ppc(flat, data, x_plot, fname=f"ppc_nessiemock_{model_kind}.pdf",
+                 title="Posterior predictive (Nessie mock)")
+    except Exception as e:
+        print(f"  [ppc failed: {e}]")
     print("\n  Truth here is the INJECTED MRP, so 'bias(sd)' is genuine recovery.")
     print("  A log M* deficit of ~0.155 dex is expected (the A=10 dynamical mass")
     print("  under-estimates the true halo mass by that much on this mock).")
