@@ -456,9 +456,18 @@ def match_groups(gal, gids, table, halo):
     # before counting.  Without that dedup a group straddling three halos would
     # be counted once for each and sum(n_entries) would exceed the catalogue
     # size -- over-correcting in the opposite direction.
+    # RESTORED. Dropping the purity cut is right in principle -- a Poisson
+    # intensity over catalogue entries should count every entry -- and it did
+    # fix the normalisation (Lambda/N 0.790 -> 0.959). But the closed loop says
+    # otherwise: alpha recovery degraded from +0.011 sigma to +0.88 sigma. Two
+    # errors were evidently cancelling in the incumbent, and until that is
+    # understood the validated configuration wins. See CLAUDE.md, "The C(m,z)
+    # route".
+    #
+    # Note purity >= 0.5 means more than half the group belongs to that halo, so
+    # at most one halo can own a group and no dedup is needed here.
     ent = (
-        pr.sort_values("N_gh", ascending=False)
-        .drop_duplicates("fof_id", keep="first")
+        pr[pr["purity"] >= PURITY_MIN]
         .groupby("id_group_sky")
         .size()
         .rename("n_entries")
