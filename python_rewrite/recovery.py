@@ -3984,10 +3984,16 @@ def run_mock_nessie(path="nessie_mock_groups.npz", model_kind="marg_tab"):
         f"(med {np.median(log_mass):.2f})"
     )
 
-    mlim_func, _, kind, turn_pts = turnover_mlim(z, log_mass)
-    print(f"  mlim(z) [{kind}]: {mlim_func(ZMIN):.2f} -> {mlim_func(ZLIMIT):.2f}")
-    z_mids, V_sh = shell_volumes(sky_frac)
-    mlim_sh = mlim_func(z_mids)
+    _mz = COMP_MODE == "mz" and model_kind.startswith("marg_tab")
+    if _mz:
+        print("mlim(z) NOT used: selection carried by C(m,z) [--comp-mode mz]")
+        mlim_func = mlim_sh = turn_pts = None
+        z_mids, V_sh = shell_volumes(sky_frac)
+    else:
+        mlim_func, _, kind, turn_pts = turnover_mlim(z, log_mass)
+        print(f"  mlim(z) [{kind}]: {mlim_func(ZMIN):.2f} -> {mlim_func(ZLIMIT):.2f}")
+        z_mids, V_sh = shell_volumes(sky_frac)
+        mlim_sh = mlim_func(z_mids)
 
     data, keep = prep_tab(
         z,
@@ -3999,6 +4005,9 @@ def run_mock_nessie(path="nessie_mock_groups.npz", model_kind="marg_tab"):
         V_sh,
         fit_scale=(model_kind == "marg_tab_serr"),
     )
+    # In mz mode the fit lives in the MASS_BIAS-shifted true-mass coordinate, so
+    # the figures must use the same one or they sit MASS_BIAS dex off the model.
+    x_plot = np.asarray(data["x_obs"], float) if _mz else log_mass[keep]
     print(f"\nFitting [{model_kind}] on the Nessie mock catalogue ...")
     map_par, flat = run_stan(model_kind, data)
     res = summarise(flat)
@@ -4011,10 +4020,10 @@ def run_mock_nessie(path="nessie_mock_groups.npz", model_kind="marg_tab"):
     print("  under-estimates the true halo mass by that much on this mock).")
     emit_publication(
         flat,
-        {"Nessie mock": dict(x_fit=log_mass[keep], Vsurvey=float(V_sh.sum()))},
+        {"Nessie mock": dict(x_fit=x_plot, Vsurvey=float(V_sh.sum()))},
         tag=f"nessiemock_{model_kind}",
         title="Nessie mock HMF",
-        mmax_data=float(np.percentile(log_mass[keep], 99.5)),
+        mmax_data=float(np.percentile(x_plot, 99.5)),
     )
     return res
 
