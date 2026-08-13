@@ -1701,6 +1701,31 @@ rho = −0.97 M\*-phi\* ridge rather than being independently wrong.
 So the method works for the slope. Quote alpha; treat phi\* as carrying the
 larger systematic.
 
+### The PPC chi2 needs a baseline: its floor is ~9, not 1
+
+`plot_ppc` was only ever called from `run_real_gama`, so the real-data
+`chi2/bin = 15.15` had nothing to compare against and looked like the model
+being rejected. It is not. Running the same statistic on the MOCK -- where the
+model is correct by construction and alpha recovers to +0.10 sigma:
+
+| | chi2/bin | observed | predicted | ratio |
+|---|---|---|---|---|
+| Nessie mock | **9.01** | 1485 | 1352 | 0.911 |
+| Real GAMA | **15.15** | 1720 | 1571 | 0.913 |
+
+Two things follow:
+
+* **The statistic is not normalised to 1.** Its floor here is ~9, so 15.15 is
+  about 1.7x the achievable value, not 15x. There is some genuine extra misfit
+  on the real data, worth understanding, but the model is not rejected.
+* **The ~9% count under-prediction is identical in mock and data** (0.911 vs
+  0.913), so it belongs to the method -- almost certainly the same Lambda
+  normalisation the purity cut leaves 21% short -- and not to GAMA.
+
+`run_mock_nessie` now emits `ppc_nessiemock_{model}.pdf` so this comparison is
+always available. **Never quote a PPC chi2 from this code without the mock
+number beside it.**
+
 ### Recommended position
 
 Use the incumbent (`--comp-mode delta`, purity cut restored) for anything
