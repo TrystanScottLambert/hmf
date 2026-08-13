@@ -2126,6 +2126,51 @@ def apply_nessie_bias(flat):
 
 
 NESSIE_TABLE = "nessie_completeness_table.npz"
+NESSIE_TABLE_MZ = "nessie_completeness_mz.npz"
+
+# 'delta' = the incumbent C(Delta = m - mlim(z), z), which needs turnover_mlim.
+# 'mz'    = C(m, z) keyed on absolute true mass, so mlim(z) drops out of the fit
+#           entirely.  Set from --comp-mode in the __main__ block, alongside
+#           MLIM_FORM -- run_real_gama reads these as globals at call time.
+COMP_MODE = "delta"
+COMP_DEF = "entries"  # 'entries' (Poisson intensity) | 'repr' (bounded, check)
+
+# The C(m,z) table is keyed on the TRUE abundance-matched halo mass, while
+# x_obs is MassA, a dynamical mass low by ~0.155 dex (A=10 and no h-scaling).
+# Under Delta keying that offset partly cancelled, because mlim was fit to
+# OBSERVED masses in both mock and data, and the remainder was absorbed into
+# NESSIE_BIAS post hoc.  Under absolute keying nothing cancels, so it has to be
+# applied explicitly.  N(m_obs | m_t + b, sig) == N(m_obs - b | m_t, sig), so
+# shifting x_obs is exact and needs no Stan change.
+MASS_BIAS = 0.0
+
+# Closed-loop residual for COMP_MODE='mz'.  Still zeros until the mock recovery
+# in that mode has actually been run -- apply_nessie_bias warns if it is used.
+NESSIE_BIAS_MZ = dict(ms=0.0, lp=0.0, al=0.0, be=0.0)
+
+
+def load_nessie_table_mz(path=NESSIE_TABLE_MZ, comp_def="entries"):
+    """(m, z, C, Nh) from measure_completeness_nessie.tabulate_C_mz.
+
+    ``comp_def='entries'`` returns the expected NUMBER of catalogue entries per
+    halo, which is what the Poisson intensity wants and which may exceed 1.
+    ``'repr'`` returns the bounded recovered-fraction, for the systematic check.
+    """
+    t = np.load(path)
+    m, z = t["m"], t["z"]
+    C = t["C_repr"] if comp_def == "repr" else t["C"]
+    Nh = t["Nh"] if "Nh" in t else np.zeros(C.shape, int)
+    thin = int((Nh < int(t["min_n"])).sum()) if "min_n" in t else -1
+    print(
+        f"  [C table] {path} [{comp_def}]: {C.shape[0]} z bins "
+        f"({z[0]:.3f}..{z[-1]:.3f}) x {m.size} mass points "
+        f"({m[0]:.2f}..{m[-1]:.2f})"
+    )
+    print(
+        f"            plateau {np.round(np.nanmax(C, axis=1), 3)}"
+        + (f", {thin}/{Nh.size} cells below min_n" if thin >= 0 else "")
+    )
+    return m, z, C, Nh
 
 
 def load_nessie_table(path=NESSIE_TABLE):
@@ -2158,6 +2203,74 @@ def eval_C(delta, zval, d, z, C):
     return np.clip(out, 0.0, None)
 
 
+def _prep_tab_mz(
+    z_obs, m_obs, sigma, z_mids, V_sh, table_path_mz, nint, cmin,
+    fit_scale, s_hi, mbias, comp_def,
+):
+    """prep_tab with the completeness keyed on absolute mass, C(m, z).
+
+    Identical machinery to the Delta path -- same nodes, same Stan data block,
+    no new Stan variables -- with two deliberate differences:
+
+    * ``x_obs`` is shifted by ``mbias``. The table is keyed on the TRUE
+      abundance-matched mass while the data is MassA, ~0.155 dex lower. Under
+      Delta keying that partly cancelled through mlim; here nothing cancels, and
+      N(m_obs | m_t + b, sig) == N(m_obs - b | m_t, sig) makes the shift exact.
+    * the keep mask is ``Cobj.max(axis=1) > cmin`` -- "the model can explain this
+      object somewhere on its node grid" -- rather than C at the observed mass.
+      Testing C(x_obs) would reintroduce a hard cut on the observed value, which
+      is the exact failure being removed.
+    """
+    mtab, ztab, C, Nh = load_nessie_table_mz(table_path_mz, comp_def)
+    if fit_scale:
+        sig = np.asarray(sigma, float)
+        nint = max(nint, int(np.ceil(41 * s_hi)))
+        span = 5.0 * s_hi
+    else:
+        sig = np.asarray(sigma, float) * SIGMA_SCALE
+        span = 5.0
+
+    xc = np.asarray(m_obs, float) - mbias
+    g = np.linspace(-span, span, nint)
+    mt_all = xc[:, None] + sig[:, None] * g[None, :]
+    C_all = eval_C(
+        mt_all, np.repeat(np.asarray(z_obs, float)[:, None], nint, axis=1),
+        mtab, ztab, C,
+    )
+    keep = C_all.max(axis=1) > cmin
+    mt, Cobj = mt_all[keep], C_all[keep]
+
+    xg = np.linspace(float(mtab[0]), XHI, NG)
+    dx = float(xg[1] - xg[0])
+    Csh = np.vstack(
+        [eval_C(xg, np.full(NG, z_mids[j]), mtab, ztab, C) for j in range(len(V_sh))]
+    )
+
+    dropped = int((~keep).sum())
+    beyond = int((xc[keep] > mtab[-1]).sum())
+    print(
+        f"  tabulated C(m,z): kept {int(keep.sum())}/{xc.size} groups "
+        f"(C > {cmin}); mass shifted by {-mbias:+.3f} dex; "
+        + ("sigma FITTED" if fit_scale else f"sigma x{SIGMA_SCALE}")
+    )
+    if dropped:
+        print(f"  !! {dropped} groups dropped -- expected ~0 in mz mode; if this "
+              f"is large the table does not cover the data")
+    if beyond:
+        print(
+            f"  !! {beyond} groups sit above logM = {mtab[-1]:.2f}, the top of the "
+            f"table -- C is held flat there, and that is where M* and beta are set."
+        )
+    data = dict(
+        N=int(keep.sum()), Nint=int(nint), Nsh=int(len(V_sh)), Ng=int(NG),
+        x_obs=xc[keep], sig=sig[keep], mt=mt, Cobj=Cobj,
+        V_sh=np.asarray(V_sh, float), xg=xg, Csh=Csh, dx=dx,
+    )
+    if fit_scale:
+        data.update(s_mu=float(SIGMA_SCALE), s_sd=0.15)
+    return data, keep
+
+
 def prep_tab(
     z_obs,
     m_obs,
@@ -2171,10 +2284,31 @@ def prep_tab(
     cmin=1e-3,
     fit_scale=False,
     s_hi=2.6,
+    *,
+    mode_key=None,
+    mbias=None,
+    comp_def=None,
+    table_path_mz=None,
 ):
     """Stan data for marg_tab: integration nodes and the completeness evaluated
     on them, both precomputed. Keeps every group whose own completeness is
-    non-negligible (no observed-mass cut: the selection is carried by C)."""
+    non-negligible (no observed-mass cut: the selection is carried by C).
+
+    ``mode_key='mz'`` switches the completeness from C(Delta = m - mlim(z), z) to
+    C(m, z) keyed on absolute true mass, which removes ``turnover_mlim`` -- and
+    with it the mode-as-limit problem, the 54% hard cut and the linear/quad
+    instability -- from the fit entirely. In that mode ``mlim_func`` and
+    ``mlim_sh`` may be None, and ``x_obs`` is shifted by ``mbias`` so the data
+    and the table share a mass definition (see MASS_BIAS)."""
+    mode_key = COMP_MODE if mode_key is None else mode_key
+    mbias = MASS_BIAS if mbias is None else float(mbias)
+    comp_def = COMP_DEF if comp_def is None else comp_def
+    table_path_mz = NESSIE_TABLE_MZ if table_path_mz is None else table_path_mz
+    if mode_key == "mz":
+        return _prep_tab_mz(
+            z_obs, m_obs, sigma, z_mids, V_sh, table_path_mz, nint, cmin,
+            fit_scale, s_hi, mbias, comp_def,
+        )
     d, ztab, C = load_nessie_table(table_path)
     if fit_scale:
         # nodes must cover the widest kernel the sampler can reach, so they are
@@ -2537,18 +2671,29 @@ def run_real_gama(
         f"(med {np.median(log_mass):.2f})   sigma med {np.median(sigma):.2f}"
     )
 
-    print("Turnover mlim(z) ...")
-    mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass, form=MLIM_FORM)
-    print(
-        f"  mlim(z) [{tkind}]: mlim({ZMIN})={mlim_func(ZMIN):.2f} "
-        f"mlim({ZLIMIT})={mlim_func(ZLIMIT):.2f}"
-    )
+    _mz = COMP_MODE == "mz" and model_kind.startswith("marg_tab")
+    if _mz:
+        # The whole point of mz mode: the selection is carried by C(m, z), so
+        # mlim(z) -- the histogram-mode estimator that put 54% of the catalogue
+        # below its own "limit" -- is never formed.
+        print("mlim(z) NOT used: selection carried by C(m,z) [--comp-mode mz]")
+        mlim_func = coefs = tkind = turn_pts = None
+        z_mids, V_sh = shell_volumes(sky_frac)
+        Vsurvey = float(V_sh.sum())
+        mlim_sh = mlim_per = None
+    else:
+        print("Turnover mlim(z) ...")
+        mlim_func, coefs, tkind, turn_pts = turnover_mlim(z, log_mass, form=MLIM_FORM)
+        print(
+            f"  mlim(z) [{tkind}]: mlim({ZMIN})={mlim_func(ZMIN):.2f} "
+            f"mlim({ZLIMIT})={mlim_func(ZLIMIT):.2f}"
+        )
 
-    z_mids, V_sh = shell_volumes(sky_frac)
-    Vsurvey = float(V_sh.sum())
-    mlim_sh = mlim_func(z_mids)
+        z_mids, V_sh = shell_volumes(sky_frac)
+        Vsurvey = float(V_sh.sum())
+        mlim_sh = mlim_func(z_mids)
 
-    mlim_per = mlim_func(z)
+        mlim_per = mlim_func(z)
 
     if model_kind in (
         "marg_tab",
@@ -2589,7 +2734,11 @@ def run_real_gama(
                 f"{to_driver_cosmology(PIN_MS, 0)[0]:.3f} in Driver units;\n"
                 f"    equivalent to asserting the mass calibration A"
             )
-        x_fit = log_mass[keep]
+        # In mz mode data["x_obs"] is log_mass - MASS_BIAS, i.e. the TRUE-mass
+        # coordinate the model and xg live in. plot_ppc/emit_publication bin
+        # x_fit against a model integral on xg, so using the raw MassA here
+        # would shift every figure by MASS_BIAS relative to the fit.
+        x_fit = np.asarray(data["x_obs"], float) if _mz else log_mass[keep]
     elif model_kind in ("marg_comp", "marg_comp_serr"):
         # Completeness ramp from the GAMA-selected mock (same mag limit, same
         # >=MULTI members, same group finder) -- i.e. injection-recovery applied
@@ -4050,7 +4199,33 @@ if __name__ == "__main__":
         choices=["linear", "quad"],
         default=None,
         help="force the mlim(z) form; the mock used linear and the "
-        "AIC choice is unstable",
+        "AIC choice is unstable. Irrelevant under --comp-mode mz, where "
+        "mlim(z) is not formed at all",
+    )
+    ap.add_argument(
+        "--comp-mode",
+        choices=["delta", "mz"],
+        default="delta",
+        help="completeness keying for the marg_tab models. 'delta' is the "
+        "incumbent C(m - mlim(z), z), which needs turnover_mlim; 'mz' uses "
+        "C(m, z) on absolute true mass and drops mlim(z) entirely",
+    )
+    ap.add_argument(
+        "--comp-def",
+        choices=["entries", "repr"],
+        default="entries",
+        help="which completeness the mz table supplies: 'entries' (expected "
+        "number of catalogue entries per halo, the Poisson intensity, may "
+        "exceed 1) or 'repr' (bounded recovered fraction, systematic check)",
+    )
+    ap.add_argument("--comp-table-mz", default=NESSIE_TABLE_MZ)
+    ap.add_argument(
+        "--mass-bias",
+        type=float,
+        default=None,
+        help="dex offset between the observed mass column and the TRUE mass the "
+        "mz table is keyed on; x_obs is shifted by -this. Measured from the "
+        "mock by measure_completeness_nessie.py",
     )
     ap.add_argument(
         "--mass-col",
@@ -4156,6 +4331,18 @@ if __name__ == "__main__":
     args = ap.parse_args()
     SHOW_ALPHA_CORRECTION = args.alpha_correction
     MLIM_FORM = args.mlim_form
+    # These are read as globals at call time by run_real_gama / prep_tab, so
+    # they have to be assigned in this block -- anywhere else and the default wins.
+    COMP_MODE = args.comp_mode
+    COMP_DEF = args.comp_def
+    NESSIE_TABLE_MZ = args.comp_table_mz
+    if args.mass_bias is not None:
+        MASS_BIAS = float(args.mass_bias)
+    if COMP_MODE == "mz":
+        print(
+            f"[comp-mode mz] C(m,z) from {NESSIE_TABLE_MZ} [{COMP_DEF}], "
+            f"MASS_BIAS = {MASS_BIAS:+.3f} dex, mlim(z) not used"
+        )
     if args.pin_ms is not None:
         PIN_MS = args.pin_ms
     if args.pin_be is not None:

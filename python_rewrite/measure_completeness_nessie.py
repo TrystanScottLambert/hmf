@@ -89,6 +89,7 @@ MOCK_SPEC_COMPLETENESS = None  # None = perfect; else a float in (0, 1]
 # matching thresholds (bijective match, Robotham+11 style)
 PURITY_MIN = 0.5  # >= this fraction of the FoF group is one halo
 RECOVERY_MIN = 0.5  # >= this fraction of the halo is in that FoF group
+MZ_MIN_N = 20  # min halos per (m, z) cell for the absolute-mass C table
 
 MASS_COL = "log_mass_am"  # true mass used for C(m); "mvir" also available
 
@@ -594,6 +595,153 @@ def measure_completeness(halo, mlim_func, z_bins, d_edges):
     return out
 
 
+def tabulate_C_mz(halo, m_edges, z_edges, min_n=20):
+    """Completeness tabulated on ABSOLUTE true mass and redshift, C(m, z).
+
+    The existing ``C(Delta, z)`` table is keyed on ``Delta = m - mlim(z)``, which
+    drags ``recovery.turnover_mlim`` into the fit.  That estimator takes the
+    *mode* of the observed mass histogram, which for a smooth distribution lands
+    mid-distribution rather than at the faint edge -- 54% of real GAMA groups sit
+    below their own mlim.  Keying on absolute mass removes mlim from the fit
+    entirely.
+
+    **Consequence to keep in mind**: with Delta gone, C's *z*-dependence IS the
+    selection function.  It is no longer carried by mlim(z), so the z grid has to
+    span the shells the fit actually uses (``recovery.shell_volumes`` runs
+    z = 0.016..0.244), not the 3 clamped nodes the Delta table got away with.
+
+    Returns ``(m_cen, z_cen, C_entries, C_repr, Nh)``:
+
+    * ``C_entries`` -- mean ``n_entries``, the expected NUMBER of catalogue
+      entries per halo.  This is what the Poisson intensity wants and it may
+      legitimately exceed 1 (one halo can yield several N>=5 groups), so it is
+      not clipped at 1.
+    * ``C_repr`` -- mean ``represented``, a true probability in [0, 1].  Bounded,
+      so it is the systematic cross-check on ``C_entries``.
+    * ``Nh`` -- halo count per cell.  The high-mass plateau is a flat hold off
+      whatever the last populated cell contains; under absolute keying that
+      plateau sits at a specific mass and directly sets M* and beta, so the
+      count behind it has to be visible.
+    """
+    m_cen = 0.5 * (np.asarray(m_edges[1:], float) + np.asarray(m_edges[:-1], float))
+    z_cen = 0.5 * (np.asarray(z_edges[1:], float) + np.asarray(z_edges[:-1], float))
+    mall = halo[MASS_COL].values.astype(float)
+    zall = halo["zcos"].values.astype(float)
+    nent = halo["n_entries"].values.astype(float)
+    nrep = halo["represented"].values.astype(float)
+
+    shape = (z_cen.size, m_cen.size)
+    C_ent, C_rep = np.full(shape, np.nan), np.full(shape, np.nan)
+    Nh = np.zeros(shape, int)
+    for i in range(z_cen.size):
+        zm = (zall >= z_edges[i]) & (zall < z_edges[i + 1])
+        for k in range(m_cen.size):
+            s_ = zm & (mall >= m_edges[k]) & (mall < m_edges[k + 1])
+            Nh[i, k] = int(s_.sum())
+            if Nh[i, k] >= min_n:
+                C_ent[i, k] = float(np.mean(nent[s_]))
+                C_rep[i, k] = float(np.mean(nrep[s_]))
+        # same fill rule as the Delta table: 0 below the first measured cell,
+        # hold the last measured value above it
+        for arr in (C_ent, C_rep):
+            ok = np.isfinite(arr[i])
+            if ok.sum() >= 2:
+                arr[i] = np.interp(
+                    m_cen, m_cen[ok], arr[i][ok], left=0.0, right=float(arr[i][ok][-1])
+                )
+            else:
+                arr[i] = np.where(np.isfinite(arr[i]), arr[i], 0.0)
+    return m_cen, z_cen, C_ent, C_rep, Nh
+
+
+def fit_C_mz_parametric(halo, m_grid, z_grid, kind="entries"):
+    """C(m, z) as a smooth parametric fit, evaluated onto a dense grid.
+
+    WHY NOT A RAW 2-D HISTOGRAM.  Binning halos in (mass, z) and averaging is
+    the obvious thing and it does not work here: the mock lightcone has almost
+    no nearby massive halos.  At z = 0.025 there are 2 halos above logM 14 and
+    none above 14.5, so the last measurable bin is 12.55 and everything above it
+    gets flat-held at C = 0.087 -- for objects that are certainly detected.  The
+    Delta = m - mlim(z) keying dodged this by pooling every redshift into a
+    single shape; absolute keying has to recover that pooling some other way.
+
+    So fit, do not bin.  The ramp
+
+        C(m, z) = A(z) * 0.5 * (1 + erf((m - m50(z)) / (sqrt(2) w(z))))
+
+    is fitted to ALL halos at once by maximum likelihood, with
+
+        m50(z) quadratic,  log w(z) linear,  log A(z) linear
+
+    which pools across redshift and extrapolates into the empty low-z corner
+    along the trend the populated bins define.  No binning, no sparsity cliff,
+    and -- the point of the exercise -- no mlim(z) fitted to the observed data:
+    m50(z) is measured from the mock against the mock's own truth.
+
+    ``kind='entries'`` fits a Poisson mean (may exceed 1); ``'repr'`` fits a
+    Bernoulli probability (bounded by 1).
+    """
+    from scipy.optimize import minimize
+
+    m = halo[MASS_COL].values.astype(float)
+    zz = halo["zcos"].values.astype(float)
+    y = (
+        halo["n_entries"].values.astype(float)
+        if kind == "entries"
+        else halo["represented"].values.astype(float)
+    )
+    ok = np.isfinite(m) & np.isfinite(zz) & np.isfinite(y)
+    m, zz, y = m[ok], zz[ok], y[ok]
+    z0 = float(np.median(zz))
+
+    def unpack(p, zv):
+        dz = zv - z0
+        m50 = p[0] + p[1] * dz + p[2] * dz**2
+        w = np.exp(p[3] + p[4] * dz)
+        # A is the high-mass plateau and is held CONSTANT in z on purpose.  It
+        # is only constrained by the handful of cells above the ramp, and an
+        # exp(a0 + a1*dz) form extrapolated to logM 15.5 ran away to 2.5 at low
+        # z -- against ~0.8 where the mock actually has halos.  Real GAMA groups
+        # reach logM ~15.3, i.e. inside that extrapolated region, so the runaway
+        # would land directly on M* and beta.
+        # For 'repr' the outcome is Bernoulli, so A is a probability and is
+        # squashed into (0, 1]; an unbounded A gave C_repr = 1.32, which is
+        # impossible.
+        A = 1.0 / (1.0 + np.exp(-p[5])) if kind == "repr" else np.exp(p[5])
+        return m50, w, A
+
+    def model(p, mv, zv):
+        m50, w, A = unpack(p, zv)
+        return A * 0.5 * (1.0 + erf((mv - m50) / (np.sqrt(2.0) * w)))
+
+    def nll(p):
+        mu = model(p, m, zz)
+        mu = np.clip(mu, 1e-9, None)
+        if kind == "entries":  # Poisson
+            return float(np.sum(mu - y * np.log(mu)))
+        q = np.clip(mu, 1e-9, 1 - 1e-9)  # Bernoulli
+        return float(-np.sum(y * np.log(q) + (1 - y) * np.log1p(-q)))
+
+    p0 = np.array([13.8, 3.0, 0.0, np.log(0.35), 0.0,
+                   0.0 if kind == "repr" else np.log(0.8), 0.0])
+    res = minimize(nll, p0, method="Nelder-Mead",
+                   options=dict(maxiter=40000, maxfev=40000, xatol=1e-6, fatol=1e-6))
+    p = res.x
+    mm, zc = np.meshgrid(m_grid, z_grid, indexing="xy")
+    C = model(p, mm, zc)
+
+    m50_0, w_0, A_0 = unpack(p, np.array([z_grid[0]]))
+    m50_1, w_1, A_1 = unpack(p, np.array([z_grid[-1]]))
+    print(
+        f"  [{kind}] fit ok={res.success} nll={res.fun:.1f} on {m.size} halos\n"
+        f"           m50: {m50_0[0]:.2f} (z={z_grid[0]:.3f}) -> "
+        f"{m50_1[0]:.2f} (z={z_grid[-1]:.3f})\n"
+        f"           w:   {w_0[0]:.3f} -> {w_1[0]:.3f}   "
+        f"A: {float(np.atleast_1d(A_0)[0]):.3f} (constant in z)"
+    )
+    return C, p, z0
+
+
 def measure_mass_relation(halo, table):
     """Recovered dynamical mass vs true mass, for cleanly matched pairs.
     This is the empirical replacement for the multiplicity->sigma lookup."""
@@ -1016,6 +1164,53 @@ def main():
     print(f"  max Delta with data: {d_tab[np.isfinite(tab).any(axis=0)].max():+.2f}")
     print(f"  plateau      : {np.round(np.nanmax(tab, axis=1), 3)}")
     np.savez("nessie_completeness_table.npz", d=d_tab, z=np.array(zc_t), C=tab)
+
+    # ---- the same completeness keyed on ABSOLUTE mass, C(m, z).  Written
+    # alongside the Delta table, which is left untouched for backward
+    # compatibility.  See tabulate_C_mz for why the z grid has to be finer here.
+    print("\n  === tabulated C(m, z) on absolute mass ===")
+    m_edges_mz = np.concatenate(
+        [np.arange(11.0, 14.6 + 1e-9, 0.1), [14.9, 15.3, 15.8]]
+    )
+    z_edges_mz = np.linspace(a.zmin, a.zmax, 9)
+    m_cen, z_cen, C_bin, C_bin_rep, Nh = tabulate_C_mz(
+        halo, m_edges_mz, z_edges_mz, min_n=MZ_MIN_N
+    )
+    print(
+        f"  grid: logM {m_cen[0]:.2f}..{m_cen[-1]:.2f} ({m_cen.size} bins), "
+        f"z {z_cen[0]:.3f}..{z_cen[-1]:.3f} ({z_cen.size} bins)"
+    )
+    # The binned table is kept only as a diagnostic: at low z the mock has no
+    # massive halos, so its high-mass cells are flat-held off low-mass ones.
+    lastm = [
+        (m_cen[np.where(Nh[i] >= MZ_MIN_N)[0][-1]]
+         if (Nh[i] >= MZ_MIN_N).any() else np.nan)
+        for i in range(z_cen.size)
+    ]
+    print(f"  binned: last mass bin with N>={MZ_MIN_N} per z row: "
+          f"{np.round(lastm, 2)}   <- why the fit is used instead")
+    C_ent, p_ent, z0 = fit_C_mz_parametric(halo, m_cen, z_cen, kind="entries")
+    C_rep, p_rep, _ = fit_C_mz_parametric(halo, m_cen, z_cen, kind="repr")
+    with np.errstate(invalid="ignore"):
+        m50 = [
+            np.interp(0.5, C_ent[i], m_cen) if C_ent[i].max() >= 0.5 else np.nan
+            for i in range(z_cen.size)
+        ]
+    print(f"  mass at C_entries=0.5 : {np.round(m50, 2)}")
+    print(f"  plateau (C_entries)   : {np.round(np.nanmax(C_ent, axis=1), 3)}")
+    print(f"  plateau (C_repr)      : {np.round(np.nanmax(C_rep, axis=1), 3)}")
+    np.savez(
+        "nessie_completeness_mz.npz",
+        m=m_cen, z=z_cen, C=C_ent, C_repr=C_rep, Nh=Nh,
+        C_binned=C_bin, C_binned_repr=C_bin_rep,
+        par_entries=p_ent, par_repr=p_rep, z0=z0,
+        # provenance: with no self-calibration against the data left, the
+        # assumptions behind this table are the assumptions of the fit
+        mass_col=MASS_COL, mag_limit=a.mag_limit, multi=MULTI,
+        purity_min=PURITY_MIN, recovery_min=RECOVERY_MIN,
+        area_deg2=a.gama_area, zmin=a.zmin, zmax=a.zmax, min_n=MZ_MIN_N,
+    )
+    print("  saved nessie_completeness_mz.npz  (m, z, C, C_repr, Nh)")
 
     # Save the Nessie group catalogue itself so the fit can be closed-loop
     # validated: the MRP was injected by abundance matching, Nessie recovered
