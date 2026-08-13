@@ -440,9 +440,23 @@ def match_groups(gal, gids, table, halo):
     halo = halo.merge(rep, on="id_group_sky", how="left")
     halo["represented"] = halo["represented"].fillna(False)
 
-    # (b) "n_entries": how many N>=MULTI groups are majority-owned by this halo.
+    # (b) "n_entries": how many N>=MULTI catalogue entries this halo produces.
+    #
+    # NO PURITY CUT.  C_entries multiplies phi(m) to give the intensity of
+    # CATALOGUE ENTRIES, and the catalogue contains every N>=MULTI group, clean
+    # or not.  Requiring purity >= PURITY_MIN counted only 1253 of the 1585 mock
+    # groups, so Lambda expected 1253 while the likelihood fitted all 1585 --
+    # the two populations disagreed and Lambda/N came out at 0.79, a 21% deficit
+    # landing straight on log phi*.  Contamination is a separate effect and
+    # belongs in a purity/contamination term, not in the completeness.
+    #
+    # Each group is assigned to its DOMINANT halo (largest shared membership)
+    # before counting.  Without that dedup a group straddling three halos would
+    # be counted once for each and sum(n_entries) would exceed the catalogue
+    # size -- over-correcting in the opposite direction.
     ent = (
-        pr[pr["purity"] >= PURITY_MIN]
+        pr.sort_values("N_gh", ascending=False)
+        .drop_duplicates("fof_id", keep="first")
         .groupby("id_group_sky")
         .size()
         .rename("n_entries")
@@ -450,6 +464,17 @@ def match_groups(gal, gids, table, halo):
     )
     halo = halo.merge(ent, on="id_group_sky", how="left")
     halo["n_entries"] = halo["n_entries"].fillna(0).astype(int)
+    if big_ids is not None:
+        _tot, _cat = int(halo["n_entries"].sum()), len(big_ids)
+        print(
+            f"  entries    : {_tot} attributed / {_cat} catalogue groups "
+            f"(N>={MULTI})  ratio {_tot / max(_cat, 1):.3f}"
+        )
+        if abs(_tot / max(_cat, 1) - 1.0) > 0.02:
+            print(
+                "  !! Lambda will inherit this ratio directly as log phi*; "
+                "entries not attributed to any halo are groups with no overlap"
+            )
 
     nd = int(halo["detected"].sum())
     print(
