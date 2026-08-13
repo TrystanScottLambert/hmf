@@ -712,7 +712,14 @@ def fit_C_mz_parametric(halo, m_grid, z_grid, kind="entries"):
 
     def model(p, mv, zv):
         m50, w, A = unpack(p, zv)
-        return A * 0.5 * (1.0 + erf((mv - m50) / (np.sqrt(2.0) * w)))
+        # LOGISTIC, not erf.  An erf ramp has Gaussian tails, which die far
+        # faster than the real selection: a low-mass halo can still occasionally
+        # be found, and that tail carries a lot of objects because the HMF is
+        # steep there.  Fitted against the binned mock the erf under-predicted C
+        # at low mass by factors of 2-4, and the Poisson normalisation came out
+        # at Lambda/N = 0.79 -- a 21% deficit that lands straight on log phi*.
+        # The logistic has exponential tails and holds that region.
+        return A / (1.0 + np.exp(-1.7 * (mv - m50) / np.maximum(w, 1e-6)))
 
     def nll(p):
         mu = model(p, m, zz)

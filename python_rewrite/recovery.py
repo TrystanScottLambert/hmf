@@ -2142,7 +2142,11 @@ COMP_DEF = "entries"  # 'entries' (Poisson intensity) | 'repr' (bounded, check)
 # NESSIE_BIAS post hoc.  Under absolute keying nothing cancels, so it has to be
 # applied explicitly.  N(m_obs | m_t + b, sig) == N(m_obs - b | m_t, sig), so
 # shifting x_obs is exact and needs no Stan change.
-MASS_BIAS = 0.0
+# measured by measure_completeness_nessie.py: median(log_dyn - log_mass_am)
+# over 1132 clean matches = -0.155 dex, i.e. the dynamical mass sits BELOW the
+# true abundance-matched mass, so x_obs - MASS_BIAS shifts the data UP onto the
+# table's scale.  (The same run gives scatter 0.375/0.280 = 1.34 = SIGMA_SCALE.)
+MASS_BIAS = -0.155
 
 # Closed-loop residual for COMP_MODE='mz'.  Still zeros until the mock recovery
 # in that mode has actually been run -- apply_nessie_bias warns if it is used.
