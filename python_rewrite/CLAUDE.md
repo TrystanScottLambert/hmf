@@ -1614,6 +1614,81 @@ evidence above it is also the only one that is computationally viable.
 
 ---
 
+## The C(m,z) route: implemented, validated, and it FAILS the gate
+
+`--comp-mode mz` is built and works mechanically (`recovery.py`, `--comp-mode`,
+`--comp-def`, `--mass-bias`; table from `measure_completeness_nessie.py`). On
+real GAMA it fits **1833/1833 groups against 846** under `marg`, which was the
+point. But the closed-loop mock recovery -- the primary gate -- **fails**, and
+the incumbent is better. Do not use it for data.
+
+### Closed-loop mock recovery, alpha (injected truth −1.680)
+
+| configuration | alpha | bias | Lambda/N at injected par |
+|---|---|---|---|
+| **Delta + purity cut (incumbent)** | −1.669 | **+0.011 (0.11 sigma)** | 0.790 |
+| Delta, no purity cut | −1.590 | +0.88 sigma | 0.993 |
+| mz, no purity cut | −1.405 | **+3.28 sigma** | 0.959 |
+
+Both changes hurt and they compound: dropping the purity cut cost ~0.9 sigma,
+and the Delta -> mz keying a further ~2.4 sigma. M\* is worse too -- in mz the
++0.155 dex MASS_BIAS shift should remove the expected deficit entirely, yet M\*
+still lands 0.267 dex low, against a 0.056 dex residual for Delta.
+
+### The tension this exposes, which is the real result
+
+The incumbent has a **known 21% normalisation inconsistency** (Lambda expects
+1253 while the likelihood fits 1585, because `n_entries` applied a purity cut)
+and yet recovers alpha to 0.11 sigma. Fixing that inconsistency -- which is
+correct in principle, a Poisson intensity over catalogue entries must count
+every entry -- makes the recovery **worse**. Two errors were partially
+cancelling.
+
+That is worth understanding before either is changed again. It also means
+`NESSIE_BIAS = dict(ms=-0.229, lp=+0.418, ...)` is not a small residual to be
+tidied away: it is absorbing at least one real modelling error, and any change
+that "fixes" a component of it without re-running the closed loop will move the
+answer in an unpredictable direction.
+
+### Hypotheses tested and REJECTED
+
+Recorded so they are not retried:
+
+* *"The erf ramp's Gaussian tails die too fast at low mass, causing the Lambda
+  deficit."* Switched to a logistic: Lambda/N moved 0.790 -> 0.793. No effect.
+  (The logistic was kept anyway -- its plateau A = 1.071 against erf's 1.891 is
+  far more physical, and `C_repr` stopped exceeding 1.)
+* *"Dropping the purity cut is the main cause of the alpha bias."* Only ~0.9 of
+  the 3.28 sigma. The keying change does the larger part.
+* *"The logistic over-predicts C at low mass, flattening alpha."* It
+  **under**-predicts: median fitted/binned = 0.899 below C = 0.25, 0.993 on the
+  ramp. That would steepen alpha, not flatten it.
+
+### What is genuinely established
+
+* `mlim(z)` from `turnover_mlim` is indefensible -- it is a histogram *mode*, so
+  54% of groups fall below their own "limit" and `marg` discards them.
+* Absolute-mass keying needs a *fitted* C, not a binned one: the mock has 2
+  halos above logM 14 at z = 0.025 and none above 14.5, so binned cells there
+  flat-hold at C = 0.087 for objects that are certainly detected.
+* `MASS_BIAS = -0.155 dex` (median log_dyn - log_mass_am over 1132 clean
+  matches). Its companion scatter, 0.375/0.280 = 1.34, independently reproduces
+  `SIGMA_SCALE`.
+* Lambda at the *fitted* parameters is **not** a validation -- phi\* adjusts to
+  make it 1.000 by construction. Only Lambda at the *injected* parameters tests
+  anything.
+
+### Recommended position
+
+Use the incumbent (`--comp-mode delta`, purity cut restored) for anything
+quotable: it is the only configuration whose alpha is validated. Treat mz as an
+unfinished research branch. The next real question is not "which C" but why the
+better-normalised model recovers worse -- most likely the blending
+inconsistency, where a group straddling two halos is assigned to one for C but
+carries a dynamical mass corresponding to neither.
+
+---
+
 ## Deliverables
 
 1. **GAMA-only plot** — binned points with errors, the fitted MRP with its
