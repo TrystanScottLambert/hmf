@@ -1726,6 +1726,51 @@ Two things follow:
 always available. **Never quote a PPC chi2 from this code without the mock
 number beside it.**
 
+### Why the real-data fit misses: the mock is not faithful, and it dominates
+
+The PPC residual on real GAMA is a coherent S-shape -- the model under-predicts
+BOTH ends and over-fills the middle:
+
+| logM | obs/pred |
+|---|---|
+| 12.53-13.03 | **1.40, 1.86, 1.64** |
+| 13.53-14.03 | 0.82, 0.87, 0.90 |
+| 14.53-14.78 | **1.45, 2.99** |
+
+That is not noise. **28.6% of the catalogue sits where the mock says C < 0.05**,
+and 380 groups have median C = 0.0084 -- the model expects to find under 1% of
+such halos and there they are.
+
+The cause is in this script's own docstring. Nessie-on-Shark under-produces
+low-richness groups relative to GAMA:
+
+| N members | real/mock |
+|---|---|
+| 5-6 | **1.87** |
+| 6-8 | 1.72 |
+| 8-10 | 1.56 |
+| 10-15 | 1.43 |
+| 15+ | 0.90 |
+
+The low-mass obs/pred (1.86, 1.64, 1.40) reproduces that ratio bin for bin. So C
+measured from the mock is too low at low mass, and the fit compromises by
+dropping M\* to sharpen the cutoff.
+
+**Quantified: d log10(real/mock)/d logM = −0.355, so this biases alpha by ~0.35
+dex -- 3.5x the statistical error of 0.100.** alpha = −1.46 ± 0.10 (stat) ± 0.35
+(syst) spans −1.11 to −1.81, which contains BOTH Driver's GAMA-only (−1.27) and
+his GSR (−1.68). It cannot distinguish them.
+
+**This is not fixable inside `recovery.py`.** The mock closed loop validates the
+*estimator* -- an MRP was injected, Nessie recovered groups, fitting them
+returns the MRP -- but it cannot validate the *mock's fidelity to GAMA*, and
+that is what fails.
+
+Consequence: **the 1/Vmax result should be the primary**. Its selection comes
+from the data itself (each group's zmax from its own 5th-brightest member), so
+it is structurally immune to this. The hierarchical fit is a cross-check that
+corroborates the shallower-than-Driver slope without being able to measure it.
+
 ### Recommended position
 
 Use the incumbent (`--comp-mode delta`, purity cut restored) for anything
