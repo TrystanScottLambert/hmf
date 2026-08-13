@@ -1678,6 +1678,29 @@ Recorded so they are not retried:
   make it 1.000 by construction. Only Lambda at the *injected* parameters tests
   anything.
 
+### Baseline re-validated (2026-08-13)
+
+After restoring the purity cut, the incumbent closed loop reproduces:
+
+| param | true | median | sd | bias |
+|---|---|---|---|---|
+| ms | 13.958 | 13.729 | 0.217 | −1.06 sd |
+| lp | −3.445 | −3.027 | 0.323 | +1.29 sd |
+| **al** | **−1.680** | **−1.669** | 0.104 | **+0.10 sd** |
+| be | 0.630 | 0.593 | 0.078 | −0.48 sd |
+
+Rhat 1.004, min ESS 807, 0 divergences, Lambda/N = 0.996. The Delta table was
+verified bit-identical to its pre-change backup first, so `NESSIE_BIAS` is valid
+again.
+
+Read it as: **alpha is recovered** (+0.10 sigma). **M\* is recovered once the
+known A = 10 offset is applied** -- of the −0.229, −0.155 is that offset,
+leaving 0.34 sigma. **phi\* is the weak one** at +1.29 sigma, but it rides the
+rho = −0.97 M\*-phi\* ridge rather than being independently wrong.
+
+So the method works for the slope. Quote alpha; treat phi\* as carrying the
+larger systematic.
+
 ### Recommended position
 
 Use the incumbent (`--comp-mode delta`, purity cut restored) for anything
