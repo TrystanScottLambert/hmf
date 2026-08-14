@@ -588,6 +588,8 @@ def main():
         tag += "_omega"
     if args.iters != 1001:
         tag += f"_it{args.iters}"
+    if args.mcmc:
+        tag += "_mcmc"   # never overwrite the Nelder-Mead deliverable
     if args.out is None:
         args.out = f"hmf_combined_nessie{tag}.pdf"
 
@@ -695,7 +697,7 @@ def main():
         print(f"  {nm:<13}{a:10.3f}{bq:11.3f}{a - bq:+8.3f}")
     print(f"  {'chi2':<13}{val:10.2f}{val_d:11.2f}"
           f"   (convergence {conv} / {conv_d})")
-    par_plot, mc_plot = par, mc      # --mcmc overrides both below
+    par_plot, mc_plot, par_d_plot = par, mc, par_d   # --mcmc overrides these
     if args.mcmc:
         import mcmc_hmf as mh
 
@@ -738,6 +740,20 @@ def main():
                               for p in lin[idx]]),
         )
         par_plot = np.array([best[0], 10.0 ** best[1], best[2], best[3]])
+
+        # The "same fit using Driver+22 GAMA" comparison line must come from the
+        # SAME method, or the figure silently compares an MCMC curve against an
+        # optimiser point and the catalogue difference is confounded with the
+        # fitting method.  Second chain, on Driver's GAMA data.
+        fn_d = make_massfn(ax_d, ay_d, af_d, vol_d, omega_prior)
+        chain_d, best_d, info_d = mh.run_emcee(
+            fn_d, par_d, nwalkers=args.mcmc_walkers, nsteps=args.mcmc_steps,
+            burn=args.mcmc_steps // 4, seed=args.seed + 1)
+        if not info_d["converged"]:
+            print("  WARNING: Driver-GAMA comparison chain has n_eff < 50")
+        par_d_plot = np.array([best_d[0], 10.0 ** best_d[1], best_d[2], best_d[3]])
+        print(f"  Driver-GAMA comparison chain: chi2 {info_d['chi2_min']:.2f} "
+              f"vs NM {val_d:.2f}, logM* {best_d[0]:.3f} vs {par_d[0]:.3f}")
         print("  figure, Omega_M inset and summary now use the POSTERIOR; "
               "the headline curve is the best-lnP sample")
 
@@ -789,7 +805,7 @@ def main():
     print(f"  fraction of OmegaM={OMEGAM} in haloes above 12.7: {om2 / OMEGAM:.3f}")
 
     plot_combined(par_plot, mc_plot, sets, oset[:3], extras, mrpx, mrpy, factor, args.out,
-                  args.myoption, omega_prior, fit_par_driver=par_d,
+                  args.myoption, omega_prior, fit_par_driver=par_d_plot,
                   sdss_label=sdss_label or "SDSS DR10 (Tempel+14)",
                   fit_method="MCMC posterior" if args.mcmc else None)
 

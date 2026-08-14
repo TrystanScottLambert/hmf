@@ -1966,3 +1966,59 @@ The Omega_M numbers make the same point quantitatively:
 * The **extrapolated** total moves 0.27 -> 0.18, because integrating the MRP
   below the mass limit is governed by alpha, which is not measured. Do not
   quote Omega_M (all mass) from this fit in either version.
+
+### All six combined deliverables remade with MCMC — and only ONE is well posed
+
+`--mcmc` now also samples the **"same fit using Driver+22 GAMA" comparison
+line** (`par_d_plot`, a second chain, `seed+1`). Without that the figure
+compared an MCMC curve against an optimiser point, confounding the catalogue
+difference with the fitting method. Figures gain a `_mcmc` suffix so the
+Nelder-Mead deliverables are never overwritten.
+
+12 000 steps x 64 walkers per chain (n_eff 1000-10 000, gate is 50):
+
+| config | NM logM* | MCMC logM* | NM chi2 | MCMC chi2 | dchi2 |
+|---|---|---|---|---|---|
+| **GSR, Tempel** | 14.362 | **13.840** | 244.17 | 241.05 | -3.1 |
+| **GSR, Tempel, M/L cut** | 14.361 | **13.719** | 227.41 | 223.62 | -3.8 |
+| GSR, Nessie SDSS | 13.967 | **11.007** | 274.84 | 230.92 | **-43.9** |
+| GSR, Nessie NFW, M/L cut | 13.966 | **11.021** | 217.12 | 193.74 | **-23.4** |
+| GS, Tempel | 14.076 | **11.005** | 152.20 | 133.53 | **-18.7** |
+| GS, Nessie NFW, M/L cut | 14.057 | **11.004** | 156.96 | 127.72 | **-29.2** |
+
+**Four of six rail against the prior bound at logM* = 11.0.** Their credible
+intervals are set by `BOUNDS`, not by the data. Only the two GSR-with-Tempel
+configurations keep an interior maximum -- which is exactly what "The central
+finding" and "In the combined fit" concluded from optimiser behaviour, now
+established independently by a sampler that cannot run out of budget.
+
+**The strongest validation in the project.** For Driver's OWN configuration --
+his GAMA, Tempel SDSS, REFLEX -- the comparison chain and his optimiser agree
+to the third decimal:
+
+| comparison chain | MCMC chi2 | NM chi2 | MCMC logM* | NM logM* |
+|---|---|---|---|---|
+| GSR, Tempel | **211.55** | **211.55** | 14.120 | 14.150 |
+| GSR, Tempel, M/L cut | 215.00 | 214.99 | 14.025 | 14.062 |
+| every other config | rails | -- | **11.005-11.033** | 14.20-14.27 |
+
+So Driver's published GSR result is **well posed and correct**, and his
+`maxit=500` was not doing any hidden work there. It is every *departure* from
+his configuration -- swapping in Nessie SDSS, or dropping REFLEX -- that
+becomes ill-posed.
+
+### The parameters are meaningless but THE CURVES ARE FINE
+
+`hmf_combined_nessie_GS_mcmc.pdf` has logM* = 11.005 and still lies on the data
+across 12.8-15.6, indistinguishable from Driver's published fit and from LCDM.
+Below the data an MRP with M* far off-scale is just a power law times an
+exponential, and the fit uses that freedom.
+
+**This reframes every ill-posed result in this file.** The HMF is well measured;
+the four-parameter MRP *parameterisation* of it is not. So:
+
+* the binned points, the plotted curves and the figures are all sound;
+* `Omega_M(> 12.7)` is sound (it is an integral over the observed range);
+* individual MRP parameters from any railed configuration are not quotable, and
+  quoting a *difference* in alpha between catalogues from such a fit is worse
+  than quoting nothing.
