@@ -325,7 +325,7 @@ def monte_carlo(sets, myoption, omega_prior, phimrp, mstarmrp, alphamrp, betamrp
 
 def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
                   outfile, myoption, omega_prior, fit_par_driver=None,
-                  sdss_label="SDSS DR10 (Tempel+14)"):
+                  sdss_label="SDSS DR10 (Tempel+14)", fit_method=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -431,8 +431,11 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
             color="cyan", va="center", fontsize=8)
     yy -= dy
     ax.plot([12.8, 12.9], [yy, yy], color=cf, lw=2, ls=":")
+    # With --mcmc this line is the best-lnP posterior sample and the band is
+    # posterior draws, not Driver's optimiser point and refits.  Say so.
     ax.text(12.95, yy, f" Best fit MRP function to {myoption}"
-            + (" + $\\Omega_M$ prior" if omega_prior else ""), va="center",
+            + (" + $\\Omega_M$ prior" if omega_prior else "")
+            + (f" ({fit_method})" if fit_method else ""), va="center",
             fontsize=8)
     if fit_par_driver is not None:
         yy -= dy
@@ -692,6 +695,7 @@ def main():
         print(f"  {nm:<13}{a:10.3f}{bq:11.3f}{a - bq:+8.3f}")
     print(f"  {'chi2':<13}{val:10.2f}{val_d:11.2f}"
           f"   (convergence {conv} / {conv_d})")
+    par_plot, mc_plot = par, mc      # --mcmc overrides both below
     if args.mcmc:
         import mcmc_hmf as mh
 
@@ -713,6 +717,29 @@ def main():
             print(f"  {n:10s}{best[i]:9.3f}{nm[i]:11.3f}{best[i] - nm[i]:+9.3f}")
         print(f"  {'chi2':10s}{info['chi2_min']:9.2f}{val:11.2f}"
               f"{info['chi2_min'] - val:+9.3f}")
+
+        # Swap the posterior in EVERYWHERE the Monte-Carlo refits were used --
+        # the spaghetti band, the Omega_M inset and the printed summary -- not
+        # just the corner plot.  Leaving the figure on the Nelder-Mead curve
+        # while the corner plot showed the posterior would put two different
+        # answers in the same deliverable.  The refits are kept for the corner
+        # overlay, which is where the comparison belongs.
+        rng_pick = np.random.default_rng(args.seed)
+        idx = rng_pick.choice(len(chain), size=min(1000, len(chain)),
+                              replace=False)
+        lin = np.column_stack([chain[:, 0], 10.0 ** chain[:, 1],
+                               chain[:, 2], chain[:, 3]])
+        mc_plot = dict(
+            mstar=chain[:, 0], phistar=lin[:, 1],
+            alphastar=chain[:, 2], betastar=chain[:, 3],
+            curves=[lin[i] for i in idx],
+            omegam=np.array([omega_matter(p) for p in lin[idx]]),
+            omegam2=np.array([omega_matter(p, above=MLIMIT_GAMA)
+                              for p in lin[idx]]),
+        )
+        par_plot = np.array([best[0], 10.0 ** best[1], best[2], best[3]])
+        print("  figure, Omega_M inset and summary now use the POSTERIOR; "
+              "the headline curve is the best-lnP sample")
 
         sets_t0 = [(chain, "MCMC posterior (Tier 1)", "#4878a8")]
         if mc is not None:
@@ -740,27 +767,31 @@ def main():
             print(f"  {nm:<13}{v:10.3f}{pub[k]:11.2f}{v - pub[k]:+8.3f}")
 
     print()
+    src = "MCMC posterior" if args.mcmc else "Monte-Carlo refits"
     names = ["log10(M*)", "log10(phi*)", "alpha", "beta"]
-    vals = [par[0], np.log10(abs(par[1])), par[2], par[3]]
-    chains = [mc["mstar"], np.log10(np.abs(mc["phistar"])), mc["alphastar"],
-              mc["betastar"]]
-    print(f"  {'param':<13}{'best':>9}{'16th':>9}{'84th':>9}")
+    vals = [par_plot[0], np.log10(abs(par_plot[1])), par_plot[2], par_plot[3]]
+    chains = [mc_plot["mstar"], np.log10(np.abs(mc_plot["phistar"])),
+              mc_plot["alphastar"], mc_plot["betastar"]]
+    # Intervals come from whatever the FIGURE uses, so the printed numbers and
+    # the plotted band can never disagree.
+    print(f"  {'param':<13}{'best':>9}{'16th':>9}{'84th':>9}   ({src})")
     for nm, v, c in zip(names, vals, chains):
         c = c[np.isfinite(c)]
         print(f"  {nm:<13}{v:9.3f}{np.quantile(c, .16):9.3f}"
               f"{np.quantile(c, .84):9.3f}")
-    om2 = omega_matter(par, above=MLIMIT_GAMA)
-    o2 = mc["omegam2"][np.isfinite(mc["omegam2"])]
+    om2 = omega_matter(par_plot, above=MLIMIT_GAMA)
+    o2 = mc_plot["omegam2"][np.isfinite(mc_plot["omegam2"])]
     print(f"  chi2 = {val:.3f}   fevals = {nfe}   convergence = {conv}"
           + ("  (budget exhausted)" if conv == 1 else ""))
-    print(f"  OmegaM (all mass)      = {omega_matter(par):.4f}")
+    print(f"  OmegaM (all mass)      = {omega_matter(par_plot):.4f}")
     print(f"  OmegaM (logM > 12.7)   = {om2:.4f} "
           f"(+{np.quantile(o2, .84) - om2:.4f} / -{om2 - np.quantile(o2, .16):.4f})")
     print(f"  fraction of OmegaM={OMEGAM} in haloes above 12.7: {om2 / OMEGAM:.3f}")
 
-    plot_combined(par, mc, sets, oset[:3], extras, mrpx, mrpy, factor, args.out,
+    plot_combined(par_plot, mc_plot, sets, oset[:3], extras, mrpx, mrpy, factor, args.out,
                   args.myoption, omega_prior, fit_par_driver=par_d,
-                  sdss_label=sdss_label or "SDSS DR10 (Tempel+14)")
+                  sdss_label=sdss_label or "SDSS DR10 (Tempel+14)",
+                  fit_method="MCMC posterior" if args.mcmc else None)
 
 
 if __name__ == "__main__":

@@ -1926,3 +1926,43 @@ validating the port, but they are not the best fit to their own objective, and
 their error bars understate the degeneracy. Tier 2 (a bootstrap covariance
 matrix in place of the diagonal errors) remains the next real improvement;
 Tier 3 (unbinned Poisson) is not planned.
+
+### The HMF figures now use the posterior too — `--mcmc`
+
+An earlier version of this section wired the sampler into the corner plot only,
+which left the *same deliverable* showing two different answers: a curve at
+chi^2 244.17 beside a corner plot containing 241.04. `--mcmc` now swaps the
+posterior in everywhere the Monte-Carlo refits were used:
+
+| consumer | default | with `--mcmc` |
+|---|---|---|
+| spaghetti band | 1000 MC refit curves | 1000 posterior draws |
+| headline curve | Nelder-Mead point | best-lnP sample |
+| Omega_M inset | refit Omega_M | posterior Omega_M |
+| printed 16th/84th | refit quantiles | posterior quantiles |
+
+The printed block names its source, so terminal numbers and the plotted band
+cannot disagree, and the figure legend gains "(MCMC posterior)". Without
+`--mcmc`, `par_plot, mc_plot = par, mc` and every verified figure is unchanged.
+
+**The curve barely moves while the parameters move a lot.** That is the whole
+lesson of the degeneracy, and it is visible directly: logM* shifts 14.36 -> 13.81
+and alpha -1.81 -> -1.54, yet the plotted MRP is nearly indistinguishable across
+the range where there are data. The M*-phi* ridge is precisely the direction
+that leaves the fitted curve invariant over the observed range.
+
+The Omega_M numbers make the same point quantitatively:
+
+| quantity | Nelder-Mead + refits | MCMC posterior |
+|---|---|---|
+| Omega_M (all mass) | 0.2697 | **0.1808** |
+| Omega_M (logM > 12.7) | 0.1294 +0.0160/-0.0167 | **0.1277 +0.0043/-0.0041** |
+
+* The **measured** quantity is stable and its error bar shrinks ~4x. Mass in
+  haloes above the limit is conserved along the degeneracy ridge, so the
+  posterior determines it far better than any single MRP parameter.
+  **Omega_M(>12.7) = 0.128 +/- 0.004 is the most quotable number in the
+  combined fit.**
+* The **extrapolated** total moves 0.27 -> 0.18, because integrating the MRP
+  below the mass limit is governed by alpha, which is not measured. Do not
+  quote Omega_M (all mass) from this fit in either version.
