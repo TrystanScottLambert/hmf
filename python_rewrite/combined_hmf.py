@@ -545,37 +545,47 @@ def main():
                    help="optim budget (allhmf.r uses 500).  GSR needs ~2000 to "
                         "actually converge; check whether a convergence=1 "
                         "result is a minimum or just a stopped simplex.")
+    p.add_argument("--mcmc", action="store_true",
+                   help="sample the posterior with emcee on the SAME objective "
+                        "the Nelder-Mead fit uses, and write a corner plot "
+                        "overlaying it on the Monte-Carlo refit draws.  The "
+                        "penalty term is the Poisson zero-count likelihood, so "
+                        "chi^2 is already -2lnL and needs no reinterpretation.")
+    p.add_argument("--mcmc-steps", type=int, default=8000)
+    p.add_argument("--mcmc-walkers", type=int, default=64)
     p.add_argument("--out", default=None,
                    help="default depends on --sdss so the two SDSS variants "
                         "cannot overwrite each other")
     p.add_argument("--write-tables", action="store_true")
     args = p.parse_args()
 
+    # Built unconditionally: --mcmc names its corner plot from it too, so it must
+    # exist and be complete even when --out was given explicitly.  Only the
+    # canonical GSR runs get the canonical names; anything else -- a different
+    # myoption, a dropped SDSS leg, a capped range -- earns a suffix, so a quick
+    # diagnostic cannot silently overwrite a deliverable.
+    tag = "" if args.myoption == "GSR" else f"_{args.myoption}"
+    if args.sdss == "nessie":
+        tag += "_sdss"
+    elif args.sdss == "none":
+        tag += "_nosdss"
+    elif args.sdss != "auto":
+        tag += "_sdssfile"
+    if args.ml_cut is not None:
+        tag += f"_mlcut{args.ml_cut:g}"
+    if args.mass_mode != "tempel_eq8":
+        tag += f"_{args.mass_mode.replace('tempel_', '')}"
+    if args.vmax_floor != 1e-3:
+        tag += f"_vfloor{args.vmax_floor:g}"
+    if args.fit_max is not None:
+        tag += f"_clamp{args.fit_max:g}"
+    elif args.sdss_max is not None:
+        tag += f"_max{args.sdss_max:g}"
+    if args.omega_prior:
+        tag += "_omega"
+    if args.iters != 1001:
+        tag += f"_it{args.iters}"
     if args.out is None:
-        # Only the canonical GSR runs get the canonical names.  Anything else --
-        # a different myoption, a dropped SDSS leg, a capped range -- earns a
-        # suffix, so a quick diagnostic cannot silently overwrite a deliverable.
-        tag = "" if args.myoption == "GSR" else f"_{args.myoption}"
-        if args.sdss == "nessie":
-            tag += "_sdss"
-        elif args.sdss == "none":
-            tag += "_nosdss"
-        elif args.sdss != "auto":
-            tag += "_sdssfile"
-        if args.ml_cut is not None:
-            tag += f"_mlcut{args.ml_cut:g}"
-        if args.mass_mode != "tempel_eq8":
-            tag += f"_{args.mass_mode.replace('tempel_', '')}"
-        if args.vmax_floor != 1e-3:
-            tag += f"_vfloor{args.vmax_floor:g}"
-        if args.fit_max is not None:
-            tag += f"_clamp{args.fit_max:g}"
-        elif args.sdss_max is not None:
-            tag += f"_max{args.sdss_max:g}"
-        if args.omega_prior:
-            tag += "_omega"
-        if args.iters != 1001:
-            tag += f"_it{args.iters}"
         args.out = f"hmf_combined_nessie{tag}.pdf"
 
     omega_prior = args.omega_prior or args.myoption == "Omega"
@@ -682,6 +692,38 @@ def main():
         print(f"  {nm:<13}{a:10.3f}{bq:11.3f}{a - bq:+8.3f}")
     print(f"  {'chi2':<13}{val:10.2f}{val_d:11.2f}"
           f"   (convergence {conv} / {conv_d})")
+    if args.mcmc:
+        import mcmc_hmf as mh
+
+        print(f"\n  --- MCMC on the same objective ({args.myoption}) ---")
+        fn = make_massfn(allx, ally, allf, vols, omega_prior)
+        chain, best, info = mh.run_emcee(
+            fn, par, nwalkers=args.mcmc_walkers, nsteps=args.mcmc_steps,
+            burn=args.mcmc_steps // 4, seed=args.seed)
+        nm = np.array([par[0], np.log10(abs(par[1])), par[2], par[3]])
+        print(f"  {info['nsamples']} samples, acceptance {info['acceptance']:.2f}, "
+              f"tau {np.array2string(info['tau'], precision=0)}, "
+              f"n_eff {np.array2string(info['neff'], precision=0)}")
+        if not info["converged"]:
+            print("  WARNING: n_eff < 50 for at least one parameter -- the "
+                  "credible intervals below are not yet reliable, run longer.")
+        mh.summarise(chain, f"posterior, {args.myoption}", nm=nm)
+        print(f"\n  best-lnP sample vs Nelder-Mead (Jacobian-free comparison):")
+        for i, n in enumerate(mh.PARAM_NAMES):
+            print(f"  {n:10s}{best[i]:9.3f}{nm[i]:11.3f}{best[i] - nm[i]:+9.3f}")
+        print(f"  {'chi2':10s}{info['chi2_min']:9.2f}{val:11.2f}"
+              f"{info['chi2_min'] - val:+9.3f}")
+
+        sets_t0 = [(chain, "MCMC posterior (Tier 1)", "#4878a8")]
+        if mc is not None:
+            t0 = mh._to_log_phi(mc)
+            t0 = t0[np.all(np.isfinite(t0), axis=1)]
+            sets_t0.append((t0, f"MC refits, {args.iters} (Tier 0)", "#c8781e"))
+        cout = "corner" + (tag if tag else "_GSR") + ".pdf"
+        mh.corner_plot(sets_t0, cout, truths=nm,
+                       title=f"{args.myoption}: MRP posterior vs Driver's "
+                             f"Monte-Carlo refits")
+
     pub = PUBLISHED_TABLE2.get(args.myoption)
     clamped = args.fit_max is not None or args.sdss_max is not None
     if pub is not None and not omega_prior and clamped:

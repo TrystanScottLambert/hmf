@@ -1839,3 +1839,90 @@ carries a dynamical mass corresponding to neither.
    for both catalogues. See "GS — dropping REFLEX II entirely".
 
 Keep them as separate figures.
+
+---
+
+## MCMC posteriors and corner plots — `mcmc_hmf.py`
+
+Driver's uncertainties come from `monte_carlo_fits`: perturb the binned points,
+refit, take the scatter. As a parametric bootstrap that is a respectable
+technique, but **every refit is a non-converged Nelder-Mead from a fixed start
+point**, so the scatter mixes statistical noise with optimiser path-dependence
+in unknown proportion. `mcmc_hmf.py` replaces it with a proper posterior.
+
+### The objective was already a likelihood
+
+The penalty in `make_massfn` is
+
+```
+2 * V * sum phi_model(x) * logbin      over the 10 bins above the fitted range
+```
+
+and `-2 ln P(0|mu) = 2 mu`. **The penalty is exactly the Poisson likelihood of
+observing zero groups above the range**, so the whole objective is a valid
+-2 ln L and `lnP = -0.5 * massfn(theta)` needs no reinterpretation. That is why
+the MCMC and Driver's Nelder-Mead answer the *same* question, which makes the NM
+result a regression test on the sampler rather than a different method.
+
+`phi` is sampled as **log10(phi)** (the objective takes it linearly): a flat
+prior on a linear scale parameter is not scale invariant and lets walkers reach
+phi <= 0 where the model is NaN.
+
+### Two things it produces
+
+* **Tier 0**, `corner_from_mc` / `_to_log_phi` — the existing MC refit draws
+  plotted jointly. They were always stored and never plotted.
+* **Tier 1**, `run_emcee` — the posterior. `combined_hmf.py --mcmc` samples the
+  **identical** `(allx, ally, allf, vols)` the NM fit sees.
+
+Use `DEMove`/`DESnookerMove`, not the default stretch move: rho(M*, phi*) =
+-0.98 along a *curved* ridge, where StretchMove gives tau ~ 215 at 3000 steps.
+`info["converged"]` gates on n_eff > 50 per parameter and warns rather than
+silently reporting unreliable intervals.
+
+### GSR — Driver's own configuration is NOT at its own minimum
+
+40 000 steps x 64 walkers, n_eff 4700-6000, acceptance 0.09.
+
+| | logM* | logphi* | alpha | beta | chi2 |
+|---|---|---|---|---|---|
+| Nelder-Mead (conv=0, 247 fevals) | 14.362 | -4.368 | -1.807 | 0.738 | 244.17 |
+| **MCMC best-lnP** | **13.789** | **-3.472** | **-1.534** | **0.533** | **241.04** |
+| posterior median | 13.754 | -3.429 | -1.521 | 0.524 | |
+| 68% interval | +0.35/-0.51 | +0.54/-0.49 | +0.21/-0.16 | +0.10/-0.09 | |
+
+The NM answer sits **1.4-2.3 sigma** off the posterior median at a chi^2 that is
+**3.13 higher**. GSR is the one configuration this file records as genuinely
+converging (conv=0, bit-identical at maxit 500 and 5000) -- it converges, but
+not to the best point. This goes further than the earlier multi-start scan,
+which only reached 243.61. Reproduced exactly at 3000 and 40 000 steps.
+
+**The Tier 0 overlay is the sharpest diagnostic in the project.** Driver's MC
+refits pile into a hard spike sitting on the NM answer in all four parameters,
+while the posterior is a broad curving ridge. They agree on the *direction* of
+the M*-phi* degeneracy and badly understate its *extent*. `corner_GSR.pdf`.
+
+### GAMA-only — the posterior is improper, and now it is visible
+
+`--myoption G --sdss none --mcmc`. The posterior runs to the **prior's lower
+bound** (logM* = 11.0): median 11.858, best-lnP 11.020, chi^2 45.99 against NM's
+46.30. The 1D marginal rises monotonically toward the bound.
+
+**The credible intervals there are meaningless -- they are set by BOUNDS, not by
+the data.** That is the point: it converts "the optimiser did not converge" from
+an argument about `maxit` into a figure a referee can read directly.
+`corner_G_nosdss.pdf`.
+
+Note this run's NM answer is logM* = 11.315, not `gamahmf.r`'s 13.49, because
+`allhmf.r`'s `parscale = c(1,1,1,0.1)` lets the simplex run away within 500
+evaluations where `gamahmf.r`'s `c(1,1,1,0.5)` does not. Do not compare the two
+directly.
+
+### Consequence
+
+**Quote the MCMC posterior, not the Nelder-Mead point, for anything combined.**
+The published GSR numbers are reproducible and were the right target for
+validating the port, but they are not the best fit to their own objective, and
+their error bars understate the degeneracy. Tier 2 (a bootstrap covariance
+matrix in place of the diagonal errors) remains the next real improvement;
+Tier 3 (unbinned Poisson) is not planned.
