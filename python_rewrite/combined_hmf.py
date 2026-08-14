@@ -329,6 +329,10 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+    import plotstyle
+    plotstyle.apply()
+    outfile = plotstyle.as_png(outfile)
     from matplotlib.collections import LineCollection
 
     cf = (100 / 255, 149 / 255, 237 / 255)
@@ -509,7 +513,7 @@ def main():
                         "reaches 15.65 against Tempel's 15.05, so this is the "
                         "range check group 300223 taught us to run.")
     p.add_argument("--mass-mode", default="tempel_eq8",
-                   choices=["tempel_eq8", "tempel_nfw", "robotham", "shift"],
+                   choices=["tempel_eq8", "tempel_nfw", "tempel_rms", "robotham", "shift"],
                    help="mass estimator for the NESSIE SDSS leg only (--sdss "
                         "nessie).  'tempel_eq8' is the catalogue default, a "
                         "Hernquist mass with Nessie's cbrt(3) bug. "
@@ -600,7 +604,7 @@ def main():
     if args.mcmc:
         tag += "_mcmc"   # never overwrite the Nelder-Mead deliverable
     if args.out is None:
-        args.out = f"hmf_combined_nessie{tag}.pdf"
+        args.out = f"hmf_combined_nessie{tag}.png"
 
     omega_prior = args.omega_prior or args.myoption == "Omega"
     mrpx, mrpy, factor, phimrp = lcdm_curve()
@@ -650,6 +654,7 @@ def main():
             sdss_label = {
                 "tempel_eq8": "SDSS (Nessie)",
                 "tempel_nfw": "SDSS (Nessie, NFW mass)",
+                "tempel_rms": "SDSS (Nessie, NFW mass + Tempel rms $\\sigma$)",
                 "robotham": "SDSS (Nessie, Robotham mass as GAMA)",
                 "shift": f"SDSS (Nessie, {args.mass_shift:+.3f} dex)",
             }[args.mass_mode]
@@ -782,7 +787,7 @@ def main():
                     "#4878a8")]
         np.savez(f"chain{tag}.npz", chain=chain, chain_driver=chain_d,
                  median=med, best=best, nm=nm, driver_published=DRIVER_ABSTRACT_FIT)
-        cout = "corner" + (tag if tag else "_GSR") + ".pdf"
+        cout = "corner" + (tag if tag else "_GSR") + ".png"
         mh.corner_plot(sets_t0, cout, markers=markers,
                        title=f"{args.myoption}: MRP posterior, this work")
 

@@ -117,6 +117,30 @@ def _absmag_by_join(gal, gal_file=sdss_hmf.GALS, verbose=True):
     return out.drop(columns="_k")
 
 
+C_KMS = 299792.458
+
+
+def rms_dispersion_by_group(gal, zcol="z_t", gcol="group_id"):
+    """Tempel+2014 eq. 3 -- the plain rms -- per Nessie group, in km/s.
+
+        sigma_v^2 = 1/[(1+z_m)^2 (n-1)] * sum (v_i - v_mean)^2
+
+    Tempel does NOT use the gapper; eq. 3 reproduces his published ``col12`` to
+    +0.0003 dex at every multiplicity (see CLAUDE.md).  Uses HIS redshift
+    (``col9``, joined in as ``z_t``) rather than Nessie's ``zobs``, because the
+    two differ by up to 0.0012 in frame convention and the point of this mode is
+    to follow his recipe exactly.
+    """
+    d = gal[[gcol, zcol]].dropna()
+    v = d[zcol].astype(float) * C_KMS
+    g = d.assign(_v=v).groupby(gcol)
+    n = g["_v"].size()
+    var = g["_v"].var(ddof=1)                       # sum (v-vbar)^2 / (n-1)
+    zm = g[zcol].mean()
+    sig = np.sqrt(var) / (1.0 + zm)
+    return sig.where(n >= 2)
+
+
 def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
     """The mass column, with the estimator made explicit.
 
@@ -168,6 +192,28 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
                 k = np.interp(np.log10(np.where(m > 0, m, np.nan)),
                               KAPPA_NFW_LOGM, KAPPA_NFW_VAL)
             m = m_hern * (k / KAPPA_HERNQUIST)
+    elif mass_mode == "tempel_rms":
+        # tempel_nfw, PLUS the velocity dispersion recomputed Tempel's way.
+        #
+        # Inverting eq. 8 for Nessie's own sky_disp,
+        #     sky_disp = estimated_mass / (2.325e12 * 4.582 * (cbrt3*sig_gap/100)^2)
+        # and feeding it back with sigma_rms and the sqrt(3) fix, every constant
+        # and sky_disp itself cancel, leaving exactly
+        #     m = tempel_nfw * (sigma_rms / sigma_gapper)^2.
+        # So this needs no sky_disp column (there is none) and cannot drift from
+        # the tempel_nfw path.
+        sg = grp.velocity_dispersion_gap.astype(float).values
+        sr = grp.sigma_rms.astype(float).values
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio2 = np.where((sg > 0) & np.isfinite(sr), (sr / sg) ** 2, np.nan)
+        m_hern = (grp.estimated_mass.astype(float).values
+                  * 3.0 ** (1.0 / 3.0) * ratio2)
+        m = m_hern * (KAPPA_NFW / KAPPA_HERNQUIST)
+        for _ in range(30):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                k = np.interp(np.log10(np.where(m > 0, m, np.nan)),
+                              KAPPA_NFW_LOGM, KAPPA_NFW_VAL)
+            m = m_hern * (k / KAPPA_HERNQUIST)
     elif mass_mode == "robotham":
         m = grp.mass_proxy.astype(float).values * dr.MAGICA
         nf = grp.nrich.values.astype(int)
@@ -203,6 +249,18 @@ def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True,
               & (grp.multiplicity > MULTI - 1)].copy().reset_index(drop=True)
     grp = grp.rename(columns={"group_id": "idcl", "multiplicity": "nrich",
                               "median_redshift": "zcl"})
+    if mass_mode == "tempel_rms":
+        # Recompute the dispersion Tempel's way over Nessie's own memberships.
+        sig = rms_dispersion_by_group(gal, zcol="z_t", gcol="group_id")
+        grp["sigma_rms"] = grp.idcl.map(sig).values
+        if verbose:
+            ok = np.isfinite(grp.sigma_rms.values)
+            r = np.log10(grp.sigma_rms.values[ok]
+                         / grp.velocity_dispersion_gap.values[ok])
+            print(f"  tempel_rms: sigma from Tempel eq.3 (rms) on {ok.sum()} of "
+                  f"{len(grp)} groups")
+            print(f"    median log10(sigma_rms / sigma_gapper) = {np.median(r):+.4f}"
+                  f"  -> {2 * np.median(r):+.4f} dex in mass")
     grp["mass"] = group_masses(grp, mass_mode, mass_shift)
 
     err = r_approx(grp.nrich.values.astype(float), dr.NFOF_XX, dr.NFOF_YY)
@@ -296,7 +354,7 @@ def main():
     p.add_argument("--fit-max", type=float, default=None,
                    help="cap the fitted/penalty mass range, e.g. 15.0")
     p.add_argument("--mass-mode", default="tempel_eq8",
-                   choices=["tempel_eq8", "tempel_nfw", "robotham", "shift"],
+                   choices=["tempel_eq8", "tempel_nfw", "tempel_rms", "robotham", "shift"],
                    help="which mass estimator; 'robotham' matches the GAMA leg")
     p.add_argument("--mass-shift", type=float, default=0.0,
                    help="dex shift, with --mass-mode shift")

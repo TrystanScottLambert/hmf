@@ -161,6 +161,10 @@ def corner_plot(datasets, out, markers=None, bounds=None, title=None):
     import matplotlib.pyplot as plt
     import corner
 
+    import plotstyle
+    plotstyle.apply()
+    out = plotstyle.as_png(out)
+
     ndim = datasets[0][0].shape[1]
     if bounds is None:
         allc = np.vstack([d[0] for d in datasets])
@@ -188,24 +192,27 @@ def corner_plot(datasets, out, markers=None, bounds=None, title=None):
         )
 
     axes = np.array(fig.axes).reshape(ndim, ndim)
+    # Stars go on the 2D panels ONLY.  On a 1D marginal a star sits on the axis
+    # line and reads as a data point on the histogram rather than a parameter
+    # value, which is worse than not marking it at all.
     for vals, _label, face in (markers or []):
         for i in range(ndim):
             for j in range(i):
-                axes[i, j].plot(vals[j], vals[i], marker="*", ms=17, mfc=face,
-                                mec="k", mew=1.1, ls="none", zorder=10,
+                axes[i, j].plot(vals[j], vals[i], marker="*", ms=19, mfc=face,
+                                mec="k", mew=1.2, ls="none", zorder=10,
                                 clip_on=False)
-            lo, hi = axes[i, i].get_ylim()          # star on the 1D marginal too
-            axes[i, i].plot(vals[i], lo, marker="*", ms=15, mfc=face, mec="k",
-                            mew=1.1, ls="none", zorder=10, clip_on=False)
+    for ax in fig.axes:                      # corner overrides the rc tick style
+        ax.tick_params(which="both", direction="in", top=True, right=True)
+        ax.minorticks_on()
 
     handles = [plt.Line2D([], [], color=c, lw=3, label=l)
                for _, l, c in datasets]
-    handles += [plt.Line2D([], [], marker="*", ms=15, mfc=f, mec="k", mew=1.1,
+    handles += [plt.Line2D([], [], marker="*", ms=17, mfc=f, mec="k", mew=1.2,
                            ls="none", label=l) for _, l, f in (markers or [])]
-    fig.legend(handles=handles, loc="upper right", frameon=False, fontsize=11,
+    fig.legend(handles=handles, loc="upper right", frameon=False, fontsize=14,
                bbox_to_anchor=(0.98, 0.98))
     if title:
-        fig.suptitle(title, fontsize=13, y=1.005)
+        fig.suptitle(title, fontsize=16, y=1.005)
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  wrote {out}")

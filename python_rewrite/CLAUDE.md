@@ -2051,3 +2051,73 @@ On the GSR figures Driver's star sits just outside our 1-sigma contour and
 inside 2-sigma, i.e. **our combined result agrees with his published GSR at
 about the 2-sigma level** -- which is the honest headline, and is not visible at
 all from the Nelder-Mead point estimates.
+
+---
+
+## Publication style, PNG output, and the Tempel-rms SDSS leg
+
+### `plotstyle.py` — one style for every figure
+
+`plotstyle.apply()` before creating a figure; `plotstyle.as_png(path)` to rewrite
+the output name. Everything that draws goes through it so the figure set cannot
+drift: fonts up (labels 15, ticks 13), ticks **inward** on all four sides,
+**minor ticks on**, PNG at 200 dpi.
+
+Two gotchas found while wiring it up:
+
+* **`corner` overrides rcParams**, so `corner_plot` re-applies `tick_params`
+  and `minorticks_on()` on every axis after the fact.
+* **Stars go on the 2D panels only.** On a 1D marginal a star sits on the axis
+  line and reads as a data point on the histogram rather than a parameter value.
+
+PNG is deliberate: these figures carry ~1000 spaghetti curves and filled
+contours, which make vector PDFs large and slow, and every consumer rasterises
+anyway. Superseded PDFs were deleted only where a newer identically-named PNG
+exists. **88 PDFs remain** -- from `recovery.py`, `vuvuzela.py`, `robust_hmf.py`
+and friends, whose plotting has not been converted yet.
+
+### `--mass-mode tempel_rms` — matching Tempel's dispersion as well as his profile
+
+`tempel_nfw` fixes the profile (Hernquist -> NFW) and the `cbrt(3)`/`sqrt(3)`
+bug, but still uses Nessie's **gapper** dispersion. Tempel uses the plain rms,
+his eq. 3, recomputed here over **Nessie's own memberships** using **his**
+redshifts (`col9`), since the catalogues share galaxies.
+
+The algebra collapses. Inverting eq. 8 for Nessie's own `sky_disp` and feeding
+it back with sigma_rms and the sqrt(3) fix, every constant and `sky_disp`
+itself cancel:
+
+```
+m_tempel_rms  =  m_tempel_nfw * (sigma_rms / sigma_gapper)^2
+```
+
+so it needs no `sky_disp` column (**there is none in the parquet** -- `rsigma`,
+`r50`, `r100` all fail the inversion test) and cannot drift from `tempel_nfw`.
+
+**Independent confirmation of the decomposition.** Measured over all 4824
+groups: `log10(sigma_rms/sigma_gapper) = -0.0481`, i.e. **-0.0962 dex in mass**,
+against the +0.098 dex gapper->rms term derived by a completely different route
+in "The offset that actually matters". Agreement to 0.002 dex.
+
+### It substantially repairs the Nessie SDSS anchor
+
+GSR, Nessie GAMA + M/L cut 1.0, 12 000 steps:
+
+| SDSS leg | NM logM* | MCMC median | MCMC best | chi2 | conv |
+|---|---|---|---|---|---|
+| Tempel col15 | 14.361 | 13.662 | 13.710 | 227.41 | 0 |
+| Nessie NFW | 13.966 | 11.523 | **11.006 (railed)** | 217.12 | 1 |
+| **Nessie NFW + rms** | 14.299 | **12.718** | **12.655** | 226.70 | **0** |
+
+**Correcting the dispersion estimator moves the Nessie SDSS leg off the prior
+bound.** It goes from railing at logM* = 11.0 to a genuine interior maximum at
+12.7 (median 12.718 -0.743/+0.587, nowhere near the bound at 11.0), the
+optimiser converges in 275 evaluations, and chi^2 lands at 226.70 against
+Tempel's 227.41 -- i.e. the two legs now fit about equally well.
+
+It does **not** fully close the gap: M* is still ~1 dex below the Tempel leg's
+13.7, which is consistent with the remaining **sigma_sky** term (+0.047 dex,
+carrying the unresolved h^-1 Mpc vs Mpc convention question). And **GS still
+rails** (11.015) -- without REFLEX nothing anchors the fit, exactly as before.
+The dispersion estimator was a real part of the anchoring problem; the x-ray
+anchor is still not optional.

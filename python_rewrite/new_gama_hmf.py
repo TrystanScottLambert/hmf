@@ -291,6 +291,10 @@ def plot_comparison(results, mrpx, mrpy, factor, outfile):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+    import plotstyle
+    plotstyle.apply()
+    outfile = plotstyle.as_png(outfile)
     from matplotlib.collections import LineCollection
 
     fig = plt.figure(figsize=(7.4, 5.4))
@@ -443,7 +447,7 @@ def main():
                         "dex.  1.0 is the recommended value; it removes 5 of "
                         "1833 groups and fixes the 14.2 bin.  Applied to BOTH "
                         "catalogues so the comparison stays fair.")
-    p.add_argument("--out", default="hmf_old_vs_new.pdf")
+    p.add_argument("--out", default="hmf_old_vs_new.png")
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--nmc-edb", type=int, default=1001)
     p.add_argument("--nmc-fit", type=int, default=2001)
