@@ -144,22 +144,36 @@ def _to_log_phi(mc):
                                 mc["alphastar"], mc["betastar"]])
 
 
-def corner_plot(datasets, out, truths=None, bounds=None, title=None):
+def corner_plot(datasets, out, markers=None, bounds=None, title=None):
     """Overlay one or more sample sets on shared corner axes.
 
-    ``datasets`` is [(chain, label, colour), ...].  Overlaying is the whole point
-    here: Tier 0 (bootstrap refits) and Tier 1 (MCMC) should agree where the fit
-    converges and visibly disagree where it does not.
+    ``datasets`` is [(chain, label, colour), ...].
+    ``markers``  is [(values, label, facecolour), ...], drawn as stars.
+
+    Point estimates are stars rather than corner's ``truths`` crosshairs.  The
+    crosshair used to carry our OWN Nelder-Mead refit under the label "Driver's
+    method", which is not what Driver+22 report and is not what we report either
+    -- two ways to be misread at once.  A star per point estimate, each named for
+    what it actually is, removes the ambiguity.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import corner
 
+    ndim = datasets[0][0].shape[1]
     if bounds is None:
         allc = np.vstack([d[0] for d in datasets])
-        rng = [(np.percentile(allc[:, i], 0.5), np.percentile(allc[:, i], 99.5))
-               for i in range(allc.shape[1])]
+        rng = [[np.percentile(allc[:, i], 0.5), np.percentile(allc[:, i], 99.5)]
+               for i in range(ndim)]
+        # A marker outside the sample range would silently not be drawn, so widen
+        # to include every point estimate with a small margin.
+        for vals, _, _ in (markers or []):
+            for i in range(ndim):
+                pad = 0.04 * (rng[i][1] - rng[i][0]) + 1e-6
+                rng[i][0] = min(rng[i][0], vals[i] - pad)
+                rng[i][1] = max(rng[i][1], vals[i] + pad)
+        rng = [tuple(r) for r in rng]
     else:
         rng = [tuple(b) for b in bounds]
 
@@ -171,14 +185,23 @@ def corner_plot(datasets, out, truths=None, bounds=None, title=None):
             levels=(0.393, 0.865), smooth=1.0,
             hist_kwargs=dict(density=True, lw=1.6),
             contour_kwargs=dict(linewidths=1.0),
-            truths=truths, truth_color="k",
         )
+
+    axes = np.array(fig.axes).reshape(ndim, ndim)
+    for vals, _label, face in (markers or []):
+        for i in range(ndim):
+            for j in range(i):
+                axes[i, j].plot(vals[j], vals[i], marker="*", ms=17, mfc=face,
+                                mec="k", mew=1.1, ls="none", zorder=10,
+                                clip_on=False)
+            lo, hi = axes[i, i].get_ylim()          # star on the 1D marginal too
+            axes[i, i].plot(vals[i], lo, marker="*", ms=15, mfc=face, mec="k",
+                            mew=1.1, ls="none", zorder=10, clip_on=False)
 
     handles = [plt.Line2D([], [], color=c, lw=3, label=l)
                for _, l, c in datasets]
-    if truths is not None:
-        handles.append(plt.Line2D([], [], color="k", lw=1.2,
-                                  label="Nelder-Mead (Driver's method)"))
+    handles += [plt.Line2D([], [], marker="*", ms=15, mfc=f, mec="k", mew=1.1,
+                           ls="none", label=l) for _, l, f in (markers or [])]
     fig.legend(handles=handles, loc="upper right", frameon=False, fontsize=11,
                bbox_to_anchor=(0.98, 0.98))
     if title:

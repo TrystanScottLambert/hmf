@@ -478,11 +478,13 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
 
 # ---------------------------------------------------------------------------
 
-def gama_set(g3c, vlimit, area, seed, nmc_edb, nboot, mlimit, fit_max=None):
+def gama_set(g3c, vlimit, area, seed, nmc_edb, nboot, mlimit, fit_max=None,
+             fit_min=None):
     """Bin a GAMA catalogue and reduce it to allhmf.r's (V1, V4, V8) + volume."""
     b, _ = bin_hmf(g3c, vlimit, seed=seed, nmc=nmc_edb, verbose=False, nboot=nboot)
     t = driver_table(b)
-    keep = (t.V1 > mlimit) & np.isfinite(t.V4)          # allhmf.r line 276
+    lo = mlimit if fit_min is None else max(mlimit, fit_min)
+    keep = (t.V1 > lo) & np.isfinite(t.V4)              # allhmf.r line 276
     if fit_max is not None:
         keep &= t.V1 <= fit_max
     t = t[keep]
@@ -548,6 +550,11 @@ def main():
                    help="optim budget (allhmf.r uses 500).  GSR needs ~2000 to "
                         "actually converge; check whether a convergence=1 "
                         "result is a minimum or just a stopped simplex.")
+    p.add_argument("--fit-min", type=float, default=None,
+                   help="raise the LOWER mass cut on both survey legs.  Driver "
+                        "uses 12.7 (GAMA) / 12.9 (SDSS), allhmf.r lines 276/278; "
+                        "this only ever tightens them, never loosens.  REFLEX is "
+                        "left alone, as it is with --fit-max.")
     p.add_argument("--mcmc", action="store_true",
                    help="sample the posterior with emcee on the SAME objective "
                         "the Nelder-Mead fit uses, and write a corner plot "
@@ -580,6 +587,8 @@ def main():
         tag += f"_{args.mass_mode.replace('tempel_', '')}"
     if args.vmax_floor != 1e-3:
         tag += f"_vfloor{args.vmax_floor:g}"
+    if args.fit_min is not None:
+        tag += f"_min{args.fit_min:g}"
     if args.fit_max is not None:
         tag += f"_clamp{args.fit_max:g}"
     elif args.sdss_max is not None:
@@ -605,13 +614,15 @@ def main():
                                        vmax_floor_frac=args.vmax_floor)
     g_new, _ = ng.apply_ml_cut(g_new, args.ml_cut, verbose=args.ml_cut is not None)
     gset, b_new = gama_set(g_new, v_new, ng.NEW_AREA, args.seed, args.nmc_edb,
-                           args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
+                           args.nboot, MLIMIT_GAMA, fit_max=args.fit_max,
+                           fit_min=args.fit_min)
     g_old, v_old = dr.build_groups("../data/G3CFoFGroupv10.fits",
                                    "../data/GAMAGalsInGroups.csv", verbose=False,
                                    vmax_floor_frac=args.vmax_floor)
     g_old, _ = ng.apply_ml_cut(g_old, args.ml_cut, verbose=False)
     oset, b_old = gama_set(g_old, v_old, AREA_GAMA_DRIVER, args.seed, args.nmc_edb,
-                           args.nboot, MLIMIT_GAMA, fit_max=args.fit_max)
+                           args.nboot, MLIMIT_GAMA, fit_max=args.fit_max,
+                           fit_min=args.fit_min)
     print(f"  GAMA (Nessie)  : {len(gset[0])} bins, area {ng.NEW_AREA} deg^2, "
           f"volume {gset[3]:.4e} Mpc^3")
     print(f"  GAMA (Driver)  : {len(oset[0])} bins, area {AREA_GAMA_DRIVER} deg^2 "
@@ -645,7 +656,8 @@ def main():
         else:
             s = pd.read_csv(args.sdss)
             sdss_label = "SDSS (file)"
-        s = s[(s.V1 > MLIMIT_SDSS) & np.isfinite(s.V4)]
+        lo_s = MLIMIT_SDSS if args.fit_min is None else max(MLIMIT_SDSS, args.fit_min)
+        s = s[(s.V1 > lo_s) & np.isfinite(s.V4)]
         cap = min([c for c in (args.sdss_max, args.fit_max) if c is not None],
                   default=None)
         if cap is not None:
@@ -757,15 +769,22 @@ def main():
         print("  figure, Omega_M inset and summary now use the POSTERIOR; "
               "the headline curve is the best-lnP sample")
 
-        sets_t0 = [(chain, "MCMC posterior (Tier 1)", "#4878a8")]
-        if mc is not None:
-            t0 = mh._to_log_phi(mc)
-            t0 = t0[np.all(np.isfinite(t0), axis=1)]
-            sets_t0.append((t0, f"MC refits, {args.iters} (Tier 0)", "#c8781e"))
+        # Only our posterior is shown; the point estimates are stars.  The MC
+        # refits and the Nelder-Mead crosshair are deliberately not drawn -- the
+        # crosshair was our own refit of our own catalogue and read as if it were
+        # Driver's published answer, which it is not.
+        med = np.median(chain, axis=0)
+        markers = [
+            (np.array(DRIVER_ABSTRACT_FIT), "Driver+22 published GSR", "white"),
+            (med, "This work (posterior median)", "#d4af37"),
+        ]
+        sets_t0 = [(chain, f"This work, MCMC posterior ({args.myoption})",
+                    "#4878a8")]
+        np.savez(f"chain{tag}.npz", chain=chain, chain_driver=chain_d,
+                 median=med, best=best, nm=nm, driver_published=DRIVER_ABSTRACT_FIT)
         cout = "corner" + (tag if tag else "_GSR") + ".pdf"
-        mh.corner_plot(sets_t0, cout, truths=nm,
-                       title=f"{args.myoption}: MRP posterior vs Driver's "
-                             f"Monte-Carlo refits")
+        mh.corner_plot(sets_t0, cout, markers=markers,
+                       title=f"{args.myoption}: MRP posterior, this work")
 
     pub = PUBLISHED_TABLE2.get(args.myoption)
     clamped = args.fit_max is not None or args.sdss_max is not None

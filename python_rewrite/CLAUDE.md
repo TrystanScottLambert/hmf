@@ -2022,3 +2022,32 @@ the four-parameter MRP *parameterisation* of it is not. So:
 * individual MRP parameters from any railed configuration are not quotable, and
   quoting a *difference* in alpha between catalogues from such a fit is worse
   than quoting nothing.
+
+### Corner plots: stars, not crosshairs
+
+The corner plots previously drew our own Nelder-Mead refit as a black crosshair
+labelled "Nelder-Mead (Driver's method)". That reads as Driver+22's published
+answer, which it is not -- it is *our* refit of *our* catalogue using his method,
+14.36 against his 14.13 -- and it is not what we report either. Two ways to be
+misread at once. Replaced with two stars, each named for what it actually is:
+
+| marker | meaning |
+|---|---|
+| open (white) star | Driver+22 published GSR, `DRIVER_ABSTRACT_FIT` |
+| gold star | this work, **posterior median** |
+
+Only our posterior is drawn now; the Monte-Carlo refit overlay was dropped with
+it (`git show` this commit to recover the two-dataset version -- the spike-vs-
+ridge diagnostic is still worth having for a referee). Axis ranges are widened
+to contain both markers, since a point estimate outside the sample range is
+silently clipped by `corner` -- which matters in the four railed configurations
+where our median sits near logM* = 11 and Driver's star is three dex away.
+
+**Chains are now saved to `chain{tag}.npz`** (`chain`, `chain_driver`, `median`,
+`best`, `nm`, `driver_published`), so corner plots can be restyled without
+re-sampling. Do that rather than re-running 12 chains for a cosmetic change.
+
+On the GSR figures Driver's star sits just outside our 1-sigma contour and
+inside 2-sigma, i.e. **our combined result agrees with his published GSR at
+about the 2-sigma level** -- which is the honest headline, and is not visible at
+all from the Nelder-Mead point estimates.
