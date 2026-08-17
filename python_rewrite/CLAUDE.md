@@ -21,6 +21,43 @@ three blockers were answerable from the data. Like GAMA-only, the SDSS-only
 `--ml-cut 1.0`, drops 5 of 1833 groups and moves the bin 0.53 dex while every
 other bin moves ≤ 0.05. See "The 14.2 bin — solved".
 
+### Fitting is now MCMC, not Nelder-Mead (2026-08-17)
+
+`make_massfn`'s penalty term is `2 V sum phi dlogM`, and `-2 ln P(0|mu) = 2 mu`
+— **it is exactly the Poisson likelihood of seeing zero groups above the fitted
+range**, so Driver's chi^2 was already a valid -2 ln L and drops into emcee
+unchanged. `combined_hmf.py --mcmc` samples the identical
+`(allx, ally, allf, vols)` the optimiser sees.
+
+Four things came out of it, and they change how the earlier sections should be
+read:
+
+* **Driver's published GSR is well posed and correct.** On his own
+  configuration the sampler and his optimiser agree at chi^2 211.55 vs 211.55,
+  logM* 14.12 vs 14.15. `maxit=500` was not doing hidden work *there*.
+* **Only GSR-with-an-anchor is well posed.** Four of six combined configurations
+  rail against the prior bound at logM* = 11.0 with chi^2 lower by 19-44 than the
+  optimiser's answer. This confirms from a sampler that cannot exhaust a budget
+  what "The central finding" inferred from optimiser behaviour.
+* **The curves are fine even where the parameters are absurd.** The GS figure has
+  logM* = 11.005 and still lies on the data across 12.8-15.6. **The HMF is well
+  measured; its four-parameter MRP *parameterisation* is not.** So binned points,
+  plotted curves and `Omega_M(>12.7)` are all sound, while individual MRP
+  parameters from a railed configuration are not quotable — and quoting an
+  *alpha difference between catalogues* from such a fit is worse than quoting
+  nothing. That specifically undercuts the +0.45 GAMA and +0.32 SDSS alpha
+  differences recorded below: they are attributable to the parameterisation.
+* **Matching Tempel's dispersion estimator repairs the Nessie SDSS anchor.**
+  `--mass-mode tempel_rms` moves it off the prior bound to a converged interior
+  maximum at logM* = 12.72, chi^2 226.70 against Tempel's 227.41.
+
+Also fixed: **four unit-conversion bugs** between `recovery.py` and Driver's
+system, including a 0.172 dex *shape* error in `recovery.lcdm_curve` that grew to
+0.9 dex by logM 15.5. See "Unit conversions". All figures are now PNG in one
+house style (`plotstyle.py`).
+
+**Start at "Pick up here — outstanding work" at the end of this file.**
+
 ### What this session established about the mass scale
 
 This is the main result, and it is largely negative:
@@ -1823,22 +1860,51 @@ carries a dynamical mass corresponding to neither.
 
 ---
 
-## Deliverables
+## Deliverables — current figure set (PNG, `plotstyle` house style)
 
-1. **GAMA-only plot** — binned points with errors, the fitted MRP with its
-   Monte-Carlo band, Driver's result for comparison. `hmf_gama_only_nessie.pdf`.
-2. **Combined plot** — GAMA + SDSS + REFLEX II fitted, 2PIGG and Tempel shown but
-   not fitted, following `allhmf.r`. Two of them, same pipeline, differing only
-   in the SDSS leg: `hmf_combined_nessie.pdf` (SDSS = Tempel+14) and
-   `hmf_combined_nessie_sdss.pdf` (SDSS = Nessie). Only the first carries a
-   quotable fit — see "In the combined fit".
-3. **GAMA + SDSS only, no REFLEX** (`--myoption GS`) —
-   `hmf_combined_nessie_GS_sdss.pdf` (SDSS = Nessie) and
-   `hmf_combined_nessie_GS.pdf` (SDSS = Tempel+14). Points are sound; neither
-   fit is quotable, because dropping the x-ray anchor makes the fit ill-posed
-   for both catalogues. See "GS — dropping REFLEX II entirely".
+Every combined figure uses **Nessie GAMA**; `_sdss` in the tag means the SDSS leg
+is Nessie too. `_mcmc` means curve, band, Omega_M inset, printed quantiles and
+the Driver-GAMA comparison line all come from the posterior.
 
-Keep them as separate figures.
+**The like-for-like pair** — same GAMA, same M/L cut, differing ONLY in the SDSS
+leg, both converged and quotable:
+
+| figure | SDSS leg | MCMC logM* | chi2 | conv |
+|---|---|---|---|---|
+| `hmf_combined_nessie_mlcut1_mcmc.png` | Tempel+14 `col15` | 13.66 | 227.41 | 0 |
+| `hmf_combined_nessie_sdss_mlcut1_rms_mcmc.png` | Nessie, NFW + Tempel rms | 12.72 | 226.70 | 0 |
+
+Those two answer different questions and both are worth showing: the first
+isolates the **group finder** (different groups, each catalogue's native
+masses); the second isolates the **mass estimator** (same recipe, different
+groups). Only sigma_sky separates the second from being fully Tempel's recipe.
+
+Everything else, and whether its fit may be quoted:
+
+| figure | config | fit quotable? |
+|---|---|---|
+| `hmf_combined_nessie_mcmc.png` | GSR, Tempel, no cut | yes (13.77, conv 0) |
+| `hmf_combined_nessie_sdss_rms_mcmc.png` | GSR, Nessie rms, no cut | no (12.84, conv 1) |
+| `hmf_combined_nessie_sdss_mlcut1_nfw_mcmc.png` | GSR, Nessie NFW | **no — railed at 11.0** |
+| `hmf_combined_nessie_sdss_mcmc.png` | GSR, Nessie native eq. 8 | **no — railed** |
+| `hmf_combined_nessie_GS_mcmc.png` | GS, Tempel | **no — railed** |
+| `hmf_combined_nessie_GS_sdss_mlcut1_nfw_mcmc.png` | GS, Nessie NFW | **no — railed** |
+| `hmf_combined_nessie_GS_sdss_mlcut1_rms_mcmc.png` | GS, Nessie rms | **no — railed** |
+| `hmf_combined_nessie_G_nosdss_mcmc.png` | GAMA-only | **no — railed** |
+
+Corner plots share the tag: `corner{tag}.png`. Chains are in `chain{tag}.npz`
+(`chain`, `chain_driver`, `median`, `best`, `nm`, `driver_published`) so any
+restyling is a redraw, **not** twelve fresh chains.
+
+"Railed" means the posterior piles against the prior bound at logM* = 11.0 and
+its credible interval is set by `BOUNDS`, not by the data. Those figures are
+honest — binned points, errors and curves are all sound — but carry no quotable
+MRP parameters. See "All six combined deliverables remade with MCMC".
+
+Still Nelder-Mead **deliberately**: `driver_fig4.pdf` (the bit-exact
+reproduction) and the published-table-2 validation printout. Both are regression
+tests against R; converting them would destroy what they test.
+
 
 ---
 
@@ -2121,3 +2187,186 @@ carrying the unresolved h^-1 Mpc vs Mpc convention question). And **GS still
 rails** (11.015) -- without REFLEX nothing anchors the fit, exactly as before.
 The dispersion estimator was a real part of the anchoring problem; the x-ray
 anchor is still not optional.
+
+
+---
+
+## Unit conversions between `recovery.py` and Driver's system — FIXED
+
+Four bugs in one session all came from the same root: two modules working in
+different (A, h, Omega_M) systems with conversions applied ad hoc at each call
+site.
+
+| system | A | h | mass | volume |
+|---|---|---|---|---|
+| `driver_recovery`, `new_gama_hmf`, `combined_hmf` | 13.9 | 0.6737 | Msun | Mpc^3 |
+| `recovery.py` | `A_SCALE` = 10 | 1 | h^-1 Msun | (h^-1 Mpc)^3 |
+
+**`recovery.driver_to_recovery(kind)` is now the single audited conversion.**
+`kind` is the part that was always missing:
+
+* `kind="dynamical"` — a mass built as `A sigma^2 R / G` (data, and any MRP
+  fitted to it, e.g. Driver's published M*). Carries **both** h and A:
+  **-0.315 dex**.
+* `kind="theory"` — a true halo mass (the Murray+21 LCDM curve). There is no A
+  in a theoretical HMF, so **h only: -0.172 dex**.
+* Density is per dex, so a constant mass shift leaves it alone; only h enters:
+  **+0.515 dex** (`3 log10(1/h)`).
+
+### The three bugs
+
+1. **`recovery.lcdm_curve` had a 0.172 dex SHAPE error.** It re-ran `allhmf.r`'s
+   algebra with `H0 = 100` substituted. The `+log10(100/H0)` on the mass grid is
+   a **no-op on the curve** — it shifts grid and labels together — so the Murray
+   cutoff always lands at `logM = 14.42947` in whatever units the module works
+   in. Driver's is physical Msun; recovery's is h^-1 Msun. Same number, two
+   systems. The error grew from 0.008 dex at logM 13.0 to **0.9 dex at 15.5**,
+   and no normalisation could absorb it. It now **delegates** to
+   `driver_recovery.lcdm_curve` (verified against `allhmf.r`) and converts;
+   agreement 0.0e+00. **Do not reinstate a local copy.**
+2. **Driver's GSR was hardcoded as `(13.958, -3.445, ...)`** — the h factor
+   applied but the A factor omitted, placing his fit 0.143 dex too high in mass.
+   Correct is **13.815**. The `-3.445` was right (density needs no A).
+3. **The 1/Vmax overlay converted mass but not density** — missing the +0.515
+   dex volume term, so every point sat half a dex low.
+
+An earlier "fix" corrected `LCDM_OMEGA_M` (0.25 -> Driver's 0.3147). That was a
+real bug too, but it only fixed the *normalisation*; the shape error above
+survived it and is why the curves still diverged at high mass.
+
+### `plot_gama_bayes.py`
+
+`hmf_gama_bayes.png` used to be drawn by an inline `python3 -c`, which is how it
+drifted. It is now a script, and it draws in **Driver's published units** so that
+only the posterior needs converting — one conversion instead of four (LCDM needs
+h-only, the published fits need h+A, the 1/Vmax points need mass *and* density,
+the posterior is native). In those units LCDM and Driver's GSR agree to
+0.02-0.11 dex, as they do in his figures.
+
+---
+
+## Mass cuts: `--fit-min` and `--fit-max`
+
+Driver's cuts are **lower** limits, not upper ones — `allhmf.r` 276/278:
+
+```r
+gama = gama[gama$V1 > 12.7 & !is.infinite(gama$V4),]
+sdss = sdss[sdss$V1 > 12.9 & !is.infinite(sdss$V4),]
+```
+
+REFLEX gets **no** cut anywhere; it is the anchor. Neither script trims the
+high-mass end.
+
+`--fit-max` (ours) clamps both survey legs from above; `--fit-min` (added this
+session) raises the lower cut on both. Both leave REFLEX alone, and `--fit-min`
+only ever *tightens* Driver's 12.7/12.9. **Both remove the points from the
+FIGURE as well as the fit**, so an excluded bin vanishes rather than being
+shown-but-not-fitted.
+
+### Only the 12.80 bin is anomalous — not "the two lowest"
+
+Nessie vs Driver v10, same M/L cut, seed 10:
+
+| bin | Nessie logphi | N | Driver logphi | N | diff |
+|---|---|---|---|---|---|
+| **12.8** | -3.711 | 42 | -3.429 | 47 | **-0.282** |
+| 13.0 | -3.510 | 74 | -3.463 | 98 | -0.047 |
+| 13.2 | -3.174 | 136 | -3.264 | 137 | +0.090 |
+| 13.4 | -3.538 | 189 | -3.589 | 196 | +0.051 |
+
+12.80 is 0.28 dex low against +/-0.05-0.09 scatter everywhere above it. **13.00
+is ordinary scatter.** So the visual impression of "two bins pulling the fit
+down" is one bad bin plus one that happens to sit on the same side.
+
+**`--fit-min 12.9` is the defensible cut** — drop 12.80 only, on the grounds
+that Nessie's completeness limit need not equal Driver's (different area, group
+finder and `zmax` derivation). **It has not been run yet.**
+
+Dropping both (`--fit-min 13.1`, `13.3`) was tested and should NOT be adopted:
+chi^2 falls (217 -> 199 -> 170) but the posterior still runs to the prior bound
+and **alpha flattens from -0.78 to -0.36**. Those bins were among the few things
+holding alpha steep; removing them removes the constraint rather than improving
+the fit. The NM answer also moves non-monotonically (13.97 -> 14.31 -> 13.57).
+
+---
+
+## Omega_M: two numbers, only one is a measurement
+
+`omega_matter()` integrates the **fitted MRP** (not the data) and divides by
+rho_crit. `allhmf.r` 414/415 computes both.
+
+| fit | Omega_M(all) | Omega_M(>12.7) | fraction |
+|---|---|---|---|
+| Driver+22 published GSR | 0.2049 | 0.1276 | 0.406 |
+| our NM refit | 0.2701 | 0.1294 | 0.411 |
+| our MCMC best | 0.1958 | 0.1401 | 0.445 |
+| **Murray+21 LCDM** | **0.3147** | **0.1185** | **0.377** |
+
+* **`Omega_M(>12.7)` ~ 0.13 is fine and is NOT "half" of anything.** It is the
+  mass in haloes above 10^12.7, which is *supposed* to be a fraction. LCDM puts
+  it at 0.1185 (37.7%); we get 0.128-0.140 (41-45%). **Quote this one**, with
+  the ~0.004 error bar the posterior gives.
+* **`Omega_M(all)` ~ 0.18-0.27 vs 0.3147 measures the extrapolation, not the
+  universe.** The integrand goes as M^(alpha+2), so the total depends on alpha
+  extrapolated ~12 decades below the lowest fitted bin. **Driver's own published
+  fit gives 0.205**, so the deficit is not ours. The LCDM row hits 0.3147 only
+  because `lcdm_curve`'s `factor` normalises it there by construction — it is
+  not an independent check. `--omega-prior` exists precisely because the free fit
+  does not recover it.
+
+**The figure inset plots `Omega_M(all)`** — the unreliable one — against a
+dotted reference at 0.3147, so it displays the extrapolated quantity beside the
+true value and invites the obvious wrong conclusion, while the trustworthy
+number is not shown at all. **Suggested change, not yet made:** switch the inset
+to `Omega_M(>12.7)` with LCDM's 0.1185 as the reference. It departs from
+`allhmf.r`, so put it behind a flag.
+
+---
+
+## Pick up here — outstanding work
+
+Ordered by value.
+
+1. **`--fit-min 12.9`** on the two quotable configurations. The analysis is done
+   (only 12.80 is anomalous); the runs are not. ~12 min.
+2. **The Omega_M inset** shows the extrapolated quantity. Change it behind a
+   flag; see above.
+3. **`sigma_sky` — the last unreconciled mass term** (+0.047 dex). Blocked on the
+   h^-1 Mpc vs Mpc convention question in "An unresolved units problem in
+   sigma_sky", which does not reconcile cleanly (~0.17 dex, most likely the
+   group-centre definition). Settling it would complete `tempel_rms` into a full
+   like-for-like reproduction of Tempel's masses, and it also bears on **Driver's
+   own** SDSS normalisation.
+4. **Convert the remaining plotting to PNG + `plotstyle`.** 88 PDFs remain, from
+   `recovery.py`, `vuvuzela.py`, `robust_hmf.py`, `sdss_hmf.py`,
+   `nessie_sdss_hmf.py`, `compare_dispersion_estimators.py`. Only
+   `combined_hmf`, `new_gama_hmf` and `mcmc_hmf` are converted. Those PDFs are
+   the only copy — do not delete before regenerating.
+5. **`new_gama_hmf.py` has no MCMC path.** `hmf_gama_only_nessie` and
+   `hmf_old_vs_new_mlcut1` are still Nelder-Mead + refits. Expect the posterior
+   to rail (GAMA-only always does), so the value is an honest figure, not a
+   number.
+6. **Tier 2: bootstrap covariance.** The bin errors are treated as diagonal but
+   are not — the Eddington `edb` is one global MC applied to every bin, and
+   cosmic variance is a single coherent mode. `nboot` already exists; store the
+   full bin x bin covariance and use `chi2 = r^T C^-1 r`. Needs
+   `nboot >> n_bins` and a Hartlap correction. **This is the assumption most
+   likely to be biasing the credible intervals**, including the
+   `Omega_M(>12.7) = 0.128 +/- 0.004` we would quote. Tier 3 (unbinned Poisson)
+   is explicitly NOT planned.
+7. **The MC-refit corner overlay was dropped** when the corner plots went to
+   stars. It was the clearest demonstration that Driver's perturb-and-refit
+   understates the degeneracy (refits pile into a spike on the NM point; the
+   posterior is a broad ridge) and is the kind of thing a referee asks for.
+   Recoverable from commit `f12c73b` and cheap to redraw from `chain*.npz`.
+8. **Housekeeping.** `git add -A` swept some pre-existing untracked figures from
+   the `recovery.py` era into version control (`corner_gama_*`, `corner_mock_*`,
+   `corner_combined_comp*`, `ppc_*`, `recovery_*`). They use different units and
+   conventions; decide which are still meaningful.
+
+### Nessie bug to report upstream, still open
+
+`fof/src/group_properties.rs` codes `3f64.powf(1./3.)` — a **cube** root — where
+Tempel eq. 8 with `sigma_v = sqrt(3) sigma_1D` requires the **square** root.
+Masses are low by 0.159 dex. Independent of everything else here and worth
+reporting regardless of what this project concludes.
