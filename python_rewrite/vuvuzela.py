@@ -190,35 +190,45 @@ def load_members(verbose=True):
         raise RuntimeError("unmatched galaxies; the two catalogues have drifted")
     if verbose:
         print(f"  members loaded              : {len(gal)}")
-    return gal
+    # Standard member-frame column names, so build_tracks is catalogue-agnostic
+    # (vuvuzela_gama.py supplies the same six columns for GAMA).
+    return pd.DataFrame({"gid": gal.group_id.values, "ra": gal.RAJ2000.values,
+                         "dec": gal.DEJ2000.values, "z": gal.zobs.values,
+                         "appmag": gal.rmag.values, "absmag": gal.absmag_r.values})
 
 
 # ---------------------------------------------------------------------------
 # The tracks
 # ---------------------------------------------------------------------------
 
-def build_tracks(gal, min_mult=20, floor=3, verbose=True):
+def build_tracks(gal, min_mult=20, floor=3, verbose=True, mass_fn=None):
     """Remove the apparently faintest member repeatedly, recomputing the mass.
+
+    ``gal`` carries the standard member columns ``gid, ra, dec, z, appmag,
+    absmag``.  ``mass_fn(ra, dec, z, absmag) -> mass`` defaults to Nessie's
+    SDSS estimator; ``vuvuzela_gama.py`` passes the Robotham+A estimator that
+    the GAMA leg of the HMF actually uses.
 
     Returns a list of (multiplicity array, delta-log10-mass array, log10 M_full)
     -- one entry per group, which is one "trail" of the vuvuzela.
     """
-    sizes = gal.groupby("group_id").size()
+    mass_fn = mass_fn or nessie_mass
+    sizes = gal.groupby("gid").size()
     big = sizes[sizes > min_mult].index
     if verbose:
         print(f"  groups with N > {min_mult}          : {len(big)}")
     tracks = []
     for j, gid in enumerate(big):
-        m = gal[gal.group_id == gid]
-        order = np.argsort(m.rmag.values)          # brightest first
-        ra = m.RAJ2000.values[order]
-        dec = m.DEJ2000.values[order]
-        zs = m.zobs.values[order]
-        am = m.absmag_r.values[order]
+        m = gal[gal.gid == gid]
+        order = np.argsort(m.appmag.values)        # brightest first
+        ra = m.ra.values[order]
+        dec = m.dec.values[order]
+        zs = m.z.values[order]
+        am = m.absmag.values[order]
         n_full = len(ra)
         ns, ms = [], []
         for n in range(n_full, floor - 1, -1):     # keep the n brightest
-            mm = nessie_mass(ra[:n], dec[:n], zs[:n], am[:n])
+            mm = mass_fn(ra[:n], dec[:n], zs[:n], am[:n])
             if np.isfinite(mm) and mm > 0:
                 ns.append(n)
                 ms.append(np.log10(mm))
@@ -311,55 +321,64 @@ def mass_audit():
 
 # ---------------------------------------------------------------------------
 
-def plot(tracks, ns, q16, q50, q84, outfile, min_mult):
+def plot_vuvuzela(tracks, ns, q16, q50, q84, outfile, panel_label,
+                  ref_label, xmax=100, ylim=(-1.5, 1.5), cmap_name="winter"):
+    """Driver+22 figure 3, sized for a single journal column.
+
+    Geometry, fonts and tick style come from ``plotting.py`` so that the GAMA
+    and SDSS panels stack without any per-figure fiddling.  ``ref_label`` names
+    Driver's hardcoded GAMA curve in the way that is honest for the panel: on
+    the GAMA panel it is the curve we are replacing, on the SDSS panel it is a
+    curve he reused from a different survey.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
 
-    fig, ax = plt.subplots(figsize=(7.1, 5.4))
+    import plotting
+
+    fig = plotting.start_plot(r"Multiplicity $N_{\mathrm{fof}}$",
+                              r"$\Delta\,\log_{10}(M_{h}/\mathrm{M}_{\odot})$")
+    ax = plt.gca()
+
     masses = np.array([t[2] for t in tracks])
     lo, hi = np.quantile(masses, 0.02), np.quantile(masses, 0.98)
-    cmap = plt.get_cmap("winter")
+    cmap = plt.get_cmap(cmap_name)
     norm = plt.Normalize(lo, hi)
 
     segs = [np.column_stack([t[0], t[1]]) for t in tracks]
     ax.add_collection(LineCollection(segs, colors=[cmap(norm(m)) for m in masses],
-                                     linewidths=0.7, alpha=0.35))
+                                     linewidths=0.45, alpha=0.35, zorder=2))
 
     good = np.isfinite(q50)
-    ax.plot(ns[good], q50[good], color="red", lw=2, zorder=5)
-    ax.plot(ns[good], q16[good], color="red", lw=2, ls="-", zorder=5)
-    ax.plot(ns[good], q84[good], color="red", lw=2, ls="-", zorder=5)
+    for q in (q16, q50, q84):
+        ax.plot(ns[good], np.asarray(q)[good], color="red", lw=1.3, zorder=5)
 
-    ax.plot(GAMA_XX, GAMA_YY, color="black", ls=(0, (6, 2)), lw=1.8, zorder=6)
-    ax.plot(GAMA_XX, -GAMA_YY, color="black", ls=(0, (6, 2)), lw=1.8, zorder=6)
-    ax.plot(ROBOTHAM_XX, ROBOTHAM_YY, color="black", ls=":", lw=1.8, zorder=6)
-    ax.plot(ROBOTHAM_XX, -ROBOTHAM_YY, color="black", ls=":", lw=1.8, zorder=6)
+    ax.plot(GAMA_XX, GAMA_YY, color="black", ls=(0, (5, 2)), lw=1.1, zorder=6)
+    ax.plot(GAMA_XX, -GAMA_YY, color="black", ls=(0, (5, 2)), lw=1.1, zorder=6)
+    ax.plot(ROBOTHAM_XX, ROBOTHAM_YY, color="black", ls=":", lw=1.1, zorder=6)
+    ax.plot(ROBOTHAM_XX, -ROBOTHAM_YY, color="black", ls=":", lw=1.1, zorder=6)
 
-    ax.axhline(0, color="grey", lw=0.6, zorder=1)
-    ax.set_xlim(2, max(60, int(np.nanmax(ns[good])) + 2))
-    ax.set_ylim(-1.5, 1.5)
-    ax.set_xlabel("Multiplicity $N_{fof}$", fontsize=11)
-    ax.set_ylabel(r"$\Delta\,\log_{10}$(Mass)", fontsize=11)
-    ax.tick_params(direction="in", top=True, right=True, which="both")
-    ax.minorticks_on()
+    ax.axhline(0, color="grey", lw=0.5, zorder=1)
+    ax.set_xlim(2, xmax)
+    ax.set_ylim(*ylim)
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    cb = fig.colorbar(sm, ax=ax, pad=0.015)
-    cb.set_label(r"$\log_{10}$(original halo mass / M$_\odot$)", fontsize=9)
-    cb.ax.tick_params(labelsize=8)
+    cb = fig.colorbar(sm, ax=ax, pad=0.02, fraction=0.046)
+    cb.set_label(r"$\log_{10}(M_{h}/\mathrm{M}_{\odot})$", fontsize=8)
+    cb.ax.tick_params(labelsize=6, width=0.8, length=2, direction="in")
+    cb.outline.set_linewidth(0.8)
 
-    ax.plot([], [], color="red", lw=2, label="16, 50, 84 per cent (this work, SDSS)")
-    ax.plot([], [], color="black", ls=(0, (6, 2)), lw=1.8,
-            label="Driver+22 GAMA curve (used for SDSS in sdsshmf.r)")
-    ax.plot([], [], color="black", ls=":", lw=1.8, label="Robotham+2011")
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
-    ax.set_title(f"Nessie SDSS, groups with $N>{min_mult}$, faintest-first removal",
-                 fontsize=9)
+    ax.plot([], [], color="red", lw=1.3, label="16, 50, 84 per cent (this work)")
+    ax.plot([], [], color="black", ls=(0, (5, 2)), lw=1.1, label=ref_label)
+    ax.plot([], [], color="black", ls=":", lw=1.1, label="Robotham et al. 2011")
+    ax.legend(loc="lower right", fontsize=5.5, frameon=False, handlelength=2.6,
+              borderpad=0.4, labelspacing=0.35)
+    ax.text(0.035, 0.955, panel_label, transform=ax.transAxes, fontsize=8,
+            va="top", ha="left")
 
-    fig.tight_layout()
-    fig.savefig(outfile, dpi=240)
+    plotting.end_plot(outfile)
     plt.close(fig)
     print(f"\n  wrote {outfile}")
 
@@ -370,7 +389,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--min-mult", type=int, default=20)
     p.add_argument("--floor", type=int, default=3)
-    p.add_argument("--out", default="vuvuzela_sdss.pdf")
+    p.add_argument("--out", default="vuvuzela_sdss.png")
+    p.add_argument("--xmax", type=float, default=100,
+                   help="multiplicity axis cap (default 100)")
     p.add_argument("--csv", default="sdss_masserr.csv")
     p.add_argument("--mass-audit", action="store_true")
     args = p.parse_args()
@@ -400,18 +421,22 @@ def main():
     gg = np.interp(ns[sel], GAMA_XX, GAMA_YY)
     mm = np.array([dr.MASSCORR[int(n) - 1] for n in ns[sel]])
     skew = np.median(np.abs(q16[sel]) / np.abs(q84[sel]))
-    print(f"\n  sigma  SDSS/GAMA ratio : {np.median(err[sel] / gg):.3f}"
+    print(f"\n  sigma  ours/Driver ratio : {np.median(err[sel] / gg):.3f}"
           "   (1.0 => Driver's reuse of the GAMA curve is justified)")
-    print(f"  bias   SDSS/GAMA ratio : {np.median(q50[sel] / mm):.3f}"
-          "   (q50 is the analogue of masscorr)")
-    print(f"  skew   |q16|/|q84|     : {skew:.2f}"
+    print(f"  sigma  ours-Driver, dex  : {np.median(err[sel] - gg):+.4f}")
+    print(f"  bias   ours-masscorr, dex: {np.median(q50[sel] - mm):+.4f}"
+          "   (q50 is the analogue of masscorr; both -> 0 at large N,")
+    print("                             so a ratio is meaningless there)")
+    print(f"  skew   |q16|/|q84|       : {skew:.2f}"
           "   (1.0 would be symmetric; Driver's MC assumes a Gaussian)")
 
     out = pd.DataFrame({"N": ns, "ntracks": cnt, "q16": q16, "q50": q50,
                         "q84": q84, "sigma_log10M": err})
     out.to_csv(args.csv, index=False)
     print(f"\n  wrote {args.csv}")
-    plot(tracks, ns, q16, q50, q84, args.out, args.min_mult)
+    plot_vuvuzela(tracks, ns, q16, q50, q84, args.out,
+                  panel_label=f"Nessie SDSS ($N>{args.min_mult}$)",
+                  ref_label="Driver et al. 2022 GAMA curve", xmax=args.xmax)
 
 
 if __name__ == "__main__":
