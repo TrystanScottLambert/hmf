@@ -105,6 +105,71 @@ MASSCORR = np.array([
     -1.257178e-02, -7.064037e-03, -3.963656e-03, -1.271533e-02, -2.664687e-03,
     -1.691287e-03])
 
+# ---------------------------------------------------------------------------
+# Measured mass-error curves (the vuvuzela), as an opt-in alternative
+# ---------------------------------------------------------------------------
+#
+# NFOF_YY and MASSCORR above were measured by Driver on his v10 GAMA catalogue
+# and are reused verbatim for SDSS in sdsshmf.r.  vuvuzela_gama.py and
+# vuvuzela.py measure both quantities directly on the Nessie catalogues, so a
+# Nessie leg can carry its own.  Driver's arrays stay the default: they are
+# load-bearing for the bit-exact reproductions.
+
+_MASSERR_CACHE = {}
+
+
+def load_masserr(path):
+    """``N -> (sigma_log10M, q50)`` from a vuvuzela CSV.
+
+    Rows where fewer than five tracks contributed have NaN quantiles and are
+    dropped, so the table ends where the measurement does (N = 61 for GAMA,
+    267 for SDSS).
+    """
+    if path not in _MASSERR_CACHE:
+        d = pd.read_csv(path)
+        d = d[np.isfinite(d.sigma_log10M) & np.isfinite(d.q50)]
+        if not len(d):
+            raise ValueError(f"no usable rows in {path}")
+        _MASSERR_CACHE[path] = (d.N.values.astype(float),
+                                d.sigma_log10M.values.astype(float),
+                                d.q50.values.astype(float))
+    return _MASSERR_CACHE[path]
+
+
+def mass_error_and_bias(nfof, masserr="driver"):
+    """Per-group ``sigma_log10M`` and multiplicity debiasing.
+
+    ``masserr="driver"`` reproduces ``gamahmf.r`` exactly: sigma interpolated
+    from the hardcoded ``NFOF_YY`` with ``approx``'s NA outside 3..22 mapped to
+    0.03, then floored at 0.1; debiasing from ``MASSCORR``, zero outside its
+    range.
+
+    Anything else is a path to a vuvuzela CSV measured on the catalogue in
+    hand.  Outside the measured range the endpoint value is **held**, rather
+    than dropping to Driver's 0.03 -- our curves extend far enough (N = 61,
+    267) that a group beyond the last point is a rich one whose error is small
+    and flat, which 0.03 would badly understate.  The 0.1 floor is kept either
+    way.
+
+    The debiasing sign convention matches Driver's: both are
+    ``median(log10 M_observed - log10 M_full)``, negative at low N, and the
+    mass is corrected as ``M / 10**bias``.
+    """
+    n = np.asarray(nfof, dtype=float)
+    if masserr in (None, "driver"):
+        sig = r_approx(n, NFOF_XX, NFOF_YY)
+        sig = np.where(np.isnan(sig), 0.03, sig)
+        ni = np.asarray(nfof).astype(int)
+        bias = np.where(ni <= len(MASSCORR),
+                        MASSCORR[np.clip(ni, 1, len(MASSCORR)) - 1], np.nan)
+        bias = np.where(np.isnan(bias), 0.0, bias)
+    else:
+        nn, sigv, q50 = load_masserr(masserr)
+        sig = np.interp(n, nn, sigv)          # np.interp holds the endpoints
+        bias = np.interp(n, nn, q50)
+    return np.where(sig < 0.1, 0.1, sig), bias
+
+
 # Published table 1, for --check-table.  Columns as printed in the paper:
 # bin centre, N, log10 phi, log10 phi_corr, sigma_Poisson, sigma_MC, sigma_CosVar,
 # sigma_Combined.
@@ -511,7 +576,8 @@ def lcdm_curve():
     return mrpx, mrpy, factor, A_MRP / factor
 
 
-def build_groups(group_file, member_file, verbose=True, vmax_floor_frac=1e-3):
+def build_groups(group_file, member_file, verbose=True, vmax_floor_frac=1e-3,
+                 masserr="driver"):
     """gamahmf.r lines 257-310: selection, masses, and Vmax from the members.
 
     ``vmax_floor_frac`` is Driver's ``vlimitmin`` expressed as a fraction of
@@ -532,14 +598,8 @@ def build_groups(group_file, member_file, verbose=True, vmax_floor_frac=1e-3):
     g3c["mymass"] = (MAGICA * (g3c.VelDisp * 1000) ** 2 * g3c.Rad50 * PARSEC * 1e6
                      / (G * MSOL) * (100 / HO))
 
-    err = r_approx(g3c.Nfof.values.astype(float), NFOF_XX, NFOF_YY)
-    err = np.where(np.isnan(err), 0.03, err)
-    err = np.where(err < 0.1, 0.1, err)
+    err, mc = mass_error_and_bias(g3c.Nfof.values, masserr)
     g3c["log10MassErr"] = err
-
-    nf = g3c.Nfof.values.astype(int)
-    mc = np.where(nf <= len(MASSCORR), MASSCORR[np.clip(nf, 1, len(MASSCORR)) - 1], np.nan)
-    mc = np.where(np.isnan(mc), 0.0, mc)
     g3c["masscorr"] = mc
     g3c["MassAfunc"] = g3c.mymass / 10 ** g3c.masscorr
 

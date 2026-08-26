@@ -23,9 +23,17 @@ def prettify_plot(x_label: str, y_label: str) -> None:
     plt.tick_params(which="major", length=3, direction="in")
 
 
-def start_plot(x_label: str, y_label: str) -> plt.Figure:
-    """Starting the plot."""
-    fig = plt.figure(figsize=(3.54, 3.54), dpi=600)
+SINGLE_COLUMN = (3.54, 3.54)
+FULL_PAGE = (7.10, 4.26)
+
+
+def start_plot(x_label: str, y_label: str, figsize=SINGLE_COLUMN) -> plt.Figure:
+    """Starting the plot.
+
+    ``figsize`` defaults to the single-column square; pass ``FULL_PAGE`` (or
+    any tuple) for a figure that spans both columns.
+    """
+    fig = plt.figure(figsize=figsize, dpi=600)
     prettify_plot(x_label, y_label)
     return fig
 

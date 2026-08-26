@@ -2323,6 +2323,70 @@ to `Omega_M(>12.7)` with LCDM's 0.1185 as the reference. It departs from
 
 ---
 
+## The Nessie legs now carry their OWN measured mass errors (2026-08-26)
+
+`driver_recovery.mass_error_and_bias(nfof, masserr)` replaces both hardcoded
+arrays with the vuvuzela measurements when `masserr` is a CSV path:
+
+| leg | scatter | debiasing |
+|---|---|---|
+| Nessie GAMA | `gama_masserr.csv` | its `q50` replaces `MASSCORR` |
+| Nessie SDSS (`tempel_nfw`) | `sdss_masserr.csv` | n/a -- `masscorr` is used only by the `robotham` mass mode |
+| Driver v10 GAMA, Tempel SDSS | Driver's | Driver's -- they are his catalogues |
+
+**`masserr="driver"` is the default and reproduces `gamahmf.r` exactly**, so the
+bit-exact checks are untouched: `driver_recovery.py --seed 1` still gives
+13.582 / chi2 20.4684 / 501 fevals, and the GSR validation still gives
+14.150 / -3.995 / -1.695 / 0.640. Exposed as `--mass-err` / `--sdss-mass-err`.
+
+Outside the measured range the endpoint value is **held** rather than dropping
+to Driver's 0.03; the 0.1 floor is kept, so above N ~ 20 both curves are on the
+floor and only N < 20 changes.
+
+### What the swap does, and the one thing to watch
+
+GAMA masses rise **+0.040 dex** (median), because our q50 is more negative than
+his `MASSCORR` at N = 5-7. That is twice what was expected, and it has a
+consequence worth knowing:
+
+* **Group 205509 moved from the 14.2 bin into the 14.4 bin.** The known
+  pathology (N = 5, z = 0.019, sigma = 482 km/s) sat at logM 14.26 on Driver's
+  debiasing and sits at 14.305 on ours. The M/L cut still removes exactly 5 of
+  1833 groups, but its effect now lands at 14.4 (-0.61 dex) instead of 14.2
+  (-0.14 dex), and it turns a non-monotonic bump at 14.4 into a monotonic
+  function. **"The 14.2 bin -- solved" above is still right about the cause and
+  the cure, but the bin number changes once the measured debiasing is used.**
+* `edb` is stable either way -- seed-to-seed sd is 0.01-0.03 against swap-driven
+  changes of 0.2-0.9 -- so the binned changes are signal, not MC noise.
+
+### The current deliverable set
+
+`FIGURES.md` is the manifest: file, exact command, and whether the fit is
+quotable. Four figures, four corner plots, one table, all PDF through
+`plotting.py`:
+
+| figure | config | fit quotable? |
+|---|---|---|
+| `hmf_gama_nessie.pdf` | GAMA only, Driver's GAMA5 fit behind | **no -- railed** |
+| `hmf_gama_sdss_nessie.pdf` | GAMA + SDSS, both Nessie | **no -- railed** |
+| `hmf_combined_nessie_gama.pdf` | GAMA Nessie + Tempel SDSS + REFLEX | **yes** (logM* 13.60) |
+| `hmf_combined_nessie_all.pdf` | GAMA + SDSS Nessie + REFLEX | **no -- railed** |
+
+`mrp_table.py` builds the parameter table from `chain_<name>.npz` and marks
+railed rows; `mrp_table.tex` is the LaTeX. **Three of four rail**, which is the
+same conclusion as "All six combined deliverables remade with MCMC": only
+GSR-with-an-x-ray-anchor-and-Tempel's-SDSS is well posed. Note the one that
+does converge now sits at logM* = 13.60 (+0.37/-0.48) against Driver's
+published 14.13, i.e. consistent at about 1 sigma.
+
+New `combined_hmf.py` flags: `--name` (one basename for figure, corner and
+chain -- the tag-derived names were unreadable), `--no-extras`,
+`--no-driver-gama`, `--full-page`, `--pub-fit gama`. Figures are PDF with the
+~1000-curve band **rasterised** and everything else vector, which is what makes
+them 60-90 kB instead of unopenable.
+
+---
+
 ## Pick up here — outstanding work
 
 Ordered by value.

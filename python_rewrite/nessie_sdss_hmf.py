@@ -226,7 +226,8 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
 
 
 def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True,
-                 mass_mode="tempel_eq8", mass_shift=0.0, vmax_floor_frac=1e-3):
+                 mass_mode="tempel_eq8", mass_shift=0.0, vmax_floor_frac=1e-3,
+                 masserr="driver"):
     """The Nessie analogue of ``sdss_hmf.build_groups`` (sdsshmf.r 263-307)."""
     gal = pd.read_parquet(gal_file)
     gal = gal[gal.group_id != UNGROUPED].copy()
@@ -263,9 +264,10 @@ def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True,
                   f"  -> {2 * np.median(r):+.4f} dex in mass")
     grp["mass"] = group_masses(grp, mass_mode, mass_shift)
 
-    err = r_approx(grp.nrich.values.astype(float), dr.NFOF_XX, dr.NFOF_YY)
-    err = np.where(np.isnan(err), 0.03, err)
-    grp["log10MassErr"] = np.where(err < 0.1, 0.1, err)
+    # Only the scatter is swapped here: the debiasing (Driver's masscorr) is
+    # used by the `robotham` mass mode alone -- Tempel eq. 8 carries no A
+    # factor and so no multiplicity correction to replace.
+    grp["log10MassErr"], _ = dr.mass_error_and_bias(grp.nrich.values, masserr)
 
     # lines 294-297: the same deliberately coarse dz = 0.001 grid
     tryz = np.arange(1, 1001) / 1000.0
@@ -324,10 +326,11 @@ def fit(b, volumesdss, phimrp, maxit=500, fit_max=None):
 
 
 def build(seed=10, nmc=1001, verbose=True, nboot=0, mass_mode="tempel_eq8",
-          mass_shift=0.0, vmax_floor_frac=1e-3):
+          mass_shift=0.0, vmax_floor_frac=1e-3, masserr="driver"):
     grp, volumesdss = build_groups(verbose=verbose, mass_mode=mass_mode,
                                    mass_shift=mass_shift,
-                                   vmax_floor_frac=vmax_floor_frac)
+                                   vmax_floor_frac=vmax_floor_frac,
+                                   masserr=masserr)
     b = bin_hmf(grp, volumesdss, seed=seed, nmc=nmc, verbose=verbose,
                 nboot=nboot)
     return table(b), volumesdss, b

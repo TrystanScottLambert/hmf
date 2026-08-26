@@ -72,7 +72,7 @@ def survey_volume(z):
 
 
 def build_groups(gal_file=GALS, group_file=GROUPS, verbose=True,
-                 vmax_floor_frac=1e-3):
+                 vmax_floor_frac=1e-3, masserr="driver"):
     """sdsshmf.r lines 263-307."""
     g = Table.read(gal_file)
     gal = pd.DataFrame({k: _native(g[c]) for k, c in GAL_COLS.items()})
@@ -89,9 +89,7 @@ def build_groups(gal_file=GALS, group_file=GROUPS, verbose=True,
               & (grp.nrich > MULTI - 1)].copy().reset_index(drop=True)
     grp["mass"] = grp["mass"].astype(float) * 1e12 * (TEMPEL_H / HO)  # line 278
 
-    err = r_approx(grp.nrich.values.astype(float), dr.NFOF_XX, dr.NFOF_YY)
-    err = np.where(np.isnan(err), 0.03, err)
-    grp["log10MassErr"] = np.where(err < 0.1, 0.1, err)
+    grp["log10MassErr"], _ = dr.mass_error_and_bias(grp.nrich.values, masserr)
 
     # lines 294-297: zmax by nearest point on a 1000-step luminosity-distance
     # grid.  The grid is coarse (dz = 0.001); it is reproduced rather than
@@ -226,10 +224,12 @@ def fit(b, volumesdss, phimrp, maxit=500):
     return par, val, nfe, conv, len(allx)
 
 
-def build(seed=10, nmc=1001, verbose=True, nboot=0, vmax_floor_frac=1e-3):
+def build(seed=10, nmc=1001, verbose=True, nboot=0, vmax_floor_frac=1e-3,
+          masserr="driver"):
     """Convenience: everything, returning the V1..V8 table and the volume."""
     grp, volumesdss = build_groups(verbose=verbose,
-                                   vmax_floor_frac=vmax_floor_frac)
+                                   vmax_floor_frac=vmax_floor_frac,
+                                   masserr=masserr)
     b = bin_hmf(grp, volumesdss, seed=seed, nmc=nmc, verbose=verbose, nboot=nboot)
     return table(b), volumesdss, b
 

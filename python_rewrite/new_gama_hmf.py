@@ -92,7 +92,7 @@ def compute_zmax(absmag, maglim=NEW_MAGLIM):
 # Group building
 # ---------------------------------------------------------------------------
 
-def _masses_and_errors(g3c):
+def _masses_and_errors(g3c, masserr="driver"):
     """gamahmf.r lines 263-289, myoption="GAMA".
 
     The mass is rebuilt from the velocity dispersion and Rad50 rather than read
@@ -104,15 +104,9 @@ def _masses_and_errors(g3c):
     g3c["mymass"] = (MAGICA * (g3c.VelDisp * 1000) ** 2 * g3c.Rad50 * PARSEC * 1e6
                      / (G * MSOL) * (100 / HO))
 
-    err = r_approx(g3c.Nfof.values.astype(float), NFOF_XX, NFOF_YY)
-    err = np.where(np.isnan(err), 0.03, err)
-    err = np.where(err < 0.1, 0.1, err)
+    err, mc = dr.mass_error_and_bias(g3c.Nfof.values, masserr)
     g3c["log10MassErr"] = err
-
-    nf = g3c.Nfof.values.astype(int)
-    mc = np.where(nf <= len(MASSCORR), MASSCORR[np.clip(nf, 1, len(MASSCORR)) - 1],
-                  np.nan)
-    g3c["masscorr"] = np.where(np.isnan(mc), 0.0, mc)
+    g3c["masscorr"] = mc
     g3c["MassAfunc"] = g3c.mymass / 10 ** g3c.masscorr
     return g3c
 
@@ -152,7 +146,7 @@ def _vmax_from_members(g3c, zmax_by_group, area, verbose=True, vmax_floor_frac=1
 
 
 def build_groups_new(group_file=GROUPS_NEW, gal_file=GALS_NEW, verbose=True,
-                     vmax_floor_frac=1e-3):
+                     vmax_floor_frac=1e-3, masserr="driver"):
     """The new DMU, put through Driver's selection and Vmax construction."""
     g = Table.read(group_file).to_pandas()
     g["GAMARegion"] = g.GAMARegion.str.decode("utf-8") if g.GAMARegion.dtype == object \
@@ -165,7 +159,7 @@ def build_groups_new(group_file=GROUPS_NEW, gal_file=GALS_NEW, verbose=True,
            & (g.MassAfunc > 1e1) & (g.GAMARegion.isin(NEW_REGIONS)))
     g3c = g[sel].copy().reset_index(drop=True)
 
-    g3c = _masses_and_errors(g3c)
+    g3c = _masses_and_errors(g3c, masserr)
 
     # NOTE: gamahmf.r line 310 forces GroupID 100622 to 1e9 -- a known-bad object
     # in the *old* catalogue.  GroupID 100622 also exists here (g09 offset is
@@ -448,6 +442,11 @@ def main():
                         "1833 groups and fixes the 14.2 bin.  Applied to BOTH "
                         "catalogues so the comparison stays fair.")
     p.add_argument("--out", default="hmf_old_vs_new.png")
+    p.add_argument("--mass-err", default="driver",
+                   help="mass-error curve: 'driver' (his hardcoded arrays, the "
+                        "default) or a vuvuzela CSV such as gama_masserr.csv, "
+                        "which also replaces MASSCORR with the measured "
+                        "multiplicity debiasing.")
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--nmc-edb", type=int, default=1001)
     p.add_argument("--nmc-fit", type=int, default=2001)
@@ -483,7 +482,7 @@ def main():
 
     print(f"\nNEW GAMA (Nessie DMU, 4 regions incl. G23, {NEW_AREA} deg^2, "
           f"r<{NEW_MAGLIM})")
-    g_new, v_new = build_groups_new()
+    g_new, v_new = build_groups_new(masserr=args.mass_err)
     g_new, flagged_ml = apply_ml_cut(g_new, args.ml_cut)
     if flagged_ml is not None and len(flagged_ml):
         flagged_ml.to_csv("flagged_ml_outliers.csv", index=False)

@@ -161,9 +161,7 @@ def corner_plot(datasets, out, markers=None, bounds=None, title=None):
     import matplotlib.pyplot as plt
     import corner
 
-    import plotstyle
-    plotstyle.apply()
-    out = plotstyle.as_png(out)
+    import plotting                       # the paper's house style
 
     ndim = datasets[0][0].shape[1]
     if bounds is None:
