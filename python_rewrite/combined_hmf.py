@@ -89,7 +89,8 @@ VOLUME_REFLEXII = 13000000.0  # line 265, hardcoded
 
 ALPHA_FIX = -1.864908        # line 257, used by myoption="FIX"
 COSVAR_REFLEX = 0.05         # line 348
-DRIVER_FIT_C = "#24507a"     # the same fit run on Driver's GAMA, shown faintly
+DRIVER_FIT_C = (100 / 255, 149 / 255, 237 / 255)   # == ng.OLD_C, his points
+OUR_FIT_C = "#d62728"        # == our red points; the fit must match its data
 PUBLISHED_C = "#c8781e"      # Driver+22's *published* fit, drawn in the background
 
 # Driver+22's headline result, quoted in his abstract and table 2 as the GSR
@@ -101,6 +102,14 @@ PUBLISHED_C = "#c8781e"      # Driver+22's *published* fit, drawn in the backgro
 DRIVER_ABSTRACT_FIT = (14.13, -3.96, -1.68, 0.63)
 # Driver+22 table 2 GAMA5 -- his GAMA-ONLY fit, for figure 1 only.
 DRIVER_GAMA_ONLY_FIT = (13.51, -3.19, -1.27, 0.47)
+
+# Which Driver+22 table 2 row a figure should draw behind it: the one fitted to
+# the same sample combination the figure plots, not always his headline GSR.
+PUB_FIT = {
+    "gsr": (DRIVER_ABSTRACT_FIT, None),
+    "gama": (DRIVER_GAMA_ONLY_FIT, "Driver+22 published GAMA-only fit"),
+    "gs": ((14.35, -4.38, -1.96, 0.60), "Driver+22 published GAMA+SDSS fit"),
+}
 
 MLIMIT_GAMA = 12.7           # line 276
 MLIMIT_SDSS = 12.9           # line 278
@@ -329,7 +338,8 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
                   outfile, myoption, omega_prior, fit_par_driver=None,
                   sdss_label="SDSS DR10 (Tempel+14)", fit_method=None,
                   figsize=(7.87, 4.72), pub_fit=None, pub_label=None,
-                  show_extras=True, show_driver_gama=True):
+                  show_extras=True, show_driver_gama=True,
+                  sdss_label_short=None, show_driver_fit=True):
     """The combined figure.
 
     ``show_extras=False`` drops the REFLEX, 2PIGG and Tempel-curve *points*
@@ -354,7 +364,12 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     def _lab(long, short):
         return short if compact else long
 
-    cf = (100 / 255, 149 / 255, 237 / 255)
+    # Each fitted curve takes the colour of the data it was fitted to: red for
+    # the Nessie GAMA points, cornflower for Driver's.  These used to be the
+    # other way round -- our fit was drawn in exactly the cornflower of HIS
+    # data points, which invites the reader to pair the wrong line with the
+    # wrong sample.
+    cf = OUR_FIT_C
     tp_x, tp_y, tp_up, tp_do = extras["tpigg"]
     el_x, el_y, el_lo, el_hi = extras["elmo"]
 
@@ -420,14 +435,17 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
 
     # the identical fit run on Driver's GAMA, faint, so the effect of swapping
     # only the group catalogue can be read straight off the figure
-    if fit_par_driver is not None and show_driver_gama:
+    if fit_par_driver is not None and show_driver_gama and show_driver_fit:
         with np.errstate(divide="ignore", invalid="ignore"):
+            # Solid and heavier, underneath our fit, which is dotted with wide
+            # gaps.  The two curves nearly coincide by construction, so the only
+            # way both stay visible is to let one show THROUGH the other; a
+            # dashed line under a dotted line just fragments into invisibility.
             ax.plot(xfit, np.log10(dr.mrp(xfit, *fit_par_driver)),
-                    color=DRIVER_FIT_C, lw=1.7, ls=(0, (7, 2, 1.5, 2)),
-                    alpha=0.75, zorder=6)
+                    color=DRIVER_FIT_C, lw=2.6, ls="-", zorder=4)
     with np.errstate(divide="ignore", invalid="ignore"):
-        ax.plot(xfit, np.log10(dr.mrp(xfit, *fit_par)), color=cf, lw=2, ls=":",
-                zorder=8)
+        ax.plot(xfit, np.log10(dr.mrp(xfit, *fit_par)), color=cf, lw=1.8,
+                ls=(0, (1, 2.5)), zorder=8)
 
     ax.set_xlim(12.75, 16)
     ax.set_ylim(-8, -2)
@@ -447,8 +465,8 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
         keys = keys[:1]
     if "S" in sets:
         keys.append(("P", "purple",
-                     _lab(f"{sdss_label} z<{ZLIMITSDSS} and N>4", sdss_label),
-                     False))
+                     _lab(f"{sdss_label} z<{ZLIMITSDSS} and N>4",
+                          sdss_label_short or sdss_label), False))
     if show_extras:
         keys += [("D", "forestgreen",
                   "REFLEX II, x-ray, z~0.1 (Bohringer et al. 2017)", False),
@@ -458,7 +476,8 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     # (as the published fit did) pushes the last row off the bottom of the
     # axes and into the tick labels.
     n_rows = len(keys) + 2 + show_extras + (fit_par_driver is not None
-                                            and show_driver_gama)
+                                            and show_driver_gama
+                                            and show_driver_fit)
     y0, y_floor = -4.95, -7.62
     dy = min(0.325, (y0 - y_floor) / max(n_rows - 1, 1))
     for k, (mk, c, lab, hollow) in enumerate(keys):
@@ -473,7 +492,7 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
         ax.text(12.95, yy, " SDSS DR10 mass function (Tempel et al. 2014)",
                 color="cyan", va="center", fontsize=lfs)
     yy -= dy
-    ax.plot([12.8, 12.9], [yy, yy], color=cf, lw=2, ls=":")
+    ax.plot([12.8, 12.9], [yy, yy], color=cf, lw=1.8, ls=(0, (1, 2.5)))
     # With --mcmc this line is the best-lnP posterior sample and the band is
     # posterior draws, not Driver's optimiser point and refits.  Say so.
     ax.text(12.95, yy, _lab(f" Best fit MRP function to {myoption}",
@@ -481,10 +500,9 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
             + (" + $\\Omega_M$ prior" if omega_prior else "")
             + (f" ({fit_method})" if fit_method else ""), va="center",
             fontsize=lfs)
-    if fit_par_driver is not None and show_driver_gama:
+    if fit_par_driver is not None and show_driver_gama and show_driver_fit:
         yy -= dy
-        ax.plot([12.8, 12.9], [yy, yy], color=DRIVER_FIT_C, lw=1.7,
-                ls=(0, (7, 2, 1.5, 2)), alpha=0.75)
+        ax.plot([12.8, 12.9], [yy, yy], color=DRIVER_FIT_C, lw=2.6, ls="-")
         ax.text(12.95, yy, _lab(" same fit using Driver+22 GAMA",
                                 " same fit, Driver+22 GAMA"), va="center",
                 fontsize=lfs, color=DRIVER_FIT_C)
@@ -501,19 +519,20 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     if mc is not None:
         iax = fig.add_axes([0.63, 0.60, 0.345, 0.375])
         om = mc["omegam"][np.isfinite(mc["omegam"])]
-        iax.hist(om, bins=np.arange(0, 1.001, 0.01), color=cf)
+        iax.hist(om, bins=np.arange(0, 1.001, 0.01), color="0.55")
         iax.axvspan(np.quantile(om, 0.16), np.quantile(om, 0.84),
                     color=(1, 0, 0, 0.25), lw=0)
         iax.axvline(OMEGAM, color="black", lw=2, ls=":")
         iax.axvline(np.quantile(om, 0.50), color="red", lw=1)
         iax.set_xlim(0, 1)
-        iax.set_xlabel(r"$\Omega_M$", fontsize=7 if compact else 9)
+        iax.set_xlabel(r"$\Omega_M$ (total)", fontsize=7 if compact else 9)
         iax.set_ylabel("Frequency", fontsize=8)
         iax.tick_params(labelsize=7, direction="in")
         lo, hi = np.quantile(om, 0.16), np.quantile(om, 0.84)
         med = np.quantile(om, 0.50)
-        iax.text(0.97, 0.92, r"$\Omega_M$ = " + f"{med:.2g}"
-                 + f"$^{{+{hi - med:.2g}}}_{{-{med - lo:.2g}}}$",
+        # .2g rendered 0.199 as "0.2", which is not a publication number.
+        iax.text(0.97, 0.92, r"$\Omega_M$ = " + f"{med:.3f}"
+                 + f"$^{{+{hi - med:.3f}}}_{{-{med - lo:.3f}}}$",
                  transform=iax.transAxes, ha="right", va="top", color="red",
                  fontsize=9)
 
@@ -591,6 +610,11 @@ def main():
                         "corner_<name>.pdf and chain_<name>.npz.  Overrides the "
                         "tag-derived filenames, which are unreadable once more "
                         "than two options are set.")
+    p.add_argument("--profile-mstar", action="store_true",
+                   help="print the chi2 profile in log10 M* (the other three "
+                        "parameters minimised at each point) and exit.  Says "
+                        "whether a railed posterior means the data prefer a "
+                        "low M* or simply do not constrain it.")
     p.add_argument("--no-driver-gama", action="store_true",
                    help="drop Driver+22's GAMA comparison points and the "
                         "'same fit using Driver+22 GAMA' curve, leaving only "
@@ -602,9 +626,16 @@ def main():
     p.add_argument("--full-page", action="store_true",
                    help="size the figure to span both columns (7.1 in) rather "
                         "than the default 20x12 cm.")
-    p.add_argument("--pub-fit", default="gsr", choices=["gsr", "gama"],
+    p.add_argument("--pub-fit", default="gsr", choices=["gsr", "gama", "gs"],
                    help="which Driver+22 table 2 fit to draw behind: his GSR "
-                        "(default) or his GAMA-only GAMA5 row.")
+                        "(default), his GAMA-only GAMA5 row, or his GAMA+SDSS "
+                        "GS row -- each figure should show the row fitted to "
+                        "the same sample combination it plots.")
+    p.add_argument("--no-driver-fit", action="store_true",
+                   help="drop the 'same fit using Driver+22 GAMA' curve while "
+                        "keeping his data points.  On the combined figures his "
+                        "published fit lies on top of it, so the extra line "
+                        "adds nothing.")
     p.add_argument("--mass-err", default="driver",
                    help="mass-error curve for the Nessie GAMA leg: 'driver' "
                         "(his hardcoded NFOF_YY/MASSCORR, the default, which "
@@ -764,6 +795,33 @@ def main():
     # --- fit -----------------------------------------------------------------
     allx, ally, allf, vols = assemble(sets, args.myoption)
     allf = np.where(allf >= 1.0, 0.9999, allf)
+
+    if args.profile_mstar:
+        # chi2 profile in log10 M*: fix it, minimise over the other three.
+        # This is what says whether a railed posterior means "the data prefer
+        # M* = 11" or "the data do not constrain M* at all" -- very different
+        # statements, and only the profile distinguishes them.
+        from scipy.optimize import minimize
+        fn = make_massfn(allx, ally, allf, vols, omega_prior)
+        grid = np.arange(11.0, 15.01, 0.25)
+        best_c, prof = np.inf, []
+        for ms in grid:
+            r = min((minimize(lambda p: fn(np.array([ms, p[0], p[1], p[2]])),
+                              x0=np.array([p0, a0, b0]), method="Nelder-Mead",
+                              options=dict(maxiter=4000, xatol=1e-6,
+                                           fatol=1e-8))
+                     for p0 in (10 ** -3.2, 10 ** -2.6)
+                     for a0 in (-1.5, -0.5)
+                     for b0 in (0.3, 0.6)), key=lambda r: r.fun)
+            prof.append(r.fun)
+            best_c = min(best_c, r.fun)
+        print(f"\n  chi2 profile in log10 M*  ({args.myoption}, "
+              f"{len(allx)} points)")
+        print(f"  {'logM*':>7s} {'chi2':>10s} {'dchi2':>8s}")
+        for ms, c in zip(grid, prof):
+            print(f"  {ms:7.2f} {c:10.2f} {c - best_c:8.2f}")
+        return
+
     par, val, nfe, conv = fit_combined(allx, ally, allf, vols, args.myoption,
                                        omega_prior, phimrp, mstarmrp, alphamrp,
                                        betamrp, maxit=args.maxit)
@@ -854,12 +912,12 @@ def main():
         # crosshair was our own refit of our own catalogue and read as if it were
         # Driver's published answer, which it is not.
         med = np.median(chain, axis=0)
-        pub_marker = (DRIVER_GAMA_ONLY_FIT if args.pub_fit == "gama"
-                      else DRIVER_ABSTRACT_FIT)
+        pub_marker = PUB_FIT[args.pub_fit][0]
         markers = [
             (np.array(pub_marker),
-             "Driver+22 published " + ("GAMA-only" if args.pub_fit == "gama"
-                                       else "GSR"), "white"),
+             "Driver+22 published "
+             + {"gama": "GAMA-only", "gs": "GAMA+SDSS"}.get(args.pub_fit,
+                                                            "GSR"), "white"),
             (med, "This work (posterior median)", "#d4af37"),
         ]
         sets_t0 = [(chain, f"This work, MCMC posterior ({args.myoption})",
@@ -868,7 +926,12 @@ def main():
                  chain=chain, chain_driver=chain_d,
                  median=med, best=best, nm=nm, driver_published=pub_marker,
                  chi2_best=info["chi2_min"], chi2_driver=info_d["chi2_min"],
-                 chi2_nm=val, chi2_nm_driver=val_d)
+                 chi2_nm=val, chi2_nm_driver=val_d,
+                 # the inset's own draws, so mrp_table quotes the identical
+                 # numbers rather than re-subsampling and differing in the
+                 # third decimal
+                 omega_draws=mc_plot["omegam"],
+                 omega_draws_above=mc_plot["omegam2"])
         cout = (f"corner_{args.name}.pdf" if args.name
                 else "corner" + (tag if tag else "_GSR") + ".png")
         mh.corner_plot(sets_t0, cout, markers=markers,
@@ -906,24 +969,47 @@ def main():
     o2 = mc_plot["omegam2"][np.isfinite(mc_plot["omegam2"])]
     print(f"  chi2 = {val:.3f}   fevals = {nfe}   convergence = {conv}"
           + ("  (budget exhausted)" if conv == 1 else ""))
-    print(f"  OmegaM (all mass)      = {omega_matter(par_plot):.4f}")
-    print(f"  OmegaM (logM > 12.7)   = {om2:.4f} "
+    # The TOTAL is the headline: it is what the inset histogram plots and what
+    # we quote.  Its systematic dwarfs its statistical error -- under a uniform
+    # mass-scale shift the total scales as exactly 10**delta (no boundary term),
+    # and this project's measured calibration spread is ~0.15 dex -- so print
+    # the band, because otherwise nobody applies it.
+    # Take the MEDIAN OF THE DRAWS, not omega_matter(par_plot).  The inset
+    # annotates the median and mrp_table reads the same draws, so using the
+    # point estimate here made the terminal disagree with its own figure in the
+    # third decimal.
+    o1 = mc_plot["omegam"][np.isfinite(mc_plot["omegam"])]
+    omt = float(np.median(o1))
+    SYS = 0.15
+    print(f"\n  OmegaM (TOTAL, = the inset)  = {omt:.4f} "
+          f"(+{np.quantile(o1, .84) - omt:.4f} / -{omt - np.quantile(o1, .16):.4f})"
+          f"  stat")
+    print(f"    x 10^(+/-{SYS} dex) mass scale -> {omt * 10 ** -SYS:.4f} .. "
+          f"{omt * 10 ** SYS:.4f}   syst")
+    print(f"    vs Planck OmegaM = {OMEGAM}: {omt / OMEGAM:.3f} of it")
+    # Driver's constant, allhmf.r 415/462.  Our fit floor may now be higher than
+    # 12.7 (--fit-min), in which case this carries some extrapolation below the
+    # data -- another reason the total is the cleaner thing to quote.
+    print(f"  OmegaM (logM > {MLIMIT_GAMA}, Driver's cut) = {om2:.4f} "
           f"(+{np.quantile(o2, .84) - om2:.4f} / -{om2 - np.quantile(o2, .16):.4f})")
-    print(f"  fraction of OmegaM={OMEGAM} in haloes above 12.7: {om2 / OMEGAM:.3f}")
 
     import plotting as _pl
     plot_combined(par_plot, mc_plot, sets, oset[:3], extras, mrpx, mrpy, factor,
                   args.out, args.myoption, omega_prior,
                   fit_par_driver=par_d_plot,
                   sdss_label=sdss_label or "SDSS DR10 (Tempel+14)",
+                  sdss_label_short={"tempel_rms": "SDSS (Nessie, rms $\\sigma$)",
+                                    "tempel_nfw": "SDSS (Nessie, NFW)",
+                                    "tempel_eq8": "SDSS (Nessie)"}.get(
+                                        args.mass_mode) if args.sdss == "nessie"
+                                    else None,
                   fit_method="MCMC posterior" if args.mcmc else None,
                   figsize=(7.10, 4.26) if args.full_page else _pl.SINGLE_COLUMN,
-                  pub_fit=(DRIVER_GAMA_ONLY_FIT if args.pub_fit == "gama"
-                           else DRIVER_ABSTRACT_FIT),
-                  pub_label=("Driver+22 published GAMA-only fit"
-                             if args.pub_fit == "gama" else None),
+                  pub_fit=PUB_FIT[args.pub_fit][0],
+                  pub_label=PUB_FIT[args.pub_fit][1],
                   show_extras=not args.no_extras,
-                  show_driver_gama=not args.no_driver_gama)
+                  show_driver_gama=not args.no_driver_gama,
+                  show_driver_fit=not args.no_driver_fit)
 
 
 if __name__ == "__main__":

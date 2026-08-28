@@ -2290,36 +2290,52 @@ the fit. The NM answer also moves non-monotonically (13.97 -> 14.31 -> 13.57).
 
 ---
 
-## Omega_M: two numbers, only one is a measurement
+## Omega_M: the TOTAL is what we report (decided 2026-08-28)
 
 `omega_matter()` integrates the **fitted MRP** (not the data) and divides by
-rho_crit. `allhmf.r` 414/415 computes both.
+rho_crit. `allhmf.r` 414/415 computes both a total and a restricted version.
 
-| fit | Omega_M(all) | Omega_M(>12.7) | fraction |
-|---|---|---|---|
-| Driver+22 published GSR | 0.2049 | 0.1276 | 0.406 |
-| our NM refit | 0.2701 | 0.1294 | 0.411 |
-| our MCMC best | 0.1958 | 0.1401 | 0.445 |
-| **Murray+21 LCDM** | **0.3147** | **0.1185** | **0.377** |
+**The decision is to quote the total** -- the same quantity the figure inset has
+always plotted -- rather than `Omega_M(>12.7)`. An earlier version of this
+section recommended the opposite and proposed switching the inset; that is
+superseded, and outstanding item 2 is closed by deciding *not* to change it.
 
-* **`Omega_M(>12.7)` ~ 0.13 is fine and is NOT "half" of anything.** It is the
-  mass in haloes above 10^12.7, which is *supposed* to be a fraction. LCDM puts
-  it at 0.1185 (37.7%); we get 0.128-0.140 (41-45%). **Quote this one**, with
-  the ~0.004 error bar the posterior gives.
-* **`Omega_M(all)` ~ 0.18-0.27 vs 0.3147 measures the extrapolation, not the
-  universe.** The integrand goes as M^(alpha+2), so the total depends on alpha
-  extrapolated ~12 decades below the lowest fitted bin. **Driver's own published
-  fit gives 0.205**, so the deficit is not ours. The LCDM row hits 0.3147 only
-  because `lcdm_curve`'s `factor` normalises it there by construction — it is
-  not an independent check. `--omega-prior` exists precisely because the free fit
-  does not recover it.
+| fit | Omega_M(total) |
+|---|---|
+| **GSR, Nessie GAMA + Tempel SDSS + REFLEX** | **0.199 +0.045/-0.025** |
+| GSR, Nessie GAMA + Nessie SDSS + REFLEX | 0.132 +0.007/-0.006 |
+| Driver+22 published GSR | 0.2049 |
+| Driver+22 published GAMA5 | 0.147 |
+| Planck 2018 | 0.3147 |
 
-**The figure inset plots `Omega_M(all)`** — the unreliable one — against a
-dotted reference at 0.3147, so it displays the extrapolated quantity beside the
-true value and invites the obvious wrong conclusion, while the trustworthy
-number is not shown at all. **Suggested change, not yet made:** switch the inset
-to `Omega_M(>12.7)` with LCDM's 0.1185 as the reference. It departs from
-`allhmf.r`, so put it behind a flag.
+Our anchored fit reproduces **Driver's own 0.205**, so the ~35% deficit is his
+method's, not our catalogue's.
+
+### Three things that must ride with the number
+
+1. **39% of it is extrapolated.** Only 61% comes from the fitted range
+   (12.9-15.6); 36% from 10-12.9 and 3% from below 10. It is not a measurement
+   of the matter in haloes.
+2. **It scales as exactly 10^delta** under a uniform mass-scale shift -- no
+   boundary term, unlike the restricted version. The +/-0.15 dex calibration
+   systematic is x1.41, far larger than the ~15% statistical error, and
+   **+0.20 dex reaches 0.3147 exactly**. The 2.6 sigma deficit is therefore
+   *not* evidence of missing matter, and certainly not evidence that matter
+   sits in filaments rather than haloes -- claiming that needs an independent
+   census (lensing, the WHIM baryon budget), not an extrapolated fit.
+3. **The reference is not an independent prediction.** The LCDM row hits 0.3147
+   only because `lcdm_curve`'s `factor` normalises it there by construction.
+   Falling below it means our fitted *shape* differs from LCDM's -- most of it
+   alpha = -1.62 against Murray's -1.865, extrapolated over ~3 decades.
+
+`Omega_M(>12.9) = 0.121 +/- 0.004` stays in the paper alongside: it is the part
+that is 100% inside the data. Note `MLIMIT_GAMA = 12.7` is Driver's constant
+(`allhmf.r` 415/462) while our fit floor is now 12.9, so the 12.7 version
+carries 0.3 dex of extrapolation -- a further reason to lead with the total.
+
+**Railed rows carry no Omega_M.** `mrp_table.py` prints `--`: their tight
+intervals come from the prior bound, which is how GAMA+SDSS ends up "21 sigma
+below Planck".
 
 ---
 
@@ -2393,8 +2409,9 @@ Ordered by value.
 
 1. **`--fit-min 12.9`** on the two quotable configurations. The analysis is done
    (only 12.80 is anomalous); the runs are not. ~12 min.
-2. **The Omega_M inset** shows the extrapolated quantity. Change it behind a
-   flag; see above.
+2. ~~The Omega_M inset~~ **CLOSED 2026-08-28**: the total is now the reported
+   quantity, so the inset was already showing the right thing. See "Omega_M:
+   the TOTAL is what we report".
 3. **`sigma_sky` — the last unreconciled mass term** (+0.047 dex). Blocked on the
    h^-1 Mpc vs Mpc convention question in "An unresolved units problem in
    sigma_sky", which does not reconcile cleanly (~0.17 dex, most likely the

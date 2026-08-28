@@ -64,6 +64,33 @@ def railed(chain, tol=0.02):
     return False
 
 
+def omega_total(d, ndraw=4000, seed=0):
+    """Total Omega_M: median and the 16/84 offsets.
+
+    Prefers ``omega_draws`` saved by ``combined_hmf`` -- those are the *same*
+    draws the figure inset histograms, so the table and the figure cannot
+    disagree.  Re-subsampling the chain here instead produced a table that
+    differed from its own figure in the third decimal.
+
+    Falls back to recomputing for chains written before that was saved.
+    ``omega_matter`` takes **linear** phi; passing log10 phi returns a silently
+    nonsense density.
+    """
+    if "omega_draws" in d.files:
+        o = np.asarray(d["omega_draws"])
+    else:
+        import combined_hmf as ch      # lazy: importing it is not free
+        chain = d["chain"]
+        rng = np.random.default_rng(seed)
+        i = rng.choice(len(chain), min(ndraw, len(chain)), replace=False)
+        lin = np.column_stack([chain[i, 0], 10.0 ** chain[i, 1],
+                               chain[i, 2], chain[i, 3]])
+        o = np.array([ch.omega_matter(p) for p in lin])
+    o = o[np.isfinite(o)]
+    med = np.median(o)
+    return med, med - np.percentile(o, 16), np.percentile(o, 84) - med
+
+
 def summarise(chain):
     """median and the 16/84 offsets for each parameter."""
     med = np.median(chain, axis=0)
@@ -82,8 +109,14 @@ def rows(verbose=True):
             continue
         d = np.load(path)
         med, lo, hi = summarise(d["chain"])
+        r = railed(d["chain"])
+        # A railed posterior's Omega_M is set by the prior bound, not the data,
+        # which is how one of these ends up "21 sigma below Planck".  Do not
+        # compute it at all rather than print a number nobody may use.
+        om = (None, None, None) if r else omega_total(d)
         out.append(dict(label=label, med=med, lo=lo, hi=hi,
-                        railed=railed(d["chain"]),
+                        omega=om[0], omega_lo=om[1], omega_hi=om[2],
+                        railed=r,
                         chi2=float(d["chi2_best"]) if "chi2_best" in d.files
                         else None,
                         nsamp=len(d["chain"])))
@@ -93,20 +126,32 @@ def rows(verbose=True):
 def as_text(rs):
     print("\nMRP fits -- posterior median with 16/84 credible intervals\n")
     head = f"  {'Sample':<44s}" + "".join(f"{p:>22s}" for p in PLAIN)
-    print(head + f"{'chi2':>9s}")
+    print(head + f"{'chi2':>9s}{'Omega_M (total)':>22s}")
     print("  " + "-" * (len(head) + 7))
     for r in rs:
         cells = "".join(
             f"{r['med'][i]:>10.3f} +{r['hi'][i]:.2f}/-{r['lo'][i]:.2f} "
             for i in range(4))
         c = f"{r['chi2']:>9.2f}" if r["chi2"] is not None else f"{'--':>9s}"
+        om = (f"{r['omega']:>10.3f} +{r['omega_hi']:.3f}/-{r['omega_lo']:.3f}"
+              if r["omega"] is not None else f"{'--':>22s}")
         flag = "  <- RAILED, interval set by the prior" if r["railed"] else ""
-        print(f"  {r['label']:<44s}{cells}{c}{flag}")
+        print(f"  {r['label']:<44s}{cells}{c}{om}{flag}")
     print("\n  Driver+22 published, for comparison")
     for label, v, err in PUBLISHED:
         cells = "".join(f"{v[i]:>10.3f} +{err[i][0]:.2f}/-{err[i][1]:.2f} "
                         for i in range(4))
-        print(f"  {label:<44s}{cells}")
+        import combined_hmf as ch
+        o = ch.omega_matter(np.array([v[0], 10.0 ** v[1], v[2], v[3]]))
+        print(f"  {label:<44s}{cells}{'--':>9s}{o:>22.3f}")
+    print(f"  {'Planck 2018':<44s}" + " " * (23 * 4)
+          + f"{'--':>9s}{0.3147:>22.3f}")
+    print("\n  Omega_M is the TOTAL, i.e. the fitted MRP integrated over all "
+          "mass -- the\n  same quantity the figure inset plots.  39% of it lies "
+          "below the fitted\n  range, so it is an extrapolation, and it scales "
+          "as 10^delta under a\n  uniform mass-scale shift: the +/-0.15 dex "
+          "systematic on the mass\n  calibration is x1.41, far larger than the "
+          "quoted statistical error.")
 
 
 def as_latex(rs):
@@ -118,25 +163,34 @@ def as_latex(rs):
           r"$\log_{10}(M_*/{\rm M}_\odot) = 11$; there the interval reflects "
           r"the prior rather than the data, and the parameters should not be "
           r"quoted, although the binned measurements and the plotted curve "
-          r"remain valid.}")
-    print(r"\begin{tabular}{lccccc}")
+          r"remain valid.  $\Omega_M$ is the total, i.e. the fitted MRP "
+          r"integrated over all mass; 39 per cent of it lies below the fitted "
+          r"range and it scales as $10^{\delta}$ under a uniform mass-scale "
+          r"shift, so the $\pm0.15$~dex calibration systematic ($\times1.41$) "
+          r"dominates the quoted statistical error.}")
+    print(r"\begin{tabular}{lcccccc}")
     print(r"\hline")
-    print("Sample & " + " & ".join(PARAMS) + r" & $\chi^2$ \\")
-    print(r" & & Mpc$^{-3}$ dex$^{-1}$ & & & \\")
+    print("Sample & " + " & ".join(PARAMS)
+          + r" & $\chi^2$ & $\Omega_M$ \\")
+    print(r" & & Mpc$^{-3}$ dex$^{-1}$ & & & & (total) \\")
     print(r"\hline")
     for r in rs:
         cells = " & ".join(
             f"${r['med'][i]:.2f}^{{+{r['hi'][i]:.2f}}}_{{-{r['lo'][i]:.2f}}}$"
             for i in range(4))
         c = f"{r['chi2']:.1f}" if r["chi2"] is not None else "--"
+        om = (f"${r['omega']:.3f}^{{+{r['omega_hi']:.3f}}}"
+              f"_{{-{r['omega_lo']:.3f}}}$" if r["omega"] is not None else "--")
         print(f"{r['label']}{r'$\dagger$' if r['railed'] else ''} & {cells} "
-              f"& {c} " + r"\\")
+              f"& {c} & {om} " + r"\\")
     print(r"\hline")
     for label, v, err in PUBLISHED:
         cells = " & ".join(
             f"${v[i]:.2f}^{{+{err[i][0]:.2f}}}_{{-{err[i][1]:.2f}}}$"
             for i in range(4))
-        print(f"{label} & {cells} & -- " + r"\\")
+        import combined_hmf as ch
+        o = ch.omega_matter(np.array([v[0], 10.0 ** v[1], v[2], v[3]]))
+        print(f"{label} & {cells} & -- & {o:.3f} " + r"\\")
     print(r"\hline")
     print(r"\end{tabular}")
     print(r"\label{tab:mrp}")
