@@ -77,6 +77,7 @@ OMEGAL = 1 - OMEGAM
 RHOCRIT = 3 * (1000 * HO / (1e6 * PARSEC)) ** 2 / (8 * np.pi * G)
 FITBINWID = 0.001            # line 256 -- gamahmf.r uses 0.01
 LOGBIN = 0.2
+LOGBINSDSS = sdss_hmf.LOGBIN   # 0.1 -- sdsshmf.r line 236, NOT 0.2
 ZLIMIT = 0.25
 ZLIMITSDSS = 0.08            # line 262
 
@@ -153,7 +154,7 @@ def driver_table(b):
         })
 
 
-def load_reflex(path="../data/reflex.csv"):
+def load_reflex(path="../data/reflex.csv", reflex_fix=False):
     """REFLEX II, allhmf.r lines 306-314.
 
     Note line 307 uses the *already converted* ``reflex$x`` on its right-hand
@@ -163,8 +164,16 @@ def load_reflex(path="../data/reflex.csv"):
     x = r["x"].values + np.log10(70 / HO)
     y = r["Curve1"].values + 4.0 * np.log10(HO / 70) - 14.0 + x + 1
     f = np.full(len(x), 1 / np.sqrt(20))
-    f[0] = 1 / np.sqrt(3)          # R's reflexf[1]
-    f[len(f) - 1] = 1 / np.sqrt(3)  # R's reflexf[43]
+    f[0] = 1 / np.sqrt(3)          # R's reflexf[1] -- the LOW-mass 3-cluster bin
+    if not reflex_fix:
+        # R's reflexf[43].  Bohringer+2017 sec 3 is explicit that the
+        # 3-cluster bin is "the bin at the lowest masses"; Driver+22 sec 4.3
+        # says "the highest mass bin" and allhmf.r sets BOTH ends.  The top
+        # point is therefore down-weighted 6.7x for no reason -- and it is the
+        # point that most constrains the exponential cutoff, in the leg that
+        # carries ~54% of the fit's weight.  Reproduced by default; --reflex-fix
+        # removes it.
+        f[len(f) - 1] = 1 / np.sqrt(3)
     return x, y, f
 
 
@@ -339,7 +348,8 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
                   sdss_label="SDSS DR10 (Tempel+14)", fit_method=None,
                   figsize=(7.87, 4.72), pub_fit=None, pub_label=None,
                   show_extras=True, show_driver_gama=True,
-                  sdss_label_short=None, show_driver_fit=True):
+                  sdss_label_short=None, show_driver_fit=True,
+                  show_omega_inset=True):
     """The combined figure.
 
     ``show_extras=False`` drops the REFLEX, 2PIGG and Tempel-curve *points*
@@ -515,8 +525,17 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     ax.text(12.95, yy, " $\\Lambda$CDM expectation from MRP", va="center",
             fontsize=lfs)
 
-    # Omega_M inset, allhmf.r lines 494-510
-    if mc is not None:
+    # Omega_M inset, allhmf.r lines 494-510.
+    #
+    # Off by default in the paper figures.  The plotted quantity is the TOTAL
+    # Omega_M, i.e. the fitted MRP integrated over all mass, and 80% of the
+    # difference between two fits comes from mass ranges that are not on the
+    # panel -- so its unique content is the extrapolation, not the measurement.
+    # It also sets a reference line at Planck's 0.3147, which lcdm_curve's
+    # normalisation guarantees by construction, and its error bar omits the
+    # mass-scale systematic that dominates it.  Kept behind a flag because
+    # allhmf.r draws it.
+    if mc is not None and show_omega_inset:
         iax = fig.add_axes([0.63, 0.60, 0.345, 0.375])
         om = mc["omegam"][np.isfinite(mc["omegam"])]
         iax.hist(om, bins=np.arange(0, 1.001, 0.01), color="0.55")
@@ -631,6 +650,22 @@ def main():
                         "(default), his GAMA-only GAMA5 row, or his GAMA+SDSS "
                         "GS row -- each figure should show the row fitted to "
                         "the same sample combination it plots.")
+    p.add_argument("--reflex-fix", action="store_true",
+                   help="restore the highest-mass REFLEX point to its 1/sqrt(20) "
+                        "error.  allhmf.r inflates it to 1/sqrt(3) following an "
+                        "error in Driver+22 sec 4.3; Bohringer+2017 sec 3 puts "
+                        "the 3-cluster bin at the LOWEST masses.")
+    p.add_argument("--omega-inset", action="store_true",
+                   help="draw allhmf.r's Omega_M inset.  Off by default: it "
+                        "plots the TOTAL Omega_M, 39%% of which is extrapolated "
+                        "below the data, against a reference that is normalised "
+                        "to 0.3147 by construction.  The number belongs in the "
+                        "table, with its systematic.")
+    p.add_argument("--sdss-drop", type=float, nargs="*", default=None,
+                   metavar="LOGM",
+                   help="drop individual SDSS bins by centre, e.g. "
+                        "--sdss-drop 13.35 14.45.  A diagnostic for asking what "
+                        "one anomalous bin costs the fit; not a defensible cut.")
     p.add_argument("--no-driver-fit", action="store_true",
                    help="drop the 'same fit using Driver+22 GAMA' curve while "
                         "keeping his data points.  On the combined figures his "
@@ -737,7 +772,7 @@ def main():
     print(f"  GAMA (Driver)  : {len(oset[0])} bins, area {AREA_GAMA_DRIVER} deg^2 "
           f"(allhmf.r line 263)")
 
-    rx, ry, rf = load_reflex()
+    rx, ry, rf = load_reflex(reflex_fix=args.reflex_fix)
     sets = {"G": gset, "R": (rx, ry, rf, VOLUME_REFLEXII)}
     print(f"  REFLEX II      : {len(rx)} points, volume {VOLUME_REFLEXII:.3e} Mpc^3")
 
@@ -773,6 +808,15 @@ def main():
                   default=None)
         if cap is not None:
             s = s[s.V1 <= cap]
+        if args.sdss_drop:
+            # Drop named SDSS bins outright -- a diagnostic for asking what a
+            # specific anomalous bin is doing to the fit, not a defensible cut.
+            keep = np.ones(len(s), bool)
+            for b in args.sdss_drop:
+                keep &= np.abs(s.V1.values - b) > 0.5 * LOGBINSDSS
+            print(f"  --sdss-drop: removed {int((~keep).sum())} SDSS bins at "
+                  + ", ".join(f"{v:g}" for v in s.V1.values[~keep]))
+            s = s[keep]
         # allhmf.r line 264 does NOT subtract the zmin volume here, though
         # sdsshmf.r line 248 does.  His value is kept in his place.
         sets["S"] = (s.V1.values, s.V4.values, s.V8.values,
@@ -1009,7 +1053,8 @@ def main():
                   pub_label=PUB_FIT[args.pub_fit][1],
                   show_extras=not args.no_extras,
                   show_driver_gama=not args.no_driver_gama,
-                  show_driver_fit=not args.no_driver_fit)
+                  show_driver_fit=not args.no_driver_fit,
+                  show_omega_inset=args.omega_inset)
 
 
 if __name__ == "__main__":
