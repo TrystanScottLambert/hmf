@@ -154,7 +154,8 @@ def driver_table(b):
         })
 
 
-def load_reflex(path="../data/reflex.csv", reflex_fix=False):
+def load_reflex(path="../data/reflex.csv", reflex_fix=False,
+                reflex_norm=False):
     """REFLEX II, allhmf.r lines 306-314.
 
     Note line 307 uses the *already converted* ``reflex$x`` on its right-hand
@@ -162,7 +163,15 @@ def load_reflex(path="../data/reflex.csv", reflex_fix=False):
     """
     r = pd.read_csv(path)
     x = r["x"].values + np.log10(70 / HO)
-    y = r["Curve1"].values + 4.0 * np.log10(HO / 70) - 14.0 + x + 1
+    # Bohringer+2017 fig. 2 axes: density [Mpc^-3 h70^4 (1e14 Msun)^-1] against
+    # cluster mass [1e14 h70^-1 Msun].  So the h^4, the -14 and the mass
+    # conversion are all right, but turning dn/dM into dn/dlog10M needs
+    # x + log10(ln 10), not x + 1.  allhmf.r line 307 writes +1, which puts the
+    # whole REFLEX leg 0.638 dex high -- measured against Bohringer's own
+    # published eq. 1 the offset is +0.584 dex, falling to -0.05 dex with
+    # log10(ln 10).  Reproduced by default; --reflex-norm corrects it.
+    last = np.log10(np.log(10.0)) if reflex_norm else 1.0
+    y = r["Curve1"].values + 4.0 * np.log10(HO / 70) - 14.0 + x + last
     f = np.full(len(x), 1 / np.sqrt(20))
     f[0] = 1 / np.sqrt(3)          # R's reflexf[1] -- the LOW-mass 3-cluster bin
     if not reflex_fix:
@@ -655,6 +664,10 @@ def main():
                         "error.  allhmf.r inflates it to 1/sqrt(3) following an "
                         "error in Driver+22 sec 4.3; Bohringer+2017 sec 3 puts "
                         "the 3-cluster bin at the LOWEST masses.")
+    p.add_argument("--reflex-norm", action="store_true",
+                   help="correct the REFLEX dn/dM -> dn/dlogM conversion: "
+                        "allhmf.r line 307 ends in '+1' where log10(ln 10) = "
+                        "0.362 is required, putting the leg 0.638 dex high.")
     p.add_argument("--omega-inset", action="store_true",
                    help="draw allhmf.r's Omega_M inset.  Off by default: it "
                         "plots the TOTAL Omega_M, 39%% of which is extrapolated "
@@ -772,7 +785,8 @@ def main():
     print(f"  GAMA (Driver)  : {len(oset[0])} bins, area {AREA_GAMA_DRIVER} deg^2 "
           f"(allhmf.r line 263)")
 
-    rx, ry, rf = load_reflex(reflex_fix=args.reflex_fix)
+    rx, ry, rf = load_reflex(reflex_fix=args.reflex_fix,
+                             reflex_norm=args.reflex_norm)
     sets = {"G": gset, "R": (rx, ry, rf, VOLUME_REFLEXII)}
     print(f"  REFLEX II      : {len(rx)} points, volume {VOLUME_REFLEXII:.3e} Mpc^3")
 
