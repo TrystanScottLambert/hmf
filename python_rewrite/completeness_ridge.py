@@ -98,9 +98,6 @@ def main():
             label=r"$m_{\rm lim}(z)$, quadratic")
     ax.fill_between(zg, 10.4, fits["linear"](zg), color="#d62728", alpha=0.08,
                     lw=0, zorder=0)
-    ax.text(0.985, 0.055, "groups here are discarded by the sharp-cut model",
-            transform=ax.transAxes, ha="right", va="bottom", fontsize=8,
-            color="#d62728")
     ax.set_ylim(10.4, 16.0)
     ax.legend(loc="upper left", fontsize=7.5, frameon=False,
               handletextpad=0.6, labelspacing=0.32)
