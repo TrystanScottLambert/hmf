@@ -196,9 +196,13 @@ def corner_plot(datasets, out, markers=None, bounds=None, title=None):
     for vals, _label, face in (markers or []):
         for i in range(ndim):
             for j in range(i):
-                axes[i, j].plot(vals[j], vals[i], marker="*", ms=19, mfc=face,
+                # clip_on=True: the ranges above already widen to contain
+                # every marker, so nothing is lost -- and without it a marker
+                # sitting on a panel edge is drawn spilling into its
+                # neighbours, which reads as several spurious points.
+                axes[i, j].plot(vals[j], vals[i], marker="*", ms=17, mfc=face,
                                 mec="k", mew=1.2, ls="none", zorder=10,
-                                clip_on=False)
+                                clip_on=True)
     for ax in fig.axes:                      # corner overrides the rc tick style
         ax.tick_params(which="both", direction="in", top=True, right=True)
         ax.minorticks_on()
@@ -211,6 +215,7 @@ def corner_plot(datasets, out, markers=None, bounds=None, title=None):
                bbox_to_anchor=(0.98, 0.98))
     if title:
         fig.suptitle(title, fontsize=16, y=1.005)
-    fig.savefig(out, bbox_inches="tight")
+    # dpi matters only for raster output; PDF callers are unaffected.
+    fig.savefig(out, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"  wrote {out}")

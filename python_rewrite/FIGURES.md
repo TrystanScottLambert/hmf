@@ -155,3 +155,61 @@ See `REFLEX_ERROR.md`.
 it and minimising the other three parameters at each point. This is what
 distinguishes "the data prefer a low M*" from "the data do not constrain M*",
 which a railed corner plot alone cannot tell you.
+
+## The shape-only fit — `normalised_shape_fit.py`
+
+Each leg's density is multiplied by a constant so its integral over 10^14-10^15
+matches the anchor's (Nessie SDSS), the absolute normalisations are discarded,
+and one MRP is fitted to the rescaled points.  The legs sit on different mass
+calibrations, so their amplitudes are not mutually comparable; this asks what
+shape they collectively prefer without reconciling the calibrations first.
+
+| figure | command |
+|---|---|
+| `hmf_shape_all.png`, `corner_shape_all.png` | `uv run python normalised_shape_fit.py --mcmc --name shape_all` |
+| `hmf_shape_gt14.png`, `corner_shape_gt14.png` | `uv run python normalised_shape_fit.py --mcmc --fit-lo 14 --name shape_gt14` |
+
+Full page width (`plotting.FULL_PAGE`), PNG.  The dashed black line is
+**Murray+21 LCDM rescaled the same way** -- not the Tinker curve the other
+figures use, because on a rescaled axis only the shape is comparable.  The grey
+band is the 10^14-10^15 matching range.  Tempel+14 SDSS is plotted but **not
+fitted** (the fit is GAMA + Nessie SDSS + REFLEX).
+
+**`--from-chain` redraws from `chain_<name>.npz` without re-sampling.**  Use it
+for any restyling; a fresh 25k-step run per figure is not needed to change a
+line colour.
+
+### `--fit-lo 14` is a robustness check, not the primary
+
+| | all (>12.9) | >14 only |
+|---|---|---|
+| log10 M* | 12.60 -0.73/+0.59 | 12.45 -0.95/+1.05 |
+| alpha | **-1.02 +/-0.24** | **-1.08 +/-0.50** |
+| beta | 0.367 +/-0.06 | 0.349 +/-0.08 |
+
+Same answer, intervals roughly doubled, and alpha becomes unmeasured -- the
+faint-end slope lives below the knee by definition.  There is also a
+circularity: the amplitudes are matched over 14-15 and then fitted over >14, so
+the agreement in that band is partly manufactured.  Report it as *restricting to
+the matched range leaves the shape unchanged within errors*, which is a useful
+null result, and lead with the full-range fit.
+
+### phi* is a nuisance parameter -- marginalise, do not fix
+
+After rescaling, phi* is the anchor's arbitrary amplitude and carries no
+physics.  It is still *constrained* by the fit and degenerate with everything
+else (rho(M*, phi*) = -0.85, rho(M*, alpha) = -0.97, rho(M*, beta) = +0.98), so
+fixing it at its median halves the M* interval and cuts beta's by 60% while the
+medians barely move.  That tightening is manufactured.  Sample it, marginalise,
+and footnote it as set by the anchor.
+
+### The parameters look nothing like Driver's; the curves agree
+
+Ours 12.60 / -1.02 / 0.367 against his GSR 14.13 / -1.68 / 0.63.  Put his fit
+on the same rescaled axis and the two curves differ by **0.059 dex rms over
+13-15** (0.007 dex at logM 14), with chi2 191.6 against 196.8 on the same 84
+points -- Delta chi2 = 5.2 for 4 parameters, i.e. just outside 1 sigma.  The
+parameter difference is motion along the degeneracy ridge, not disagreement.
+Both fits are poor in absolute terms (chi2/dof ~ 2.4): the legs still disagree
+by ~0.5 dex below logM 14 after rescaling, which is the calibration spread and
+the actual open problem.
