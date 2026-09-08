@@ -217,3 +217,63 @@ meaningful in either configuration.
    tension into a measured quantity instead of a chi^2 penalty.
 5. **Tell Driver.** Item 1 of this document is a straightforward error with a
    large effect on his headline result.
+
+---
+
+## UPDATE 2026-09-07: our own LCDM curve was also wrong, by +0.22 dex
+
+The framing above -- "corrected REFLEX sits ~0.3 dex below the dynamical legs
+and ~0.5 dex below LCDM" -- was measured against
+`driver_recovery.lcdm_curve()`, which is **not a LCDM halo mass function**.  It
+is the Murray+21 MRP with its amplitude set by `factor` so that integrating it
+to zero mass returns Omega_M = 0.3147, i.e. so that ALL matter sits in haloes.
+
+Tinker+2008 at Planck 2018, computed independently with `hmf` + CAMB
+(`lcdm_tinker.py`), reaches only **Omega_M = 0.190**, 60 per cent of Planck's
+value.  Forcing the MRP to 0.3147 therefore lifts it by
+`log10(0.3147/0.190) = +0.219 dex`, against the +0.25 dex measured directly.
+
+### The corrected picture
+
+Offsets from Tinker+2008 @ Planck (z = 0.1), median over each leg's range:
+
+| leg | offset |
+|---|---|
+| REFLEX, **as published** | **+0.461 dex** |
+| REFLEX, corrected (line 307) | **-0.176 dex** |
+| SDSS (Tempel+14) | +0.263 dex |
+| GAMA (Nessie) | +0.549 dex |
+
+So once both errors are removed:
+
+* **Corrected REFLEX is the leg CLOSEST to LCDM**, at -0.18 dex -- consistent
+  with Bohringer's sigma_8 = 0.776 against Planck's 0.811.
+* **The dynamical legs sit ABOVE LCDM**, GAMA by 0.55 dex and SDSS by 0.26.
+* The spread across the three legs is ~0.7 dex in density, i.e. ~0.3 dex in
+  mass at the knee.
+
+That is the reverse of how it read before.  The X-ray leg is not anomalously
+low; the dynamical masses are high, which is consistent with everything this
+project has recorded about the Robotham A = 13.9 calibration and the gapper
+dispersion.
+
+**Both errors pointed the same way and cancelled.** `+1` lifted REFLEX by 0.638
+dex; the MRP normalisation lifted the reference by 0.22.  Net, REFLEX landed on
+a curve it had no business lying on, and three legs on different mass
+calibrations looked mutually consistent.
+
+### Consequence for the fits
+
+chi^2 is now ~700 for GSR, because one MRP is being fitted through three data
+sets that disagree by up to 0.7 dex.  **That is a mass-calibration spread, not a
+bad fit**, and the combined fit should not be presented as a measurement until
+the offset is modelled -- see step 4 of the plan (a relative mass-scale offset
+as a fitted nuisance parameter).
+
+### Flags
+
+* `--lcdm tinker` (default) / `--lcdm driver` -- plotting only, changes no
+  fitted number (verified: identical chi^2 to 3 dp).
+* `--reflex-as-published` -- restores line 307's `+1`.  The correction is now
+  the default; this flag is required for the published-table-2 validation,
+  which is otherwise suppressed with a printed explanation.

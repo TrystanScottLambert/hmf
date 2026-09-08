@@ -358,7 +358,7 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
                   figsize=(7.87, 4.72), pub_fit=None, pub_label=None,
                   show_extras=True, show_driver_gama=True,
                   sdss_label_short=None, show_driver_fit=True,
-                  show_omega_inset=True):
+                  show_omega_inset=True, lcdm="tinker", lcdm_mdef="200c"):
     """The combined figure.
 
     ``show_extras=False`` drops the REFLEX, 2PIGG and Tempel-curve *points*
@@ -421,9 +421,19 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
     if show_extras:
         ax.fill_between(el_x, el_lo, el_hi, color=(0.5, 0.5, 0.5, 0.10), lw=0)
         ax.plot(el_x, el_y, color="cyan", lw=1.2, zorder=2)
-    with np.errstate(divide="ignore"):
-        ax.plot(mrpx - 0.08, np.log10(mrpy) - np.log10(factor) + 0.08, ls="--",
-                color="black", lw=2, zorder=3)
+    # The LCDM reference.  "driver" is allhmf.r's: the Murray+21 MRP with its
+    # amplitude set so the whole thing integrates to Omega_M = 0.3147, i.e. so
+    # that ALL matter is in haloes.  Tinker+2008 at Planck reaches only 0.190,
+    # so that convention sits +0.22 dex above a real LCDM mass function.  See
+    # lcdm_tinker.py.
+    if lcdm == "tinker":
+        import lcdm_tinker as lt
+        lx, ly = lt.tinker_curve(z=0.1, mdef=lcdm_mdef)
+        ax.plot(lx, ly, ls="--", color="black", lw=2, zorder=3)
+    else:
+        with np.errstate(divide="ignore"):
+            ax.plot(mrpx - 0.08, np.log10(mrpy) - np.log10(factor) + 0.08,
+                    ls="--", color="black", lw=2, zorder=3)
 
     if show_extras:
         rx, ry, rf, _ = sets["R"]
@@ -531,8 +541,10 @@ def plot_combined(fit_par, mc, sets, driver_gama, extras, mrpx, mrpy, factor,
             va="center", fontsize=lfs, color=PUBLISHED_C)
     yy -= dy
     ax.plot([12.8, 12.9], [yy, yy], color="black", ls="--", lw=2)
-    ax.text(12.95, yy, " $\\Lambda$CDM expectation from MRP", va="center",
-            fontsize=lfs)
+    ax.text(12.95, yy,
+            (f" $\\Lambda$CDM (Tinker+08, Planck18, M$_{{{lcdm_mdef}}}$)"
+             if lcdm == "tinker"
+             else " MRP normalised to $\\Omega_M$"), va="center", fontsize=lfs)
 
     # Omega_M inset, allhmf.r lines 494-510.
     #
@@ -664,10 +676,24 @@ def main():
                         "error.  allhmf.r inflates it to 1/sqrt(3) following an "
                         "error in Driver+22 sec 4.3; Bohringer+2017 sec 3 puts "
                         "the 3-cluster bin at the LOWEST masses.")
-    p.add_argument("--reflex-norm", action="store_true",
-                   help="correct the REFLEX dn/dM -> dn/dlogM conversion: "
-                        "allhmf.r line 307 ends in '+1' where log10(ln 10) = "
-                        "0.362 is required, putting the leg 0.638 dex high.")
+    p.add_argument("--lcdm", default="tinker", choices=["tinker", "driver"],
+                   help="which reference curve to draw: 'tinker' (default) is "
+                        "Tinker+2008 M200c at Planck 2018; 'driver' is "
+                        "allhmf.r's Murray MRP renormalised so all matter sits "
+                        "in haloes, which is +0.22 dex high.  Plotting only -- "
+                        "no fitted number depends on it.")
+    p.add_argument("--lcdm-mdef", default="200c",
+                   choices=["200c", "200m", "vir"],
+                   help="halo mass definition for the Tinker curve.  Default "
+                        "200c, matching REFLEX (Bohringer sec 2) and the Tempel "
+                        "SDSS masses.  The definition alone moves the curve by "
+                        "up to 0.34 dex, so it must match the data.")
+    p.add_argument("--reflex-as-published", action="store_true",
+                   help="reproduce allhmf.r line 307 verbatim, including its "
+                        "'+1' where log10(ln 10) = 0.362 is required, which "
+                        "puts the REFLEX leg 0.638 dex high.  The correction is "
+                        "now the DEFAULT; this flag is for reproducing Driver's "
+                        "published numbers.")
     p.add_argument("--omega-inset", action="store_true",
                    help="draw allhmf.r's Omega_M inset.  Off by default: it "
                         "plots the TOTAL Omega_M, 39%% of which is extrapolated "
@@ -786,7 +812,7 @@ def main():
           f"(allhmf.r line 263)")
 
     rx, ry, rf = load_reflex(reflex_fix=args.reflex_fix,
-                             reflex_norm=args.reflex_norm)
+                             reflex_norm=not args.reflex_as_published)
     sets = {"G": gset, "R": (rx, ry, rf, VOLUME_REFLEXII)}
     print(f"  REFLEX II      : {len(rx)} points, volume {VOLUME_REFLEXII:.3e} Mpc^3")
 
@@ -997,7 +1023,15 @@ def main():
 
     pub = PUBLISHED_TABLE2.get(args.myoption)
     clamped = args.fit_max is not None or args.sdss_max is not None
-    if pub is not None and not omega_prior and clamped:
+    if pub is not None and not omega_prior and not args.reflex_as_published:
+        # The comparison is a regression test against his PRINTED numbers, so it
+        # is only meaningful with his REFLEX normalisation.  With the line-307
+        # correction applied the fit is answering a different question.
+        print("\n  (published table 2 comparison suppressed: the REFLEX "
+              "dn/dM -> dn/dlogM\n   correction is applied, so this fit is not "
+              "comparable with Driver's printed\n   values.  Re-run with "
+              "--reflex-as-published to validate the port.)")
+    elif pub is not None and not omega_prior and clamped:
         print("\n  (published table 2 comparison suppressed: Driver does not "
               "clamp the mass\n   range, so a clamped fit is not comparable "
               "with it.  Re-run without\n   --fit-max/--sdss-max to validate "
@@ -1068,7 +1102,8 @@ def main():
                   show_extras=not args.no_extras,
                   show_driver_gama=not args.no_driver_gama,
                   show_driver_fit=not args.no_driver_fit,
-                  show_omega_inset=args.omega_inset)
+                  show_omega_inset=args.omega_inset,
+                  lcdm=args.lcdm, lcdm_mdef=args.lcdm_mdef)
 
 
 if __name__ == "__main__":

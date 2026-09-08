@@ -2403,6 +2403,62 @@ them 60-90 kB instead of unopenable.
 
 ---
 
+## Two errors that cancelled: REFLEX and the LCDM curve (2026-09-07)
+
+Full detail in `REFLEX_ERROR.md`.  Both lift a curve; together they made three
+data sets on different mass calibrations look mutually consistent.
+
+**1. `allhmf.r` line 307 puts REFLEX 0.638 dex high.**  Converting `dn/dM` to
+`dn/dlog10M` needs `x + log10(ln 10) = x + 0.3622`; the line writes `x + 1`.
+Confirmed three ways, the decisive one being SHAPE: reading Bohringer's
+`Curve1` as per-dex rather than per-mass tilts the residual against his own
+eq. 1 by 2.0 dex, whereas the per-mass reading is flat at 0.03.  Now corrected
+BY DEFAULT; `--reflex-as-published` restores it.
+
+**2. `driver_recovery.lcdm_curve()` is +0.22 dex high and is NOT a LCDM halo
+mass function.**  Its `factor` forces the Murray MRP to integrate to
+Omega_M = 0.3147, i.e. all matter in haloes.  Tinker+2008 at Planck reaches
+**0.190**.  New `lcdm_tinker.py` computes the real thing with hmf+CAMB, cached;
+`--lcdm tinker` is the default and `--lcdm driver` restores Driver's.  **This is
+plotting only** -- `phimrp` (the fit start value) still comes from
+`lcdm_curve`, so no fitted number moves (verified: identical chi^2 to 3 dp).
+
+### The corrected ordering, which reverses earlier conclusions
+
+Offset from Tinker+2008 @ Planck, z = 0.1:
+
+| leg | offset |
+|---|---|
+| REFLEX, as published | +0.461 dex |
+| **REFLEX, corrected** | **-0.176 dex** |
+| SDSS (Tempel+14) | +0.263 dex |
+| GAMA (Nessie) | +0.549 dex |
+
+**Corrected REFLEX is the leg closest to LCDM.**  The dynamical legs sit above
+it -- GAMA by 0.55 dex, SDSS by 0.26 -- consistent with everything recorded here
+about the Robotham A = 13.9 calibration and the gapper dispersion.  The X-ray
+leg is not anomalously low; the dynamical masses are high.
+
+**There is no Omega_M deficit.**  Our fitted Omega_M(total) = 0.199 was being
+read against 0.3147; Tinker reaches 0.190 over the same range, so 0.199 agrees
+with LCDM.  `OMEGA_M.md` is flagged as superseded on that point.
+
+**Consequence:** GSR chi^2 is now ~700, because one MRP is fitted through three
+legs that disagree by up to 0.7 dex in density (~0.3 dex in mass).  That is a
+calibration spread, not a bad fit.  **Do not present a combined fit as a
+measurement until the offset is modelled** -- the next step is a relative
+mass-scale offset between the X-ray and dynamical legs as a fitted nuisance
+parameter.
+
+**Not circular, and not cosmology-sensitive.**  Two things checked and cleared:
+Tinker enters only Bohringer's model *curve*, not his data points (those come
+from the observed L_X function through the L_X-M relation), so REFLEX is not
+circular the way Yang+2021's abundance-matched DESI catalogue is.  And the
+points depend on cosmology only through volumes and distances -- 0.003 dex
+between Om = 0.285 and 0.3147 -- so no cosmology rescaling is wanted.
+
+---
+
 ## Pick up here — outstanding work
 
 Ordered by value.

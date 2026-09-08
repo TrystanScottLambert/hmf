@@ -1,5 +1,16 @@
 # Omega_M: why the inset was removed, and what replaces it
 
+> **SUPERSEDED IN PART, 2026-09-07.**  The "~35% deficit against Planck" that
+> motivates much of what follows was an artefact: it compared our fitted
+> Omega_M(total) = 0.199 against **0.3147**, but no halo mass function reaches
+> that.  Tinker+2008 at Planck contains **Omega_M = 0.190** in haloes over the
+> same range, so our 0.199 is in *good agreement* with LCDM and there is no
+> deficit to explain.  The reference was `lcdm_curve`'s imposed normalisation,
+> which forces all matter into haloes; see `lcdm_tinker.py` and REFLEX_ERROR.md.
+> The reasons for removing the inset (39% extrapolated, 10^delta mass-scale
+> scaling, reference normalised by construction) all stand -- the third one
+> more strongly than when it was written.
+
 Recorded 2026-08-31 so the decision can be revisited. `combined_hmf.py
 --omega-inset` restores `allhmf.r`'s inset exactly as it was; nothing has been
 deleted.

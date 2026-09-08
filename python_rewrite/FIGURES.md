@@ -134,6 +134,21 @@ is worth keeping alongside. Railed rows carry no Omega_M at all: their tight
 intervals come from the prior bound, which is how one of them ends up "21 sigma
 below Planck".
 
+## The LCDM reference curve and REFLEX
+
+Since 2026-09-07 the dashed black line is **Tinker+2008 M200c at Planck 2018**
+(`lcdm_tinker.py`, cached in `lcdm_tinker.csv`), not `allhmf.r`'s Murray MRP
+renormalised so all matter sits in haloes -- that convention is +0.22 dex high.
+`--lcdm driver` restores it; the choice is plotting only and changes no fitted
+number.
+
+REFLEX II now carries the corrected `dn/dM -> dn/dlog10M` conversion by default
+(`allhmf.r` line 307's `+1` should be `log10(ln 10)`, a 0.638 dex error).
+`--reflex-as-published` restores Driver's version and is REQUIRED for the
+published-table-2 validation, which is otherwise suppressed.
+
+See `REFLEX_ERROR.md`.
+
 ## Diagnostics
 
 `combined_hmf.py --profile-mstar` prints the chi2 profile in log10 M*, fixing
