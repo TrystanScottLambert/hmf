@@ -253,7 +253,7 @@ def plot(legs, par, order, args, chain=None):
                                     dr.ALPHAMRP, dr.BETAMRP]), legs, args)
     with np.errstate(divide="ignore", invalid="ignore"):
         ax.plot(xfit, np.log10(dr.mrp(xfit, *murn)), color="k", lw=1.8,
-                ls=(0, (6, 3)), alpha=0.9, zorder=4,
+                ls="-", alpha=0.9, zorder=4,
                 label="Murray+21 LCDM MRP, rescaled")
 
     if chain is not None:

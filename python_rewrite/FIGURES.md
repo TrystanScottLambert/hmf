@@ -169,7 +169,7 @@ shape they collectively prefer without reconciling the calibrations first.
 | `hmf_shape_all.png`, `corner_shape_all.png` | `uv run python normalised_shape_fit.py --mcmc --name shape_all` |
 | `hmf_shape_gt14.png`, `corner_shape_gt14.png` | `uv run python normalised_shape_fit.py --mcmc --fit-lo 14 --name shape_gt14` |
 
-Full page width (`plotting.FULL_PAGE`), PNG.  The dashed black line is
+Full page width (`plotting.FULL_PAGE`), PNG.  The solid black line is
 **Murray+21 LCDM rescaled the same way** -- not the Tinker curve the other
 figures use, because on a rescaled axis only the shape is comparable.  The grey
 band is the 10^14-10^15 matching range.  Tempel+14 SDSS is plotted but **not
