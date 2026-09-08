@@ -213,3 +213,28 @@ parameter difference is motion along the degeneracy ridge, not disagreement.
 Both fits are poor in absolute terms (chi2/dof ~ 2.4): the legs still disagree
 by ~0.5 dex below logM 14 after rescaling, which is the calibration spread and
 the actual open problem.
+
+## `completeness_ridge.py` — is mlim(z) the detection boundary?
+
+`uv run python completeness_ridge.py` -> `completeness_ridge.png`
+
+Halo mass against redshift for the Nessie GAMA groups, with the per-z-bin mode
+(what `recovery.turnover_mlim` fits), the 5th and 16th percentiles (the
+empirical lower envelope) and the fitted `mlim(z)` in both forms.
+
+**The line does not lie on the ridge.**  It sits ~0.9 dex above the 5th
+percentile and ~0.55 dex above the 16th, at every redshift, so 53% of groups
+fall below their own "limit" -- flat in z, not concentrated anywhere.
+
+The z-dependence is right and only the offset is wrong: `mlim` rises 3.21 dex
+per unit z between z = 0.05 and 0.245, against 3.27 for the 5th percentile.  So
+`turnover_mlim` captures the shape of the selection and misplaces its
+normalisation by ~0.9 dex, which is exactly what fitting a histogram MODE gets
+you.
+
+The deeper point is that no smooth `mlim(z)` can be right: groups are detected
+down to logM 10.5 at every redshift, because GAMA's selection is a flux limit on
+the 5th-brightest MEMBER, not a limit on halo mass.  The 1/Vmax pipeline has no
+mass limit at all -- each group carries its own zmax -- which is why it is
+immune.  See CLAUDE.md, "recovery.py -- audit of the hierarchical Bayesian
+route".
