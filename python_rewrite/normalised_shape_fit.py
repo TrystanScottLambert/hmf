@@ -242,8 +242,7 @@ def plot(legs, par, order, args, chain=None):
     import plotting
 
     fig = plotting.start_plot(r"log$_{10}$(Halo Mass / M$_\odot$)",
-                              r"log$_{10}$(number density) [Mpc$^{-3}$ dex$^{-1}$]"
-                              + "\n" + r"$rescaled$",
+                              r"log$_{10}$(number density) [Mpc$^{-3}$ dex$^{-1}$]",
                               figsize=plotting.FULL_PAGE)
     ax = plt.gca()
 
