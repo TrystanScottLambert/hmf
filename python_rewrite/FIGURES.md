@@ -273,9 +273,9 @@ after rescaling, that is a property of the anchor, not a measurement.
 
 | config | log10 M* | alpha | beta | chi2 | railed |
 |---|---|---|---|---|---|
-| GAMA only | 12.52 +0.94/-0.99 | -0.78 +0.39/-0.41 | 0.36 | 13.4 | **yes** |
-| GAMA + SDSS (Nessie) | 11.68 +0.69/-0.48 | -0.97 +0.15/-0.19 | 0.28 | 108.2 | **yes** |
-| GAMA + SDSS + REFLEX | 12.60 +0.62/-0.79 | -1.02 +0.27/-0.24 | 0.37 | 185.9 | no |
+| GAMA only | 12.52 +0.94/-0.99 | -0.78 +0.39/-0.41 | 0.36 +0.11/-0.06 | 13.4 | **yes** |
+| GAMA + SDSS (Nessie) | 11.68 +0.69/-0.48 | -0.97 +0.15/-0.19 | 0.28 +0.04/-0.02 | 108.2 | **yes** |
+| GAMA + SDSS + REFLEX | 12.60 +0.62/-0.79 | -1.02 +0.27/-0.24 | 0.37 +0.07/-0.06 | 185.9 | no |
 | Murray+21 rescaled | 14.43 | -1.86 | 0.71 | -- | -- |
 
 **`emcee` is not seeded**, so re-running a chain moves the medians by a few
