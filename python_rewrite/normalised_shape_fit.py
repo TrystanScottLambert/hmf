@@ -111,7 +111,17 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--lo", type=float, default=14.0)
     p.add_argument("--hi", type=float, default=15.0)
-    p.add_argument("--anchor", default="sdss_nessie")
+    p.add_argument("--anchor", default="sdss_nessie",
+                   help="leg whose 10^lo-10^hi integral every other leg is "
+                        "matched to.  Kept at Nessie SDSS across all "
+                        "configurations so the figures share one y-scale, "
+                        "even where that leg is not itself fitted.")
+    p.add_argument("--legs", default="gama_nessie,sdss_nessie,reflex",
+                   help="comma-separated legs to FIT, from gama_nessie, "
+                        "sdss_nessie, sdss_tempel, reflex")
+    p.add_argument("--show", default="all",
+                   help="comma-separated legs to PLOT, or 'all'.  Legs shown "
+                        "but not fitted are drawn with open symbols.")
     p.add_argument("--seed", type=int, default=10)
     p.add_argument("--nmc-edb", type=int, default=1001)
     p.add_argument("--ml-cut", type=float, default=1.0)
@@ -160,8 +170,10 @@ def main():
               f"{np.log10(d['scale']):+8.3f}")
 
     # --- fit the MRP to the rescaled points -------------------------------
-    order = ["gama_nessie", args.anchor if args.anchor != "sdss_nessie"
-             else "sdss_nessie", "reflex"]
+    order = [l.strip() for l in args.legs.split(",") if l.strip()]
+    bad = [l for l in order if l not in legs]
+    if bad:
+        raise SystemExit(f"unknown leg(s) {bad}; choose from {list(legs)}")
     order = [l for i, l in enumerate(order) if l not in order[:i]]
     def _cut(d):
         if args.fit_lo is None:
@@ -276,7 +288,11 @@ def plot(legs, par, order, args, chain=None):
                 label="MRP fit to the rescaled data"
                       + (" (MCMC)" if chain is not None else ""))
 
+    shown = (list(legs) if args.show.strip() == "all"
+             else [l.strip() for l in args.show.split(",") if l.strip()])
     for lab, d in legs.items():
+        if lab not in shown:
+            continue
         mk, c, name = LEG_STYLE[lab]
         f = np.where(d["f"] >= 1.0, 0.9999, d["f"])
         ax.errorbar(d["x"], d["ynorm"],

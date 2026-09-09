@@ -80,14 +80,32 @@ def run_emcee(fn, start, nwalkers=64, nsteps=8000, burn=2000, thin=10,
     p0c = np.array([start[0], np.log10(abs(start[1])), start[2], start[3]])
     ndim = 4
 
+    # The Nelder-Mead answer can land OUTSIDE the prior box: the ill-posed
+    # configurations run away below the logM* = 11 bound (GAMA-only rescaled
+    # stops at 9.78).  Scattering around such a point makes EVERY trial -inf,
+    # and the rejection loop below then spins forever at full CPU rather than
+    # failing.  Clip into the interior first, and say so.
+    lo, hi = bounds[:, 0], bounds[:, 1]
+    pad = 0.02 * (hi - lo)
+    inside = np.clip(p0c, lo + pad, hi - pad)
+    if not np.allclose(inside, p0c):
+        print(f"  start point outside the prior box, clipped in: "
+              f"{np.round(p0c, 3)} -> {np.round(inside, 3)}")
+        p0c = inside
+
     p0 = np.empty((nwalkers, ndim))
     scatter = np.array([0.10, 0.10, 0.05, 0.03])
     for i in range(nwalkers):
-        while True:
+        for _ in range(10000):
             trial = p0c + scatter * rng.standard_normal(ndim)
             if np.isfinite(log_prob(trial, fn, bounds)):
                 p0[i] = trial
                 break
+        else:
+            raise RuntimeError(
+                f"run_emcee: no finite-lnP start found near {np.round(p0c, 3)} "
+                "in 10000 draws.  The objective is non-finite over the whole "
+                "neighbourhood -- check the prior box and the start point.")
 
     # M* and phi* are anti-correlated at rho ~ -0.99 along a CURVED ridge.  The
     # default StretchMove crawls along it (tau ~ 215 at 3000 steps); the

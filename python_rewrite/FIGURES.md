@@ -238,3 +238,48 @@ the 5th-brightest MEMBER, not a limit on halo mass.  The 1/Vmax pipeline has no
 mass limit at all -- each group carries its own zmax -- which is why it is
 immune.  See CLAUDE.md, "recovery.py -- audit of the hierarchical Bayesian
 route".
+
+### The other two configurations, normalised the same way
+
+`--legs` picks what is fitted, `--show` what is plotted.  The anchor stays
+Nessie SDSS in every run, so all three figures share one y-scale.
+
+| figure | command |
+|---|---|
+| `hmf_shape_gama.png` | `--mcmc --legs gama_nessie --show gama_nessie --name shape_gama` |
+| `hmf_shape_gama_sdss.png` | `--mcmc --legs gama_nessie,sdss_nessie --show gama_nessie,sdss_nessie --name shape_gama_sdss` |
+
+| config | log10 M* | alpha | beta | railed |
+|---|---|---|---|---|
+| GAMA only | 12.48 -0.95/+0.96 | -0.77 -0.42/+0.39 | 0.36 -0.06/+0.11 | **yes** |
+| GAMA + SDSS (Nessie) | 11.68 -0.48/+0.71 | -0.97 -0.19/+0.16 | 0.28 -0.02/+0.04 | **yes** |
+| GAMA + SDSS + REFLEX | 12.60 -0.73/+0.59 | -1.02 -0.23/+0.26 | 0.37 -0.05/+0.06 | no |
+| Murray+21 rescaled | 14.43 | -1.86 | 0.71 | -- |
+
+**For GAMA alone the normalisation cannot change the fit.**  Rescaling the data
+by s and the volume by 1/s with phi* -> s phi* leaves the objective invariant to
+1e-13 at every parameter vector tested, so a single-leg rescale is an exact
+reparameterisation: only phi* moves (by -0.284 dex).  It is worth doing anyway,
+because it puts GAMA and the Murray curve on a common 10^14-10^15 integral and
+makes the residual difference pure SHAPE.
+
+Curve minus rescaled Murray, in log10 phi:
+
+| config | 13.0 | 13.8 | 14.6 | 15.4 | rms 13-15 |
+|---|---|---|---|---|---|
+| GAMA only | -0.49 | -0.07 | -0.01 | +0.04 | 0.185 |
+| GAMA + SDSS | -0.14 | +0.01 | -0.03 | +0.26 | 0.046 |
+| GAMA + SDSS + REFLEX | -0.19 | +0.02 | -0.04 | -0.10 | 0.073 |
+
+All three lie on the rescaled Murray curve above logM ~ 13.5 and fall below it
+at the low-mass end -- the shallow-alpha result, now shown as a shape statement
+that does not depend on any leg's absolute calibration.
+
+### `run_emcee` no longer hangs on an out-of-box start
+
+The GAMA-only Nelder-Mead answer is logM* = 9.78, BELOW the prior bound of 11.0.
+`run_emcee` scattered walkers around it and rejected every draw, spinning at
+100% CPU indefinitely (observed: 2.5 h, no output).  The start point is now
+clipped into the prior box with a printed warning, and the rejection loop raises
+after 10 000 failed draws instead of looping forever.  A full 25k-step chain
+takes about two minutes.
