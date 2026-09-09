@@ -42,7 +42,6 @@ SHAPE_DELIVERABLES = [
     ("shape_gama", "GAMA (Nessie)"),
     ("shape_gama_sdss", "GAMA + SDSS (Nessie)"),
     ("shape_all", "GAMA + SDSS (Nessie) + REFLEX II"),
-    ("shape_gt14", r"as above, $\log_{10}M > 14$ only"),
 ]
 
 # Driver+22 table 2, for comparison.

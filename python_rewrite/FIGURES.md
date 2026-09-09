@@ -179,7 +179,10 @@ fitted** (the fit is GAMA + Nessie SDSS + REFLEX).
 for any restyling; a fresh 25k-step run per figure is not needed to change a
 line colour.
 
-### `--fit-lo 14` is a robustness check, not the primary
+### `--fit-lo 14` -- DROPPED, kept only as a record of why
+
+`shape_gt14` is **not** part of the figure set or the table.  The reasoning
+below is retained so the option is not re-adopted by mistake.
 
 | | all (>12.9) | >14 only |
 |---|---|---|
@@ -273,7 +276,6 @@ after rescaling, that is a property of the anchor, not a measurement.
 | GAMA only | 12.52 +0.94/-0.99 | -0.78 +0.39/-0.41 | 0.36 | 13.4 | **yes** |
 | GAMA + SDSS (Nessie) | 11.68 +0.69/-0.48 | -0.97 +0.15/-0.19 | 0.28 | 108.2 | **yes** |
 | GAMA + SDSS + REFLEX | 12.60 +0.62/-0.79 | -1.02 +0.27/-0.24 | 0.37 | 185.9 | no |
-| >14 only | 12.32 +0.95/-0.86 | -1.02 +0.41/-0.47 | 0.34 | 117.8 | **yes** |
 | Murray+21 rescaled | 14.43 | -1.86 | 0.71 | -- | -- |
 
 **`emcee` is not seeded**, so re-running a chain moves the medians by a few
