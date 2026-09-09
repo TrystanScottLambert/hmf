@@ -43,6 +43,7 @@ import driver_recovery as dr
 
 LEG_STYLE = {
     "gama_nessie": ("o", "red", "GAMA (Nessie)"),
+    "gama_driver": ("^", "cornflowerblue", "GAMA (Driver+22)"),
     "sdss_nessie": ("P", "purple", r"SDSS (Nessie, NFW + rms $\sigma$)"),
     "sdss_tempel": ("s", "darkorange", "SDSS (Tempel+14)"),
     "reflex":      ("D", "forestgreen", "REFLEX II (Bohringer+17)"),
@@ -88,6 +89,16 @@ def build_legs(seed, nmc, ml_cut, masserr, sdss_masserr, fit_min, verbose):
                           fit_min=fit_min)
     out["gama_nessie"] = dict(x=np.asarray(gset[0]), y=np.asarray(gset[1]),
                               f=np.asarray(gset[2]), vol=gset[3])
+
+    # Driver+22's own v10 catalogue, same binning and the same M/L cut so the
+    # comparison is like-for-like, but HIS mass-error curve -- it is his data.
+    o, vo = dr.build_groups("../data/G3CFoFGroupv10.fits",
+                            "../data/GAMAGalsInGroups.csv", verbose=verbose)
+    o, _ = ng.apply_ml_cut(o, ml_cut, verbose=False)
+    oset, _ = ch.gama_set(o, vo, ch.AREA_GAMA_DRIVER, seed, nmc, 0,
+                          ch.MLIMIT_GAMA, fit_min=fit_min)
+    out["gama_driver"] = dict(x=np.asarray(oset[0]), y=np.asarray(oset[1]),
+                              f=np.asarray(oset[2]), vol=oset[3])
 
     lo_s = max(ch.MLIMIT_SDSS, fit_min or ch.MLIMIT_SDSS)
     n, _, _ = nsd.build(seed=seed, nmc=nmc, verbose=verbose,
@@ -139,6 +150,10 @@ def main():
                    help="sample the posterior on the same rescaled objective "
                         "and write a corner plot")
     p.add_argument("--mcmc-steps", type=int, default=25000)
+    p.add_argument("--single", action="store_true",
+                   help="size for a single column (plotting.SINGLE_COLUMN) "
+                        "instead of the full page, shrinking markers, line "
+                        "widths and the legend to match.")
     p.add_argument("--from-chain", action="store_true",
                    help="redraw from the saved chain_<name>.npz instead of "
                         "re-sampling.  Restyling a figure is a redraw, not a "
@@ -222,6 +237,7 @@ def main():
                 print("  WARNING: n_eff < 50 for at least one parameter")
             np.savez(f"chain_{args.name}.npz", chain=chain,
                      median=np.median(chain, axis=0), best=best, nm=nmv,
+                     chi2_best=info["chi2_min"], chi2_nm=val,
                      murray_rescaled=murv,
                      scales=np.array([legs[l]["scale"] for l in order]),
                      legs=np.array(order, dtype=object), allow_pickle=True)
@@ -253,10 +269,20 @@ def plot(legs, par, order, args, chain=None):
     import matplotlib.pyplot as plt
     import plotting
 
-    fig = plotting.start_plot(r"log$_{10}$(Halo Mass / M$_\odot$)",
-                              r"log$_{10}$(number density) [Mpc$^{-3}$ dex$^{-1}$]",
-                              figsize=plotting.FULL_PAGE)
+    sc = args.single
+    # The full-page y-label does not fit in 3.54 inches at the house 12 pt and
+    # gets clipped by bbox_inches="tight"; single column gets the short form.
+    xlab = r"log$_{10}$(M$_{\rm halo}$ / M$_\odot$)" if sc else \
+           r"log$_{10}$(Halo Mass / M$_\odot$)"
+    ylab = r"log$_{10}(\phi$ / Mpc$^{-3}$ dex$^{-1}$)" if sc else \
+           r"log$_{10}$(number density) [Mpc$^{-3}$ dex$^{-1}$]"
+    fig = plotting.start_plot(xlab, ylab,
+                              figsize=(plotting.SINGLE_COLUMN if sc
+                                       else plotting.FULL_PAGE))
     ax = plt.gca()
+    ms, elw = (2.8, 0.6) if sc else (4.5, 0.8)
+    lw_mur, lw_fit, lgf = (1.3, 1.4, 5.4) if sc else (1.8, 2.0, 7.5)
+    nspag = 300 if sc else 600
 
     xfit = np.arange(12.0, 16.01, 0.01)
 
@@ -264,14 +290,15 @@ def plot(legs, par, order, args, chain=None):
     murn = _rescale_curve(np.array([dr.MSTARMRP, dr.lcdm_curve()[3],
                                     dr.ALPHAMRP, dr.BETAMRP]), legs, args)
     with np.errstate(divide="ignore", invalid="ignore"):
-        ax.plot(xfit, np.log10(dr.mrp(xfit, *murn)), color="k", lw=1.8,
+        ax.plot(xfit, np.log10(dr.mrp(xfit, *murn)), color="k", lw=lw_mur,
                 ls="-", alpha=0.9, zorder=4,
                 label="Murray+21 LCDM MRP, rescaled")
 
     if chain is not None:
         from matplotlib.collections import LineCollection
         rng = np.random.default_rng(0)
-        idx = rng.choice(len(chain), size=min(600, len(chain)), replace=False)
+        idx = rng.choice(len(chain), size=min(nspag, len(chain)),
+                         replace=False)
         segs = []
         for c in chain[idx]:
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -283,7 +310,7 @@ def plot(legs, par, order, args, chain=None):
                                          linewidths=0.6, alpha=0.02,
                                          rasterized=True, zorder=6))
     with np.errstate(divide="ignore", invalid="ignore"):
-        ax.plot(xfit, np.log10(dr.mrp(xfit, *par)), color="#d62728", lw=2,
+        ax.plot(xfit, np.log10(dr.mrp(xfit, *par)), color="#d62728", lw=lw_fit,
                 ls=(0, (1, 2.2)), zorder=8,
                 label="MRP fit to the rescaled data"
                       + (" (MCMC)" if chain is not None else ""))
@@ -297,15 +324,15 @@ def plot(legs, par, order, args, chain=None):
         f = np.where(d["f"] >= 1.0, 0.9999, d["f"])
         ax.errorbar(d["x"], d["ynorm"],
                     yerr=[np.abs(np.log10(1 - f)), np.abs(np.log10(1 + f))],
-                    fmt=mk, ms=4.5, color=c, mfc=c if lab in order else "none",
-                    ecolor=c, elinewidth=0.8, capsize=0, ls="none", zorder=5,
+                    fmt=mk, ms=ms, color=c, mfc=c if lab in order else "none",
+                    ecolor=c, elinewidth=elw, capsize=0, ls="none", zorder=5,
                     label=name + ("" if lab in order else "  (not fitted)"))
 
     ax.axvspan(args.lo, args.hi, color="0.5", alpha=0.2, zorder=0, lw=0)
-    ax.set_xlim(12.75, 16)
+    ax.set_xlim(12.75, 15.9 if sc else 16)
     ax.set_ylim(-8, -2)
-    ax.legend(loc="upper right", fontsize=7.5, frameon=False,
-              handletextpad=0.5, labelspacing=0.35)
+    ax.legend(loc="upper right", fontsize=lgf, frameon=False,
+              handletextpad=0.5, labelspacing=0.3 if sc else 0.35)
     plotting.end_plot(args.out)
     plt.close(fig)
     print(f"\n  wrote {args.out}")

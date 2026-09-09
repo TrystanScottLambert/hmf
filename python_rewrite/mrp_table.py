@@ -35,6 +35,16 @@ DELIVERABLES = [
     ("combined_nessie_all", "GAMA + SDSS (Nessie) + REFLEX II"),
 ]
 
+# The shape-only fits (normalised_shape_fit.py).  Each leg's density is
+# rescaled to a common 10^14-10^15 integral, so phi* is the ANCHOR's arbitrary
+# amplitude and Omega_M is meaningless -- neither is reported as a measurement.
+SHAPE_DELIVERABLES = [
+    ("shape_gama", "GAMA (Nessie)"),
+    ("shape_gama_sdss", "GAMA + SDSS (Nessie)"),
+    ("shape_all", "GAMA + SDSS (Nessie) + REFLEX II"),
+    ("shape_gt14", r"as above, $\log_{10}M > 14$ only"),
+]
+
 # Driver+22 table 2, for comparison.
 PUBLISHED = [
     ("GAMA5 (Driver+22)", (13.51, -3.19, -1.27, 0.47),
@@ -197,11 +207,107 @@ def as_latex(rs):
     print(r"\end{table*}")
 
 
+def shape_rows(verbose=True):
+    out = []
+    for name, label in SHAPE_DELIVERABLES:
+        path = f"chain_{name}.npz"
+        if not os.path.exists(path):
+            if verbose:
+                print(f"  (missing {path} -- run normalised_shape_fit.py "
+                      f"--mcmc --name {name})")
+            continue
+        d = np.load(path, allow_pickle=True)
+        med, lo, hi = summarise(d["chain"])
+        out.append(dict(label=label, med=med, lo=lo, hi=hi,
+                        railed=railed(d["chain"]),
+                        chi2=float(d["chi2_best"]) if "chi2_best" in d.files
+                        else None,
+                        murray=(d["murray_rescaled"]
+                                if "murray_rescaled" in d.files else None)))
+    return out
+
+
+SHAPE_NOTE = (
+    "\n  phi* is the ANCHOR leg's amplitude, not a measurement: every leg was "
+    "rescaled to a\n  common 10^14-10^15 integral, so only M*, alpha and beta "
+    "carry information.  It is\n  marginalised over rather than fixed, because "
+    "it is degenerate with the other three\n  (rho(M*, phi*) = -0.84) and "
+    "fixing it would halve the M* interval artificially.\n  Omega_M is not "
+    "quotable from these fits for the same reason.")
+
+
+def shape_as_text(rs):
+    print("\nShape-only MRP fits, y-rescaled to a common 10^14-10^15 integral")
+    print("(posterior median with 16/84 credible intervals)\n")
+    head = f"  {'Sample':<36s}" + "".join(f"{p:>21s}" for p in PLAIN)
+    print(head + f"{'chi2':>9s}")
+    print("  " + "-" * (len(head) + 9))
+    for r in rs:
+        cells = "".join(
+            f"{r['med'][i]:>9.2f} +{r['hi'][i]:.2f}/-{r['lo'][i]:.2f} "
+            for i in range(4))
+        c = f"{r['chi2']:>9.1f}" if r["chi2"] is not None else f"{'--':>9s}"
+        flag = "  <- RAILED, interval set by the prior" if r["railed"] else ""
+        print(f"  {r['label']:<36s}{cells}{c}{flag}")
+    mur = next((r["murray"] for r in rs if r["murray"] is not None), None)
+    if mur is not None:
+        print(f"\n  {'Murray+21 LCDM MRP, rescaled':<36s}"
+              + "".join(f"{mur[i]:>9.2f}{'':<12s}" for i in range(4)))
+    print(SHAPE_NOTE)
+
+
+def shape_as_latex(rs):
+    print(r"\begin{table}")
+    print(r"\centering")
+    print(r"\caption{MRP fits to the shape-normalised halo mass function.  "
+          r"Each survey leg's number density is rescaled by a single constant "
+          r"so that its integral over $10^{14}-10^{15}\,{\rm M}_\odot$ matches "
+          r"the Nessie SDSS leg's, removing the relative mass-calibration "
+          r"offsets between the legs; the fit therefore constrains the SHAPE "
+          r"only.  $\phi_*$ is consequently the anchor leg's amplitude rather "
+          r"than a measurement, and is marginalised over.  Values are "
+          r"posterior medians with 16th/84th percentile credible intervals.  "
+          r"Rows marked $\dagger$ have a posterior that rails against the "
+          r"prior boundary at $\log_{10}(M_*/{\rm M}_\odot) = 11$, where the "
+          r"interval reflects the prior rather than the data.}")
+    print(r"\begin{tabular}{lccccc}")
+    print(r"\hline")
+    print("Sample & " + " & ".join(PARAMS) + r" & $\chi^2$ \\")
+    print(r" & & Mpc$^{-3}$ dex$^{-1}$ & & & \\")
+    print(r"\hline")
+    for r in rs:
+        cells = " & ".join(
+            f"${r['med'][i]:.2f}^{{+{r['hi'][i]:.2f}}}_{{-{r['lo'][i]:.2f}}}$"
+            for i in range(4))
+        c = f"{r['chi2']:.1f}" if r["chi2"] is not None else "--"
+        print(f"{r['label']}{r'$\dagger$' if r['railed'] else ''} & {cells} "
+              f"& {c} " + r"\\")
+    mur = next((r["murray"] for r in rs if r["murray"] is not None), None)
+    if mur is not None:
+        print(r"\hline")
+        print("Murray+21 $\\Lambda$CDM, rescaled & "
+              + " & ".join(f"${mur[i]:.2f}$" for i in range(4)) + r" & -- \\")
+    print(r"\hline")
+    print(r"\end{tabular}")
+    print(r"\label{tab:mrp_shape}")
+    print(r"\end{table}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--latex", action="store_true")
+    p.add_argument("--shape", action="store_true",
+                   help="tabulate the shape-normalised fits "
+                        "(normalised_shape_fit.py) instead of the native-units "
+                        "deliverables")
     args = p.parse_args()
+    if args.shape:
+        rs = shape_rows(verbose=not args.latex)
+        if not rs:
+            raise SystemExit("no shape chains found")
+        (shape_as_latex if args.latex else shape_as_text)(rs)
+        return
     rs = rows(verbose=not args.latex)
     if not rs:
         raise SystemExit("no chains found")

@@ -244,17 +244,42 @@ route".
 `--legs` picks what is fitted, `--show` what is plotted.  The anchor stays
 Nessie SDSS in every run, so all three figures share one y-scale.
 
-| figure | command |
-|---|---|
-| `hmf_shape_gama.png` | `--mcmc --legs gama_nessie --show gama_nessie --name shape_gama` |
-| `hmf_shape_gama_sdss.png` | `--mcmc --legs gama_nessie,sdss_nessie --show gama_nessie,sdss_nessie --name shape_gama_sdss` |
+| figure | width | command |
+|---|---|---|
+| `hmf_shape_gama.png` | single | `--mcmc --single --legs gama_nessie --show gama_nessie,gama_driver --name shape_gama` |
+| `hmf_shape_gama_sdss.png` | single | `--mcmc --single --legs gama_nessie,sdss_nessie --show gama_nessie,sdss_nessie --name shape_gama_sdss` |
 
-| config | log10 M* | alpha | beta | railed |
-|---|---|---|---|---|
-| GAMA only | 12.48 -0.95/+0.96 | -0.77 -0.42/+0.39 | 0.36 -0.06/+0.11 | **yes** |
-| GAMA + SDSS (Nessie) | 11.68 -0.48/+0.71 | -0.97 -0.19/+0.16 | 0.28 -0.02/+0.04 | **yes** |
-| GAMA + SDSS + REFLEX | 12.60 -0.73/+0.59 | -1.02 -0.23/+0.26 | 0.37 -0.05/+0.06 | no |
-| Murray+21 rescaled | 14.43 | -1.86 | 0.71 | -- |
+`--single` uses `plotting.SINGLE_COLUMN` and shrinks markers, line widths, the
+legend and the spaghetti count to match.  It also swaps in a **shorter axis
+label** -- the full-page y-label does not fit in 3.54 inches at the house 12 pt
+and is silently clipped by `bbox_inches="tight"`.
+
+The GAMA-only panel carries **Driver+22's own v10 points** (`gama_driver`,
+open blue triangles, plotted not fitted), rescaled by the same recipe.  Its
+scale is **-0.181 dex** against Nessie's **-0.284**, i.e. Nessie finds ~27% more
+groups per unit volume in 10^14-10^15.  The two agree well over 13.8-15.0 and
+differ most at 13.6 and 14.4.
+
+Pass an explicit `--show` on the combined figures (`gama_nessie,sdss_nessie,
+sdss_tempel,reflex`) so Driver's GAMA is not added there as a fifth series.
+
+`uv run python mrp_table.py --shape` prints the parameter table;
+`--shape --latex` writes the LaTeX (`mrp_table_shape.tex`).  It reports M*,
+phi*, alpha, beta and chi2 with railed rows flagged, and **no Omega_M** --
+after rescaling, that is a property of the anchor, not a measurement.
+
+| config | log10 M* | alpha | beta | chi2 | railed |
+|---|---|---|---|---|---|
+| GAMA only | 12.52 +0.94/-0.99 | -0.78 +0.39/-0.41 | 0.36 | 13.4 | **yes** |
+| GAMA + SDSS (Nessie) | 11.68 +0.69/-0.48 | -0.97 +0.15/-0.19 | 0.28 | 108.2 | **yes** |
+| GAMA + SDSS + REFLEX | 12.60 +0.62/-0.79 | -1.02 +0.27/-0.24 | 0.37 | 185.9 | no |
+| >14 only | 12.32 +0.95/-0.86 | -1.02 +0.41/-0.47 | 0.34 | 117.8 | **yes** |
+| Murray+21 rescaled | 14.43 | -1.86 | 0.71 | -- | -- |
+
+**`emcee` is not seeded**, so re-running a chain moves the medians by a few
+hundredths -- well inside the credible intervals, but it means chains are not
+bit-reproducible.  Treat `chain_*.npz` as the record, per the `--from-chain`
+convention.
 
 **For GAMA alone the normalisation cannot change the fit.**  Rescaling the data
 by s and the volume by 1/s with phi* -> s phi* leaves the objective invariant to
