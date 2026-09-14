@@ -2459,10 +2459,245 @@ between Om = 0.285 and 0.3147 -- so no cosmology rescaling is wanted.
 
 ---
 
+## The shape-only fit — normalising the legs vertically (2026-09-14)
+
+`normalised_shape_fit.py`.  Each leg's density is multiplied by ONE constant so
+its integral over 10^14-10^15 matches an anchor's (Nessie SDSS); the absolute
+normalisations are then discarded and a single MRP is fitted to the rescaled
+points.  Rationale: the legs sit on different mass calibrations (GAMA's
+A = 13.9, the SDSS NFW scale, REFLEX's L_X-M), so their amplitudes are not
+mutually comparable, and "what shape do they collectively prefer" is a
+well-posed question that does not need the calibrations reconciled first.
+
+### How the normalisation actually works
+
+1. **Integrate each leg's BINNED DATA** over 14-15 -- linear interpolation
+   between the points, trapezoid on linear phi.  **Not a fitted curve.**
+2. `scale = anchor integral / leg integral`.
+3. Add `log10(scale)` to every point of that leg -- the same number at every
+   mass.
+
+| leg | Int phi dlogM | scale | dex |
+|---|---|---|---|
+| GAMA (Nessie) | 3.9548e-05 | 0.520 | **-0.284** |
+| GAMA (Driver v10) | 3.1221e-05 | 0.659 | -0.181 |
+| **SDSS (Nessie)** *(anchor)* | 2.0570e-05 | 1.000 | 0.000 |
+| SDSS (Tempel+14) | 1.4361e-05 | 1.432 | +0.156 |
+| REFLEX II | 2.7842e-05 | 0.739 | -0.131 |
+
+Fractional errors are invariant under a constant rescale, so they are untouched.
+Volumes ARE rescaled, `vol/scale`, because phi = N/(V dlogM) and the penalty
+term uses V.
+
+**`integral()` sorts its input.**  The survey legs are stored in DESCENDING
+mass order; a bare `np.interp` on them returns constants.  One diagnostic in
+this session was wrong for exactly that reason before it was caught.
+
+### Fitting per-leg MRPs and integrating THOSE: tested, rejected
+
+| leg | Int(data) | Int(per-leg fit) | ratio | that leg's fitted logM* |
+|---|---|---|---|---|
+| GAMA (Nessie) | 3.955e-05 | 3.895e-05 | 0.985 | 10.49 |
+| SDSS (Nessie) | 2.057e-05 | 2.028e-05 | 0.986 | 10.26 |
+| SDSS (Tempel) | 1.436e-05 | 1.608e-05 | 1.120 | 10.81 |
+| REFLEX | 2.784e-05 | 2.690e-05 | 0.966 | 14.33 |
+
+Three legs move by < 0.01 dex, Tempel by 0.055.  And look at the fitted logM*:
+the survey legs are all runaways.  The integral is right anyway because the MRP
+has enough freedom to trace four bins whatever M* it adopts -- the same "curves
+are fine, parameters are not" lesson as everywhere else.  So it buys nothing,
+and it puts the assumed shape back into the normalisation step, which is a
+circularity a referee would spot.  **Integrate the data.**
+
+### Results
+
+`uv run python mrp_table.py --shape` (`--latex` -> `mrp_table_shape.tex`).
+
+| config | log10 M* | alpha | beta | chi2 | railed |
+|---|---|---|---|---|---|
+| GAMA (Nessie) | 12.52 +0.94/-0.99 | -0.78 +0.39/-0.41 | 0.36 +0.11/-0.06 | 13.4 | **yes** |
+| GAMA + SDSS (Nessie) | 11.68 +0.69/-0.48 | -0.97 +0.15/-0.19 | 0.28 +0.04/-0.02 | 108.2 | **yes** |
+| GAMA + SDSS + REFLEX | 12.60 +0.62/-0.79 | -1.02 +0.27/-0.24 | 0.37 +0.07/-0.06 | 185.9 | no |
+| Murray+21 LCDM, rescaled | 14.43 | -1.86 | 0.71 | -- | -- |
+
+Two of three rail -- **normalising does not fix the ill-posedness**, and could
+not: it is a y-axis operation and the ill-posedness is in the shape.  Only
+GAMA+SDSS+REFLEX keeps an interior maximum, the same conclusion as the
+native-units fits.
+
+Curve minus the rescaled Murray line, in log10 phi:
+
+| config | 13.0 | 13.8 | 14.6 | 15.4 | rms 13-15 |
+|---|---|---|---|---|---|
+| GAMA only | **-0.49** | -0.07 | -0.01 | +0.04 | 0.185 |
+| GAMA + SDSS | -0.14 | +0.01 | -0.03 | +0.26 | 0.046 |
+| GAMA + SDSS + REFLEX | -0.19 | +0.02 | -0.04 | -0.10 | 0.073 |
+
+All three lie on Murray above logM ~ 13.5 and fall below it at the faint end --
+the shallow-alpha result, now stated as SHAPE, independent of any leg's
+absolute calibration.
+
+### phi* is a nuisance parameter: marginalise, do NOT fix
+
+After rescaling, phi* is the anchor's arbitrary amplitude and carries no
+physics.  But it is still *constrained* by the fit and degenerate with
+everything else (rho(M*, phi*) = -0.85, rho(M*, alpha) = -0.97,
+rho(M*, beta) = +0.98).  Fixing it at its median:
+
+| | phi* free | phi* fixed | width |
+|---|---|---|---|
+| log10 M* | 12.599 +/- 0.660 | 12.584 +/- 0.352 | **x0.53** |
+| alpha | -1.021 +/- 0.244 | -0.988 +/- 0.196 | x0.81 |
+| beta | 0.367 +/- 0.059 | 0.367 +/- 0.023 | **x0.39** |
+
+Medians barely move; intervals halve.  That tightening is **manufactured**.
+Sample it, marginalise, footnote it as set by the anchor.  `mrp_table --shape`
+prints no Omega_M for the same reason.
+
+Beware the same trap in beta: its intervals look tightest of the four, but it
+is correlated with M* at +0.98, so in the railed rows its apparent precision is
+inherited from a prior-pinned M*.
+
+### A single-leg rescale is an EXACT reparameterisation
+
+Rescaling data by s and volume by 1/s with phi* -> s phi* leaves the objective
+identical to **1e-13** at every parameter vector tested (Murray start, Driver
+GSR, our median, a low-M* runaway).  So the GAMA-only "normalised fit" is the
+same fit as the native one -- only phi* moves, by -0.284.  Worth doing anyway
+because it puts GAMA and Murray on a common integral so the residual is pure
+shape.
+
+Do NOT conclude invariance from the optimiser: it gave logM* 10.49 vs 9.78 for
+the two, because the GAMA-only valley is flat and the simplex wanders.  Test
+the objective directly.
+
+### Our parameters look nothing like Driver's; the CURVES agree
+
+Ours 12.60 / -1.02 / 0.367 against his GSR 14.13 / -1.68 / 0.63.  Put his fit on
+the same rescaled axis:
+
+| logM | 13.0 | 13.6 | **14.0** | 14.6 | 15.0 | 15.6 |
+|---|---|---|---|---|---|---|
+| ours - Driver | -0.132 | -0.022 | **-0.007** | -0.049 | -0.058 | +0.286 |
+
+**rms 0.059 dex over 13-15**, chi2 191.6 against 196.8 on the same 84 points.
+Delta chi2 = 5.2 for 4 parameters, against 4.72 for 68% and 9.49 for 95% -- so
+his published fit sits just outside our 1 sigma and well inside 2 sigma.  The
+parameter gap is motion along the degeneracy ridge, not disagreement.
+
+Both fits are poor in absolute terms (chi2/dof ~ 2.4).  The legs still disagree
+by ~0.5 dex below logM 14 after rescaling, against ~0.22 inside 14-15.  **That
+calibration spread is the real open problem**, not the difference from Driver.
+
+### `--fit-lo 14` — DROPPED
+
+| | all (>12.9) | >14 only |
+|---|---|---|
+| log10 M* | 12.60 -0.73/+0.59 | 12.45 -0.95/+1.05 |
+| alpha | **-1.02 +/- 0.24** | **-1.08 +/- 0.50** |
+
+Same answer, intervals doubled, and alpha unmeasured -- the faint-end slope
+lives below the knee by definition.  It is also circular: the amplitudes are
+matched over 14-15 and then fitted over >14, so the agreement in that band is
+partly manufactured.  Not in the table, not in the figure set.  The reasoning
+is kept in `FIGURES.md` so it is not re-adopted.
+
+### The figures
+
+| figure | width | legs fitted |
+|---|---|---|
+| `hmf_shape_gama.png` | single | GAMA; Driver v10 shown, not fitted |
+| `hmf_shape_gama_sdss.png` | single | GAMA + SDSS (Nessie) |
+| `hmf_shape_all.png` | full page | GAMA + SDSS + REFLEX; Tempel shown, not fitted |
+
+`--legs` selects what is fitted, `--show` what is plotted, `--single` sizes for
+one column (and swaps in a SHORTER y-label -- the full-page one does not fit in
+3.54 inches at the house 12 pt and is silently clipped by `bbox_inches="tight"`).
+The anchor stays Nessie SDSS in every run so all three share one y-scale.
+**`--from-chain` redraws from `chain_<name>.npz` without re-sampling**; use it
+for any restyling.
+
+---
+
+## Two real bugs found while doing the above
+
+### `run_emcee` could hang forever on an out-of-box start
+
+The GAMA-only Nelder-Mead answer is **logM\* = 9.78, below the prior bound of
+11.0**.  `run_emcee` scattered walkers around it and rejected every draw as
+-inf, spinning at 100% CPU with no output.  Observed: **2.5 hours** before it
+was killed; the run should take **two minutes**.
+
+Fixed two ways in `mcmc_hmf.run_emcee`: the start point is clipped into the
+prior box with a printed warning, and the rejection loop raises after 10 000
+failed draws instead of looping forever.
+
+### `emcee` is not seeded — chains are NOT bit-reproducible
+
+`EnsembleSampler` gets no RNG, so re-running the same configuration moves the
+medians by a few hundredths (GAMA-only went 12.477 -> 12.520).  Well inside the
+credible intervals, but it means **`chain_*.npz` is the record** -- redraw with
+`--from-chain` rather than re-running, and do not re-run a chain whose numbers
+are already in a table unless the table is rebuilt too.  This is also why
+`move_plots.sh` rasterises rather than regenerates anything.
+
+Two smaller fixes in `mcmc_hmf.corner_plot`: `savefig` had no dpi (PNG corner
+plots came out at 932 px; now 300), and `clip_on=False` drew markers sitting on
+a panel edge spilling into their neighbours, which read as several spurious
+stars.  Both are inert for the PDF callers.
+
+---
+
+## Completeness: there is none, in our pipeline or in Driver's (2026-09-14)
+
+Asked directly and checked by grep: **no completeness correction exists anywhere
+in the 1/Vmax chain**, and none in `gamahmf.r`, `sdsshmf.r` or `allhmf.r`.  The
+only weight in Driver's R is `1/weightszlimit`, which is Vmax clipped to
+`[vlimitmin, vlimit]`.  No spectroscopic weight, no fibre-collision weight, no
+finder efficiency.
+
+That is not an omission.  `C(m,z)` and per-object `1/Vmax` do the same job two
+ways: `C` asks "what fraction of mass-m haloes at z would I detect?" and needs a
+MODEL of the selection; `1/Vmax` asks "over what volume was THIS group
+detectable?" and needs none, because `zmax` from the 5th-brightest member is
+the exact answer for that group.
+
+**Uncorrected in both:** group-finder efficiency.  1/Vmax only ever sees
+detected objects.  Measuring it needs to know what was missed, which needs a
+mock, and the Shark one is not faithful enough (1.87x too few N = 5-6 groups).
+State it as a systematic that would raise the low-mass end.
+
+### `completeness_ridge.py` — why `recovery.turnover_mlim` is indefensible
+
+`uv run python completeness_ridge.py` -> `completeness_ridge.png`.  Mass against
+redshift for the Nessie GAMA groups, with the per-z-bin mode (what
+`turnover_mlim` fits), the 5th and 16th percentiles, and the fitted `mlim(z)`.
+
+* There IS a ridge -- the 5th percentile rises from logM 12.55 at z = 0.05 to
+  13.3 at 0.245 -- but it is soft: groups are detected down to logM 10.5 at
+  every redshift.
+* **`mlim(z)` does not lie on it.**  It sits ~0.9 dex above the 5th percentile
+  and ~0.55 above the 16th, so **53.4% of groups fall below their own limit**,
+  flat in z.  By construction: it fits a histogram MODE.
+* **The slope is right and only the offset is wrong**: 3.21 dex per unit z
+  against 3.27 for the 5th percentile.  Linear vs quad barely matters (53.4%
+  vs 54.0%).
+* No smooth `mlim(z)` can work anyway, because GAMA's selection is a flux limit
+  on the 5th-brightest MEMBER, not on halo mass.
+
+---
+
 ## Pick up here — outstanding work
 
 Ordered by value.
 
+0. **Model the leg-to-leg calibration offset properly.** The shape fit removes
+   the MEAN disagreement but not its mass dependence -- the legs still differ by
+   ~0.5 dex below logM 14 against ~0.22 inside 14-15, and one MRP through them
+   gives chi2/dof ~ 2.4. The plan in `.claude/plans/cozy-crunching-curry.md` is
+   the right shape: a per-leg offset in **MASS**, fitted as a nuisance
+   parameter, using the full range and needing no matching decade. **This is
+   now the main outstanding piece of physics.**
 1. **`--fit-min 12.9`** on the two quotable configurations. The analysis is done
    (only 12.80 is anomalous); the runs are not. ~12 min.
 2. ~~The Omega_M inset~~ **CLOSED 2026-08-28**: the total is now the reported
