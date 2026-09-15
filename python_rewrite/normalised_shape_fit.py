@@ -78,7 +78,8 @@ def _rescale_curve(par, legs, args, n=400):
     return out
 
 
-def build_legs(seed, nmc, ml_cut, masserr, sdss_masserr, fit_min, verbose):
+def build_legs(seed, nmc, ml_cut, masserr, sdss_masserr, fit_min, verbose,
+               cosvar=True):
     """label -> dict(x, y, f, vol) for every leg, on the fitted mass range."""
     import sdss_hmf, nessie_sdss_hmf as nsd, new_gama_hmf as ng
     out = {}
@@ -114,6 +115,20 @@ def build_legs(seed, nmc, ml_cut, masserr, sdss_masserr, fit_min, verbose):
 
     rx, ry, rf = ch.load_reflex()
     out["reflex"] = dict(x=rx, y=ry, f=rf, vol=ch.VOLUME_REFLEXII)
+
+    # Cosmic variance in quadrature.  Driver's fitted error (V8) omits it and
+    # only perturbs by it in allhmf.r's refit loop, which the MCMC replaces, so
+    # without this it would enter nowhere.  Same per-leg recipe as allhmf.r
+    # 348-350, except Nessie GAMA has four regions, not three.
+    if cosvar:
+        cv = {"gama_nessie": dr.cosvar(gset[3] / 4, 4),
+              "gama_driver": dr.cosvar(oset[3] / 3, 3),
+              "sdss_nessie": dr.cosvar(out["sdss_nessie"]["vol"], 1),
+              "sdss_tempel": dr.cosvar(out["sdss_tempel"]["vol"], 1),
+              "reflex": 0.05}
+        for lab, d in out.items():
+            d["f"] = np.minimum(np.sqrt(d["f"] ** 2 + cv[lab] ** 2), 0.9999)
+            print(f"  cosmic variance {lab:<12s}: {cv[lab]:.4f}")
     return out
 
 
@@ -139,6 +154,9 @@ def main():
     p.add_argument("--mass-err", default="gama_masserr.csv")
     p.add_argument("--sdss-mass-err", default="sdss_masserr.csv")
     p.add_argument("--fit-min", type=float, default=12.9)
+    p.add_argument("--no-cosvar", action="store_true",
+                   help="omit cosmic variance from the fitted errors "
+                        "(Driver's V8; the pre-2026-09-15 behaviour)")
     p.add_argument("--maxit", type=int, default=5000)
     p.add_argument("--fit-lo", type=float, default=None,
                    help="fit only points above this logM, ALL legs including "
@@ -170,7 +188,8 @@ def main():
     print("Shape-only HMF: y-rescaled to a common integral over "
           f"10^{args.lo:g}-10^{args.hi:g}")
     legs = build_legs(args.seed, args.nmc_edb, args.ml_cut, args.mass_err,
-                      args.sdss_mass_err, args.fit_min, verbose=False)
+                      args.sdss_mass_err, args.fit_min, verbose=False,
+                      cosvar=not args.no_cosvar)
 
     ia = integral(legs[args.anchor]["x"], legs[args.anchor]["y"], args.lo, args.hi)
     print(f"\n  anchor = {args.anchor},  integral = {ia:.4e} Mpc^-3\n")

@@ -155,7 +155,7 @@ def total_mass(grav_rad, sigma):
     return 2.325e12 * grav_rad * ((3.0 ** (1.0 / 3.0)) * sigma / 100.0) ** 2
 
 
-def nessie_mass(ra, dec, zs, absmag):
+def nessie_mass(ra, dec, zs, absmag, z_rms=None):
     """The full ``estimated_mass`` chain for one set of members."""
     if len(ra) < 2:
         return np.nan
@@ -163,6 +163,30 @@ def nessie_mass(ra, dec, zs, absmag):
     sd = sky_distribution(ra, dec, zs, ra[k], dec[k])
     sig = velocity_dispersion_gapper(zs)
     return total_mass(GRAV_RAD_FACTOR * sd, sig)
+
+
+def tempel_rms_mass(ra, dec, zs, absmag, z_rms=None):
+    """The mass the Nessie SDSS leg of the HMF uses (``--mass-mode tempel_rms``).
+
+    Nessie's sky dispersion, Tempel+2014 eq. 3 rms dispersion on Tempel's own
+    redshifts (``z_rms``), and the NFW kappa(M) of ``nessie_sdss_hmf``, iterated
+    because kappa depends on the mass.  Same recipe as ``group_masses`` there,
+    before the constant h factor, which cancels in log10(M_n / M_full).
+    """
+    import nessie_sdss_hmf as nsd
+    if len(ra) < 2:
+        return np.nan
+    zr = np.asarray(zs if z_rms is None else z_rms, float)
+    k = iterative_centre_idx(ra, dec, absmag)
+    sd = sky_distribution(ra, dec, zs, ra[k], dec[k])
+    sig = np.std(zr * C_KMS, ddof=1) / (1.0 + zr.mean())
+    m0 = 2.325e12 * sd * 3.0 * (sig / 100.0) ** 2       # sigma_3D = sqrt(3) sigma
+    if not m0 > 0:
+        return np.nan
+    m = m0 * nsd.KAPPA_NFW
+    for _ in range(30):
+        m = m0 * np.interp(np.log10(m), nsd.KAPPA_NFW_LOGM, nsd.KAPPA_NFW_VAL)
+    return m
 
 
 # ---------------------------------------------------------------------------
@@ -180,12 +204,12 @@ def load_members(verbose=True):
         return a.astype(a.dtype.newbyteorder("=")) if a.dtype.byteorder == ">" else a
 
     tp = pd.DataFrame({"ra_t": native(t["col13"]), "dec_t": native(t["col14"]),
-                       "absmag_r": native(t["col31"])})
+                       "absmag_r": native(t["col31"]), "z_t": native(t["col9"])})
     key = lambda r, d: np.round(r, 6).astype(str) + "_" + np.round(d, 6).astype(str)
     tp["_k"] = key(tp.ra_t.values, tp.dec_t.values)
     tp = tp.drop_duplicates("_k")
     gal["_k"] = key(gal.RAJ2000.values, gal.DEJ2000.values)
-    gal = gal.merge(tp[["_k", "absmag_r"]], on="_k", how="left").drop(columns="_k")
+    gal = gal.merge(tp[["_k", "absmag_r", "z_t"]], on="_k", how="left").drop(columns="_k")
     if gal.absmag_r.isna().any():
         raise RuntimeError("unmatched galaxies; the two catalogues have drifted")
     if verbose:
@@ -194,7 +218,8 @@ def load_members(verbose=True):
     # (vuvuzela_gama.py supplies the same six columns for GAMA).
     return pd.DataFrame({"gid": gal.group_id.values, "ra": gal.RAJ2000.values,
                          "dec": gal.DEJ2000.values, "z": gal.zobs.values,
-                         "appmag": gal.rmag.values, "absmag": gal.absmag_r.values})
+                         "appmag": gal.rmag.values, "absmag": gal.absmag_r.values,
+                         "z_rms": gal.z_t.values})
 
 
 # ---------------------------------------------------------------------------
@@ -225,10 +250,12 @@ def build_tracks(gal, min_mult=20, floor=3, verbose=True, mass_fn=None):
         dec = m.dec.values[order]
         zs = m.z.values[order]
         am = m.absmag.values[order]
+        zr = m.z_rms.values[order] if "z_rms" in m else None
         n_full = len(ra)
         ns, ms = [], []
         for n in range(n_full, floor - 1, -1):     # keep the n brightest
-            mm = mass_fn(ra[:n], dec[:n], zs[:n], am[:n])
+            kw = {} if zr is None else {"z_rms": zr[:n]}
+            mm = mass_fn(ra[:n], dec[:n], zs[:n], am[:n], **kw)
             if np.isfinite(mm) and mm > 0:
                 ns.append(n)
                 ms.append(np.log10(mm))
@@ -394,6 +421,10 @@ def main():
                    help="multiplicity axis cap (default 100)")
     p.add_argument("--csv", default="sdss_masserr.csv")
     p.add_argument("--mass-audit", action="store_true")
+    p.add_argument("--mass", default="tempel_rms", choices=["tempel_rms", "nessie_eq8"],
+                   help="estimator for the tracks.  'tempel_rms' is what the "
+                        "Nessie SDSS HMF leg uses; 'nessie_eq8' is Nessie's "
+                        "own estimated_mass (the pre-2026-09-15 curve).")
     args = p.parse_args()
 
     print("SDSS mass error vs multiplicity (Driver+22 figure 3, SDSS-specific)")
@@ -402,7 +433,9 @@ def main():
         return
 
     gal = load_members()
-    tracks = build_tracks(gal, min_mult=args.min_mult, floor=args.floor)
+    mass_fn = tempel_rms_mass if args.mass == "tempel_rms" else nessie_mass
+    tracks = build_tracks(gal, min_mult=args.min_mult, floor=args.floor,
+                          mass_fn=mass_fn)
     ns, q16, q50, q84, cnt = quantile_curve(tracks)
     err = error_function(ns, q16, q84)
 

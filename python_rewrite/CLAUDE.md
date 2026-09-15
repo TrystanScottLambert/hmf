@@ -2617,6 +2617,32 @@ The anchor stays Nessie SDSS in every run so all three share one y-scale.
 **`--from-chain` redraws from `chain_<name>.npz` without re-sampling**; use it
 for any restyling.
 
+### Cosmic variance and the SDSS tracks (2026-09-15) — supersedes the table above
+
+Two changes, all three shape chains re-run:
+
+* **Cosmic variance is now in the fitted error**, in quadrature, inside
+  `build_legs` (`--no-cosvar` restores the old behaviour). Driver's V8 omits it
+  and `allhmf.r` only perturbs by it in the refit loop, which the MCMC replaced,
+  so it had been entering nowhere. Values: GAMA Nessie 0.0574 (`cosvar(V/4, 4)`,
+  four regions rather than Driver's three), SDSS 0.0729, REFLEX 0.05.
+* **`sdss_masserr.csv` now uses the `tempel_rms` mass**, the one the SDSS HMF
+  leg uses (`vuvuzela.tempel_rms_mass`; `--mass nessie_eq8` gives the old
+  curve). Full-multiplicity masses match the HMF's to median 0.00000 dex; 7/60
+  rich groups differ by up to 0.16 from the known centre tie-break. sigma is
+  unchanged to <= 0.005 dex, but **q50 is far more negative** (-0.21 at N = 5
+  against -0.08), and the SDSS leg applies no multiplicity debiasing. Open.
+
+| config | log10 M* | alpha | chi2 (was) |
+|---|---|---|---|
+| GAMA (Nessie) | 12.53 +0.95/-0.96 | -0.80 +0.38/-0.41 | 13.0 (13.4) |
+| GAMA + SDSS | 11.76 +0.76/-0.53 | -1.01 +0.17/-0.20 | 99.2 (108.2) |
+| GAMA + SDSS + REFLEX | 12.61 +0.63/-0.83 | -1.03 +0.29/-0.24 | 174.4 (185.9) |
+
+Medians move <= 0.08, intervals widen slightly, the same two rows rail. Scales
+now GAMA -0.286, REFLEX -0.133 dex. The combined_hmf.py figures in FIGURES.md
+also read `sdss_masserr.csv` and have NOT been re-run.
+
 ---
 
 ## Two real bugs found while doing the above
