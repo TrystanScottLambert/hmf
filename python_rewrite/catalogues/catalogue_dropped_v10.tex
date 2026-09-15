@@ -1,0 +1,12 @@
+\begin{tabular}{p{6cm}p{8cm}}
+\hline
+v10 columns & Reason not provided \\
+\hline
+RelDen, Zcomp, GroupEdge & Need the randoms and redshift-completeness maps, which were not propagated to Nessie \\
+LinkTot, LinkStrenProj, LinkStrenRad, LinkStrenComb & FoF link bookkeeping, not exposed by Nessie \\
+RadKurt, AxAng, AxRat, SymKS, VelSkew, VelKurt, Modality, d3vol, d3area, d2radec, d2raz, d2decz, distortcirc, distortellip, distortsph & Shape and kinematic statistics, not implemented in Nessie \\
+VelDispRaw, Rgap & Derivable: VelDispRaw is the quadrature sum of VelDisp and VelErr where VelDisp > 0; Rgap from the galaxy catalogue \\
+IterCenCATAID, BCGCATAID & Renamed: the new catalogues carry no CATAIDs (see IterCenID, BCGID) \\
+URL\_IMG & No image service \\
+\hline
+\end{tabular}

@@ -1,0 +1,34 @@
+# GroupFinding
+# G3CFoFGroup (Nessie, G3C v10 schema)
+# 2026-09-15
+#
+# GAMA III groups for G09, G12, G15 and G23, built with Nessie.
+#
+GroupID       1   -            meta.id;meta.main  Unique group ID, as listed in the associated galaxy catalogue. GAMA: Nessie ID plus a region offset (1e5 G09, 2e5 G12, 3e5 G15, 5e5 G23)
+Nfof          2   -            -                  Group multiplicity
+IterCenID     3   -            meta.id            ID of the iterative central galaxy (preferred position of the group centre): GAMA III UberID for GAMA, Tempel+14 galid for SDSS. Not a CATAID
+IterCenRA     4   deg          pos.eq.ra          RA of the iterative central galaxy (J2000)
+IterCenDec    5   deg          pos.eq.dec         Dec of the iterative central galaxy (J2000)
+IterCenZ      6   -            src.redshift       Redshift of the iterative central galaxy
+Zfof          7   -            src.redshift       Median redshift of the group
+Rad50         8   Mpc/h        phys.size.radius   Group radius defined by the 50th percentile group member, based on the projected comoving distance from IterCen
+Rad1Sig       9   Mpc/h        phys.size.radius   Group radius defined by the 68th percentile group member, based on the projected comoving distance from IterCen
+Rad100        10  Mpc/h        phys.size.radius   Group radius defined by the most distant group member, based on the projected comoving distance from IterCen
+VelDisp       11  km/s         phys.veloc         Gapper velocity dispersion with VelErr subtracted in quadrature; set to zero if VelErr exceeds the raw dispersion
+VelErr        12  km/s         phys.veloc         Total group velocity error subtracted from VelDisp (input galaxy velocity errors of 50 km/s)
+TotRmag       13  mag-5log(h)  phys.magAbs        k+e corrected r-band absolute magnitude of the group, from the summed member luminosities (GAMA: DMU k+e polynomial; SDSS: Tempel+14 KCORRECT)
+TotFluxProxy  14  -            -                  Proxy for group total r-band luminosity down to M_r - 5 log h = -14 in solar luminosities, from the observed flux and the fraction of the GAMA LF observable at the group redshift (B = 1 in Eq. 22 of Robotham et al. 2011). SDSS uses the r < 17.77 limit
+MassProxy     15  Msun/h       -                  Dynamical mass proxy Rad50 times VelDisp squared over G, i.e. A = 1 in Eq. 18 of Robotham et al. (2011)
+BCGID         16  -            meta.id            ID of the brightest group galaxy: GAMA III UberID for GAMA, Tempel+14 galid for SDSS. Not a CATAID
+BCGRA         17  deg          pos.eq.ra          RA of BCG (J2000)
+BCGDec        18  deg          pos.eq.dec         Dec of BCG (J2000)
+CenRA         19  deg          pos.eq.ra          RA of the r-band luminosity weighted centre of the group (J2000)
+CenDec        20  deg          pos.eq.dec         Dec of the r-band luminosity weighted centre of the group (J2000)
+MassA         21  Msun/h       phys.mass          MassProxy times the global A factor, A = 10.0 (Robotham et al. 2011 section 4.3). Calibrated on GAMA mocks: GAMA only
+MassAfunc     22  Msun/h       phys.mass          MassProxy times the functional A factor, a function of Nfof and Zfof (Robotham et al. 2011 section 4.3). Calibrated on GAMA mocks: GAMA only
+LumB          23  Lsun/h^2     phys.luminosity    TotFluxProxy times the global B factor, B = 1.04 (Robotham et al. 2011 section 4.4). Calibrated on GAMA mocks: GAMA only
+LumBfunc      24  Lsun/h^2     phys.luminosity    TotFluxProxy times the functional B factor, a function of Nfof and Zfof (Robotham et al. 2011 section 4.4). Calibrated on GAMA mocks: GAMA only
+BCGZ          25  -            src.redshift       Redshift of BCG
+MassHern      26  Msun/h       phys.mass          Dynamical mass from Eq. 8 of Tempel et al. (2014) for a Hernquist profile: Rg = 4.582 sigma_sky, sigma_3D = sqrt(3) VelDisp, with sigma_sky the projected rms member distance from IterCen. Zero where VelDisp is zero
+MassNFW       27  Msun/h       phys.mass          Dynamical mass from Eq. 8 of Tempel et al. (2014) for an NFW profile: Rg = kappa(M) sigma_sky with kappa calibrated on the Tempel et al. (2014) NFW masses, sigma_sky the projected rms member distance from IterCen, sigma_3D = sqrt(3) times the rms dispersion of their Eq. 3. Zero where all members share one redshift
+Region        28  -            -                  Survey region: g09, g12, g15 or g23 for GAMA; SDSS for SDSS

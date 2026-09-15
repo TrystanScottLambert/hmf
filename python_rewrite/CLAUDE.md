@@ -377,10 +377,13 @@ Other reproduced quirks:
 Harmless for lookups of real groups, but any `groupby` builds a spurious
 109,052-member group. Drop it first.
 
-**New GAMA DMU: the ungrouped sentinel is `0`, not `-1`.** 30,039 galaxies in
-`G3CGal.fits`; there are no `-1` and no `99999`. `make_gama_dmu` already applies
-the offset and remap, and IDs run 100001–505225. An earlier version of this file
-warned about `-1`; that check is a no-op.
+**New GAMA DMU: the ungrouped sentinel is REGION DEPENDENT.** `0` in G09
+(30,039 galaxies) but `offset - 1` elsewhere: `199999` (32,716), `299999`
+(31,834), `499999` (23,052). `make_gama_dmu/main.py:240` remaps only `99999`.
+So `GroupID != 0` leaves 87,602 ungrouped galaxies as three enormous groups.
+**Filter on membership of the group table** (`gal.GroupID.isin(grp.GroupID)`),
+as `vuvuzela_gama.load_members` and `build_catalogues.py` do. An earlier
+version of this file said the sentinel was `0` everywhere; that was wrong.
 
 **`GroupID == 100622`** is a known-bad object in the **old** catalogue only. The
 same ID exists in the new one (g09 offset is 1e5) but is an entirely different,
@@ -1193,7 +1196,17 @@ The N-dependence is the whole story, and it is monotonic: the two estimators
 agree for rich groups and diverge where the statistics are poor. Since the SDSS
 sample is dominated by N = 5-6, the population offset lands at +0.108.
 
-### An unresolved units problem in sigma_sky
+### ~~An unresolved units problem in sigma_sky~~ — RESOLVED 2026-09-15
+
+**Superseded; the text below this note is wrong and kept only as a record.**
+The DR10 FITS extract is NOT in the paper's h^-1 units. Its comoving distance
+`col11` fits **Planck 2013, h = 0.678, Om = 0.308, with zero scatter**, and
+`col31` then implies k+e = 0.009 mag. `col13` is **sigma_sky about the
+unweighted member mean, in physical Mpc**: recomputed that way it matches to
+-0.0000 dex at every multiplicity. So there is no 0.17 dex units problem,
+`sdsshmf.r`'s `(67.8/ho)` is the correct reading, and the whole Nessie-vs-col13
+difference is the **centre** (iterative central vs member mean). See "Unified
+catalogues -- `build_catalogues.py`".
 
 `col13` is in **h^-1 Mpc** (eq. 4, comoving; the paper uses H0 = 100h,
 Omega_m = 0.27). Nessie's `sky_disp` is in **physical Mpc** at h = 0.7. That is
@@ -2713,6 +2726,80 @@ redshift for the Nessie GAMA groups, with the per-z-bin mode (what
 
 ---
 
+## Unified catalogues — `build_catalogues.py` (2026-09-15)
+
+Writes `catalogues/G3CFoFGroup_nessie.fits` and `SDSSFoFGroup_nessie.fits` (plus
+`.par`), with **identical columns in identical order**, and the paper tables
+`catalogue_columns.tex` / `catalogue_dropped_v10.tex`. One `SCHEMA` list drives
+FITS, `.par` and LaTeX, so they cannot drift. ~40 s. Nothing in the HMF pipeline
+reads these files.
+
+**Naming: G3C v10's group schema** (user decision). The 22 v10 columns that
+survive keep their v10 names (`VelDispErr` goes back to `VelErr`). New:
+`BCGZ`, `MassHern`, `MassNFW`, `Region`. `-999` = not available. The other 27 v10
+columns are listed with reasons, and `check_schema_covers_v10()` asserts that
+kept + dropped = v10 exactly.
+
+**One deliberate departure: `IterCenID`/`BCGID`, not `*CATAID`.** Neither
+catalogue has CATAIDs (GAMA carries UberID, SDSS Tempel's galid), so the v10
+name would let old pipelines join the wrong galaxies silently.
+
+**Everything is re-derived through Nessie on the stored memberships.** Set
+`RedshiftCatalog.group_ids` directly and call `calculate_group_table`; no FoF
+run. With the original inputs this reproduces **both** the GAMA DMU (all
+columns, `IterCenUberID`/`BCGUberID` 100%) and `sdss_groups.parquet` (all 22
+columns) with max |diff| = 0. It gives:
+* GAMA's `estimated_mass`, which the DMU computes and drops.
+* SDSS in v10's h = 1 units with Tempel's k+e magnitudes. The parquet was built
+  at h = 0.7 with `absmag = rmag - distmod`, i.e. **no k-correction**.
+  Membership is unchanged; 97.5% of iterative centres too.
+
+**SDSS-specific choices.**
+* `col31` is put in our system by swapping Tempel's distance modulus
+  (h = 0.678, Om = 0.308) for ours, **not** by 5 log h.
+* `MassA`/`MassAfunc`/`LumB`/`LumBfunc` are -999: their A and B factors were
+  calibrated on GAMA mocks.
+* `TotFluxProxy` uses the GAMA LF and k+e with r < 17.77.
+
+**Masses** (Msun/h):
+* `MassHern` = `estimated_mass * 3^(1/3)`, the sqrt(3) fix.
+* `MassNFW` = Tempel eq. 8 with NFW kappa(M), eq. 3 rms dispersion, and
+  sigma_sky about IterCen. kappa is looked up at M/0.678, since it was
+  calibrated on Tempel's physical masses.
+
+Checks:
+
+| check | result |
+|---|---|
+| SDSS `MassHern` vs parquet `estimated_mass * 3^(1/3) * 0.7` | median 0.00000; 0.99% > 0.01 dex (moved centres) |
+| SDSS `MassNFW` vs HMF `--mass-mode tempel_rms` | median -0.00012, 16/84 ±0.0002 |
+| SDSS `MassNFW` vs Tempel `col15`, **truly identical** groups (3,491, N >= 5) | **+0.075** (N 5-6 +0.083 ... 15+ +0.045) |
+| ... of which sigma / sigma_sky about IterCen / kappa | 0.0000 / **+0.075** / -0.001 |
+| GAMA `MassNFW / MassAfunc`, N >= 5 | -0.405 dex (same -0.41 as "Forcing a common mass estimator") |
+| GAMA `MassHern / MassAfunc`, N >= 5 | -0.079 dex |
+
+So **`MassNFW` differs from Tempel's published masses only by the group
+centre**. Measuring sigma_sky about the member mean would reproduce `col15`.
+
+**The "identical-membership" matching used in earlier sections is flawed.** It
+filters out Tempel-ungrouped galaxies (`GroupID == -1`) *before* grouping by
+Nessie `group_id`. A Nessie group with extra members is truncated to the subset
+Tempel grouped and then "matches". 5,719 of 70,761 matches are not identical.
+At N >= 5 only 3,491 of 7,258 are. On the flawed set the same comparison gives
++0.119 against +0.075. The correct test requires the **full** Nessie membership
+to equal the Tempel group, and `Nfof == col2`.
+
+Other facts:
+* 87 GAMA groups have `MassNFW = 0`: pairs whose two members share a redshift,
+  so rms = 0. 431 GAMA and 1,407 SDSS have `MassHern = 0` (VelDisp = 0).
+* `make_gama_dmu/luminosity_function.py` uses `read_csv(delim_whitespace=True)`,
+  which current pandas rejects, so it is ported in `integrated_lf`.
+  `make_gama_dmu` itself is untouched.
+* The GAMA DMU was built with nessie-py 1.0.8; this venv has 1.0.11. They
+  reproduce each other exactly.
+* `catalogue_columns.tex` is a bare `tabular` taller than one page; the paper
+  will need `longtable` or `table*`. Needs `amssymb` for `\checkmark`.
+
 ## Pick up here — outstanding work
 
 Ordered by value.
@@ -2729,12 +2816,17 @@ Ordered by value.
 2. ~~The Omega_M inset~~ **CLOSED 2026-08-28**: the total is now the reported
    quantity, so the inset was already showing the right thing. See "Omega_M:
    the TOTAL is what we report".
-3. **`sigma_sky` — the last unreconciled mass term** (+0.047 dex). Blocked on the
-   h^-1 Mpc vs Mpc convention question in "An unresolved units problem in
-   sigma_sky", which does not reconcile cleanly (~0.17 dex, most likely the
-   group-centre definition). Settling it would complete `tempel_rms` into a full
-   like-for-like reproduction of Tempel's masses, and it also bears on **Driver's
-   own** SDSS normalisation.
+3. ~~`sigma_sky` units~~ **RESOLVED 2026-09-15**: no units problem; the residual
+   is the centre definition (+0.075 dex in mass on truly identical groups). See
+   "Unified catalogues -- `build_catalogues.py`". Two follow-ons:
+   * **Re-run every "identical-membership" number.** The matching recipe
+     (`compare_dispersion_estimators.matched_groups` and the ad-hoc scripts
+     behind "Why the Nessie SDSS masses are high", "The reconciliation", "The
+     offset that actually matters") truncates Nessie groups first, so only
+     3,491 of its 7,258 N >= 5 "identical" groups are. Numbers quoted from
+     those sections are on supersets and should not be cited as they stand.
+   * **Galaxy catalogues** in `build_catalogues.py` are blocked on the v10
+     G3CGal schema, which the user is supplying.
 4. **Convert the remaining plotting to PNG + `plotstyle`.** 88 PDFs remain, from
    `recovery.py`, `vuvuzela.py`, `robust_hmf.py`, `sdss_hmf.py`,
    `nessie_sdss_hmf.py`, `compare_dispersion_estimators.py`. Only
@@ -2768,3 +2860,10 @@ Ordered by value.
 Tempel eq. 8 with `sigma_v = sqrt(3) sigma_1D` requires the **square** root.
 Masses are low by 0.159 dex. Independent of everything else here and worth
 reporting regardless of what this project concludes.
+
+**A second one, probable:** with 50 km/s input velocity errors
+`velocity_dispersion_gap_err` is 7.071 = sqrt(50), and the gapper subtracts
+50 (km/s)^2 (`vuvuzela.SIGMA_ERR_SQ`, validated exact) rather than
+50^2 = 2500. It looks like the mean error is being used as a variance. The
+effect on sigma is small (2500 against sigma^2 ~ 40 000 is ~3% in sigma^2), but
+it is the wrong quantity.
