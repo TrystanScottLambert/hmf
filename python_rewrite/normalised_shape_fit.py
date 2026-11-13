@@ -35,6 +35,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
 
 import numpy as np
 
@@ -177,6 +178,8 @@ def main():
                         "re-sampling.  Restyling a figure is a redraw, not a "
                         "fresh 25k-step run.")
     p.add_argument("--mcmc-walkers", type=int, default=64)
+    p.add_argument("--outdir", default=".",
+                   help="directory for the figure, corner plot and chain")
     p.add_argument("--name", default="shape_normalised",
                    help="basename for hmf_<name>.png, corner_<name>.png and "
                         "chain_<name>.npz")
@@ -184,6 +187,9 @@ def main():
     args = p.parse_args()
     if args.out is None:
         args.out = f"hmf_{args.name}.png"
+    os.makedirs(args.outdir, exist_ok=True)
+    od = lambda f: os.path.join(args.outdir, f)
+    args.out = od(args.out) if not os.path.isabs(args.out) else args.out
 
     print("Shape-only HMF: y-rescaled to a common integral over "
           f"10^{args.lo:g}-10^{args.hi:g}")
@@ -240,7 +246,7 @@ def main():
         murn = _rescale_curve(mur, legs, args)
         murv = np.array([murn[0], np.log10(murn[1]), murn[2], murn[3]])
         if args.from_chain:
-            d = np.load(f"chain_{args.name}.npz", allow_pickle=True)
+            d = np.load(od(f"chain_{args.name}.npz"), allow_pickle=True)
             chain, best = d["chain"], d["best"]
             print(f"\n  --- reusing chain_{args.name}.npz "
                   f"({len(chain)} samples), no re-sampling ---")
@@ -254,7 +260,7 @@ def main():
             mh.summarise(chain, "posterior, rescaled shape fit", nm=nmv)
             if not info["converged"]:
                 print("  WARNING: n_eff < 50 for at least one parameter")
-            np.savez(f"chain_{args.name}.npz", chain=chain,
+            np.savez(od(f"chain_{args.name}.npz"), chain=chain,
                      median=np.median(chain, axis=0), best=best, nm=nmv,
                      chi2_best=info["chi2_min"], chi2_nm=val,
                      murray_rescaled=murv,
@@ -267,7 +273,7 @@ def main():
             (med, "This work (posterior median)", "#d4af37"),
         ]
         mh.corner_plot([(chain, "Rescaled shape fit", "#4878a8")],
-                       f"corner_{args.name}.png", markers=markers,
+                       od(f"corner_{args.name}.png"), markers=markers,
                        title="MRP posterior, y-rescaled to a common integral")
 
     # residual scatter after rescaling, the honest diagnostic

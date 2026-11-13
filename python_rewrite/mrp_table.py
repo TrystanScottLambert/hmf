@@ -28,6 +28,8 @@ import numpy as np
 from mcmc_hmf import BOUNDS
 
 # name -> (chain file, row label as it should appear in the paper)
+CHAIN_DIR = "."     # set from --chain-dir
+
 DELIVERABLES = [
     ("gama_nessie", "GAMA (Nessie)"),
     ("gama_sdss_nessie", "GAMA + SDSS (Nessie)"),
@@ -111,7 +113,7 @@ def summarise(chain):
 def rows(verbose=True):
     out = []
     for name, label in DELIVERABLES:
-        path = f"chain_{name}.npz"
+        path = os.path.join(CHAIN_DIR, f"chain_{name}.npz")
         if not os.path.exists(path):
             if verbose:
                 print(f"  (missing {path} -- run combined_hmf.py --name {name})")
@@ -209,7 +211,7 @@ def as_latex(rs):
 def shape_rows(verbose=True):
     out = []
     for name, label in SHAPE_DELIVERABLES:
-        path = f"chain_{name}.npz"
+        path = os.path.join(CHAIN_DIR, f"chain_{name}.npz")
         if not os.path.exists(path):
             if verbose:
                 print(f"  (missing {path} -- run normalised_shape_fit.py "
@@ -296,11 +298,15 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--latex", action="store_true")
+    p.add_argument("--chain-dir", default=".",
+                   help="directory holding the chain_<name>.npz files")
     p.add_argument("--shape", action="store_true",
                    help="tabulate the shape-normalised fits "
                         "(normalised_shape_fit.py) instead of the native-units "
                         "deliverables")
     args = p.parse_args()
+    global CHAIN_DIR
+    CHAIN_DIR = args.chain_dir
     if args.shape:
         rs = shape_rows(verbose=not args.latex)
         if not rs:

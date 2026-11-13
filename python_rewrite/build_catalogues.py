@@ -35,8 +35,9 @@ translated with Tempel's distance modulus swapped for ours, not by 5 log h.
 
 The masses:
 
-* ``MassHern`` -- Tempel+14 eq. 8, Hernquist.  Nessie's ``estimated_mass`` times
-  3^(1/3): Nessie codes cbrt(3) where eq. 8 needs sqrt(3) (CLAUDE.md, "Hernquist
+* ``MassHern`` -- Tempel+14 eq. 8, Hernquist.  Nessie's ``estimated_mass``, times
+  3^(1/3) only if it came from pre-fix Nessie (cbrt(3) where eq. 8 needs sqrt(3);
+  fixed in nessie-py 1.1.1) -- detected from the masses, see hernquist_mass ("Hernquist
   vs NFW").
 * ``MassNFW`` -- Tempel+14 eq. 8, NFW: kappa(M) calibrated on his ``mass_nfw``,
   his eq. 3 rms dispersion, sigma_sky from the members.  The HMF's
@@ -289,9 +290,21 @@ def nfw_mass(sigma_sky, sigma_v):
     return np.where(m0 > 0, m, 0.0)
 
 
-def hernquist_mass(estimated_mass):
-    """Nessie's ``estimated_mass`` with sqrt(3) where it codes cbrt(3)."""
-    return np.asarray(estimated_mass) * 3.0 ** (1.0 / 3.0)
+def hernquist_mass(estimated_mass, sigma_gap, sky_disp):
+    """Nessie's ``estimated_mass`` as a correct sqrt(3) Hernquist mass.
+
+    Pre-fix Nessie (nessie-py <= 1.0.x) coded cbrt(3) where eq. 8 needs sqrt(3);
+    nessie-py 1.1.1 has the fix.  Which one ran is read off the masses
+    themselves, by comparing with the cbrt(3) formula evaluated on this group's
+    own gapper sigma and sky dispersion, so the correction is never applied
+    twice.
+    """
+    em = np.asarray(estimated_mass, float)
+    old = (2.325e12 * nsd.KAPPA_HERNQUIST * np.asarray(sky_disp, float)
+           * (nsd.CBRT3 * np.asarray(sigma_gap, float) / 100.0) ** 2)
+    ok = (em > 0) & (old > 0)
+    return em * nsd.sqrt3_factor_from_ratio(np.log10(em[ok] / old[ok]),
+                                            "re-derived estimated_mass")
 
 
 def _decode(a):
@@ -341,7 +354,8 @@ def build_gama(verbose=True):
         "CenRA": grp.CenRA, "CenDec": grp.CenDec, "MassA": grp.MassA,
         "MassAfunc": grp.MassAfunc, "LumB": grp.LumB, "LumBfunc": grp.LumBfunc,
         "BCGZ": grp.BCGZ,
-        "MassHern": hernquist_mass(tab.estimated_mass.values),
+        "MassHern": hernquist_mass(tab.estimated_mass.values,
+                                   tab.velocity_dispersion_gap.values, sky.values),
         "MassNFW": nfw_mass(sky.values, sig.values),
         "Region": _decode(grp.GAMARegion),
     })
@@ -415,7 +429,8 @@ def build_sdss(verbose=True):
         "CenDec": tab.center_of_light_decs.values,
         "MassA": NULL, "MassAfunc": NULL, "LumB": NULL, "LumBfunc": NULL,
         "BCGZ": tab.bcg_redshifts.values,
-        "MassHern": hernquist_mass(tab.estimated_mass.values),
+        "MassHern": hernquist_mass(tab.estimated_mass.values,
+                                   tab.velocity_dispersion_gap.values, sky.values),
         "MassNFW": nfw_mass(sky.values, sig.values),
         "Region": "SDSS",
     })

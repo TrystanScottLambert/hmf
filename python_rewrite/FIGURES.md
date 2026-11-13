@@ -158,6 +158,13 @@ which a railed corner plot alone cannot tell you.
 
 ## The shape-only fit — `normalised_shape_fit.py`
 
+**Since 2026-11-13 the shape figures use `--ml-cut 0.8`** (11 of 1807 groups),
+not 1.0: on the rebuilt DMU group 205415 (the old 205509 structure, M/L excess
+0.83) otherwise carries ~1/3 of the 14.0 bin and distorts the 14-15
+normalisation. Tempel+14 SDSS is no longer plotted on `hmf_shape_all`. See
+CLAUDE.md "READ FIRST" and `regen/README.md`.
+
+
 Each leg's density is multiplied by a constant so its integral over 10^14-10^15
 matches the anchor's (Nessie SDSS), the absolute normalisations are discarded,
 and one MRP is fitted to the rescaled points.  The legs sit on different mass
@@ -166,7 +173,7 @@ shape they collectively prefer without reconciling the calibrations first.
 
 | figure | command |
 |---|---|
-| `hmf_shape_all.png`, `corner_shape_all.png` | `uv run python normalised_shape_fit.py --mcmc --name shape_all` |
+| `hmf_shape_all.png`, `corner_shape_all.png` | `uv run python normalised_shape_fit.py --mcmc --ml-cut 0.8 --show gama_nessie,gama_driver,sdss_nessie,reflex --name shape_all` |
 | `hmf_shape_gt14.png`, `corner_shape_gt14.png` | `uv run python normalised_shape_fit.py --mcmc --fit-lo 14 --name shape_gt14` |
 
 Full page width (`plotting.FULL_PAGE`), PNG.  The solid black line is
@@ -249,8 +256,8 @@ Nessie SDSS in every run, so all three figures share one y-scale.
 
 | figure | width | command |
 |---|---|---|
-| `hmf_shape_gama.png` | single | `--mcmc --single --legs gama_nessie --show gama_nessie,gama_driver --name shape_gama` |
-| `hmf_shape_gama_sdss.png` | single | `--mcmc --single --legs gama_nessie,sdss_nessie --show gama_nessie,sdss_nessie --name shape_gama_sdss` |
+| `hmf_shape_gama.png` | single | `--mcmc --ml-cut 0.8 --single --legs gama_nessie --show gama_nessie,gama_driver --name shape_gama` |
+| `hmf_shape_gama_sdss.png` | single | `--mcmc --ml-cut 0.8 --single --legs gama_nessie,sdss_nessie --show gama_nessie,sdss_nessie --name shape_gama_sdss` |
 
 `--single` uses `plotting.SINGLE_COLUMN` and shrinks markers, line widths, the
 legend and the spaghetti count to match.  It also swaps in a **shorter axis

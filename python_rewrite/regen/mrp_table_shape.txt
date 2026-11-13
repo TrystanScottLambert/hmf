@@ -1,0 +1,17 @@
+
+Shape-only MRP fits, y-rescaled to a common 10^14-10^15 integral
+(posterior median with 16/84 credible intervals)
+
+  Sample                                          log10(M*)          log10(phi*)                alpha                 beta     chi2
+  -----------------------------------------------------------------------------------------------------------------------------------
+  GAMA (Nessie)                           11.90 +0.80/-0.62     -3.36 +0.25/-0.43     -0.40 +0.31/-0.36      0.33 +0.06/-0.03      19.0  <- RAILED, interval set by the prior
+  GAMA + SDSS (Nessie)                    11.59 +0.62/-0.42     -2.25 +0.18/-0.18     -0.90 +0.15/-0.19      0.28 +0.03/-0.02     127.4  <- RAILED, interval set by the prior
+  GAMA + SDSS (Nessie) + REFLEX II        12.52 +0.63/-0.75     -2.70 +0.15/-0.29     -0.95 +0.27/-0.25      0.36 +0.07/-0.05     197.2
+
+  Murray+21 LCDM MRP, rescaled            14.43                -4.53                -1.86                 0.71            
+
+  phi* is the ANCHOR leg's amplitude, not a measurement: every leg was rescaled to a
+  common 10^14-10^15 integral, so only M*, alpha and beta carry information.  It is
+  marginalised over rather than fixed, because it is degenerate with the other three
+  (rho(M*, phi*) = -0.84) and fixing it would halve the M* interval artificially.
+  Omega_M is not quotable from these fits for the same reason.

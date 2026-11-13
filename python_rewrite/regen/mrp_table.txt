@@ -1,0 +1,20 @@
+
+MRP fits -- posterior median with 16/84 credible intervals
+
+  Sample                                                   log10(M*)           log10(phi*)                 alpha                  beta     chi2       Omega_M (total)
+  ---------------------------------------------------------------------------------------------------------------------------------------------
+  GAMA (Nessie)                                   11.907 +0.83/-0.63     -2.970 +0.25/-0.43     -0.397 +0.32/-0.38      0.332 +0.07/-0.04     19.68                    --  <- RAILED, interval set by the prior
+  GAMA + SDSS (Nessie)                            11.626 +0.67/-0.44     -2.233 +0.18/-0.19     -0.897 +0.15/-0.19      0.281 +0.04/-0.02    133.39                    --  <- RAILED, interval set by the prior
+  GAMA (Nessie) + SDSS (Tempel+14) + REFLEX II    11.687 +0.71/-0.48     -1.505 +0.24/-0.43     -1.277 +0.15/-0.21      0.291 +0.04/-0.02    524.76                    --  <- RAILED, interval set by the prior
+  GAMA + SDSS (Nessie) + REFLEX II                11.320 +0.38/-0.23     -1.799 +0.14/-0.14     -0.985 +0.10/-0.12      0.279 +0.02/-0.01    653.61                    --  <- RAILED, interval set by the prior
+
+  Driver+22 published, for comparison
+  GAMA5 (Driver+22)                               13.510 +1.37/-3.22     -3.190 +0.67/-0.61     -1.270 +0.19/-0.19      0.470 +0.08/-0.08        --                 0.147
+  GSR (Driver+22)                                 14.130 +0.43/-0.40     -3.960 +0.55/-0.82     -1.680 +0.21/-0.24      0.630 +0.25/-0.11        --                 0.205
+  Planck 2018                                                                                                                                    --                 0.315
+
+  Omega_M is the TOTAL, i.e. the fitted MRP integrated over all mass -- the
+  same quantity the figure inset plots.  39% of it lies below the fitted
+  range, so it is an extrapolation, and it scales as 10^delta under a
+  uniform mass-scale shift: the +/-0.15 dex systematic on the mass
+  calibration is x1.41, far larger than the quoted statistical error.

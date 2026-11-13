@@ -1,5 +1,95 @@
 # Driver+22's halo mass function: reproduction, and the same method on new data
 
+## READ FIRST — the data were lost and rebuilt (2026-11-09 to 11-13)
+
+The machine lost every untracked file. Git (code, figures, `chain_*.npz`,
+`.tex` tables) survived intact; everything git-ignored (`*.csv`, `*.fits`,
+`*.dat`, `*.parquet`, the venv, R's packages) did not. What happened to each:
+
+**Recovered byte-for-byte or verified identical** — Driver's inputs in
+`../data/` (`G3CFoFGroupv10.fits`, `GAMAGalsInGroups.csv`, `reflex.csv`,
+`reflex2.csv`, `tpigg.dat`, `elmo.csv`, `sdssdr10table1/2.fits`, plus
+`G3CGalv10.fits`, the official v10 galaxy table). Every Driver-only regression
+check below reproduces exactly: `--seed 1` 13.5822 / chi2 20.4684 / 501
+fevals; Tempel 4847 groups / 13.213; GSR 14.150 / -3.995 / -1.695 / 0.640.
+`hmfparams_gsr.csv` (optional) and the WAVES mocks are still missing.
+
+**Rebuilt, so NOT identical to what the sections below describe** — both Nessie
+catalogues, because both depend on unseeded randoms:
+
+| | before the loss | rebuilt | why it differs |
+|---|---|---|---|
+| Nessie GAMA DMU | 1833 groups (403/501/500/429) | **1807** (394/501/502/410) | new randoms (`~/Desktop/my_tools/randoms`, Farrow+15, `n_clone = 100`) |
+| Nessie SDSS | 4824 in the HMF selection | **4823** | `gen_random_redshifts` unseeded |
+| Nessie SDSS `estimated_mass` | cbrt(3) bug, nessie-py 1.0.x | **sqrt(3), fixed** (nessie-py 1.1.1) | +0.1590 dex, every group |
+
+Consequences, and the traps found on the way:
+
+* **`make_gama_dmu/config.py` `OVERFACTOR` must equal the randoms' clone
+  factor.** It was 400 (the old randoms); the new ones are 100 per galaxy.
+  `main.py` normalises the density by `len(randoms) / OVERFACTOR`, so the
+  mismatch made the density 4x too low, the linking lengths 4^(1/3) x too long,
+  and produced **3027** groups. Now 100. Check this whenever randoms change.
+* **The cbrt(3) correction is now decided from the data, never assumed.**
+  `nessie_sdss_hmf.sqrt3_factor` recomputes the pre-fix eq. 8 mass for 60
+  groups and returns 3^(1/3) (pre-fix parquet) or 1.0 (fixed); anything else
+  raises. `build_catalogues.hernquist_mass` does the same per group. Note
+  `python_rewrite`'s own venv is still nessie-py **1.0.11** (pre-fix), while
+  `nessie_tutorials` -- which writes the SDSS parquet -- is **1.1.1**. Hardcoding
+  either assumption double-corrects (`tempel_rms` was +0.159 dex high until
+  this was fixed). Verified: `tempel_rms` masses match an independent
+  recomputation to +0.00000 dex.
+* **Groups 205509 and 206312 no longer exist.** 205509's central galaxy is now
+  ungrouped; 206312 is a 36 km/s pair. The M/L cut drops 4 of 1807 (was 5 of
+  1833); `flagged_groups.csv` lists 36 new + 37 old (was 42 + 37). Three of
+  the four M/L outliers are the same physical groups (same IterCen galaxy).
+  "The 14.2 bin -- solved" is right about the method; its bin-by-bin numbers
+  are for the lost realisation.
+* **The anchored fit survives the rebuild.** Nessie GAMA + Tempel SDSS +
+  REFLEX (as published), Nelder-Mead: logM* **14.360** against 14.362 before.
+* VizieR's main CDS server 404s; `vizier.cfa.harvard.edu` works.
+  `nessie_tutorials` has no parquet engine -- run with `uv run --with pyarrow`.
+* R is installed but **its packages were lost** (`Rfits`, `celestial`,
+  `magicaxis`, `plotrix`, `data.table`); reinstall before diffing against R.
+
+**Figures and chains.** Every committed figure and `chain_*.npz` was made from
+the LOST catalogues. They are the record for the numbers in this file and in
+the tables, and are left untouched. The deliverable set has been re-run on the
+rebuilt catalogues into **`regen/`** by `regen/run_all.sh` (same FIGURES.md
+commands, `--outdir regen`); compare there before replacing anything. Numbers
+quoted elsewhere in this file are pre-loss unless marked otherwise.
+
+**Result: the rebuild does not change the science.** Like-for-like
+(`regen/reflex_as_published/`, Driver's REFLEX, as the committed chains used),
+the anchored GSR goes 13.983 / -1.618 / chi2 230.7 / Omega_M 0.199 ->
+13.874 / -1.573 / 228.3 / 0.189, and all-Nessie GSR 12.792 / -0.986 -> 12.522 /
+-0.881 -- all ~0.3 sigma. Details in `regen/README.md`.
+
+**But the committed combined chains (2026-09-01) predate the REFLEX correction
+(2026-09-07).** Re-run with the current default (corrected REFLEX), every
+native-units combined row rails, anchored GSR chi2 ~525. That is the
+calibration spread recorded in "Two errors that cancelled", not a regression --
+and it means the committed `mrp_table.tex` combined rows were never re-run on
+the corrected REFLEX. Outstanding item 0 is now unavoidable.
+
+**Why `regen/` looks so different from the committed figures:** they were
+drawn with `--reflex-as-published --lcdm driver` in effect (the defaults before
+2026-09-07). `regen/old_conventions/` re-runs the four figures with both flags
+and reproduces them. Choosing between the two is a decision about the paper,
+not a data question.
+
+**The paper (`mnras_template.pdf`) uses the SHAPE fits, not the native-units
+figures**: its Figs 5-7 are `hmf_shape_gama/_gama_sdss/_all` and Table 4 is
+`mrp_table.py --shape` (sec. 3.2.3: match each survey's 10^14-10^15 integral to
+Nessie SDSS). On the rebuilt DMU, group **205415** (the old 205509 structure,
+M/L excess 0.83) survives the 1.0 cut and carries ~1/3 of the 14.0 bin, which
+distorts the GAMA normalisation. `--ml-cut 0.8` removes it and restores Table 4
+(all-legs 12.70 / -1.03 / chi2 184.7 vs paper 12.60 / -1.02 / 185.9). See
+`regen/README.md`, "mlcut08".
+
+`combined_hmf.py` and `normalised_shape_fit.py` take `--outdir`; `mrp_table.py`
+takes `--chain-dir`. All default to `.`.
+
 ## Status
 
 **Step 1 (reproduce `gamahmf.r`) is done and verified bit-exactly against R.**
@@ -193,9 +283,10 @@ The GSR check is the strong one: it exercises the GAMA HMF, the SDSS HMF, the
 REFLEX conversions, the combined objective, the penalty and the optimiser
 simultaneously, and they all agree to ~0.02.
 
-**R is installed on this machine** (`/usr/local/bin/Rscript`) with `celestial`,
-`plotrix`, `magicaxis`, `Rfits` and `data.table`. If a number is ever in doubt,
-run Driver's script directly and diff. That is how the port was verified.
+**R is installed on this machine** (`/usr/local/bin/Rscript`). Its packages
+(`celestial`, `plotrix`, `magicaxis`, `Rfits`, `data.table`) were lost in
+2026-11 and must be reinstalled first. If a number is ever in doubt, run
+Driver's script directly and diff. That is how the port was verified.
 
 > **Never quote a GAMA-only fitted parameter from a single seed.** The MC seed
 > alone moves α by 0.1–0.2 and logM\* by more than a dex, so any single-seed
@@ -296,8 +387,12 @@ wrong.
 | `tpigg.dat` | `../data/` | 2PIGG, 4 columns. Plotted, never fitted. |
 | `elmo.csv` | `../data/` | Tempel+14 SDSS DR10 **curve**, 200 rows × 5 cols. Plotted, never fitted — this is *not* the SDSS HMF that gets fitted. |
 | `sdssdr10table1/2.fits` | `../data/` | Tempel+14 galaxies (584,449) and groups (88,662) |
-| `G3CFoFGroup.fits`, `G3CGal.fits` | `/Users/00115372/Desktop/my_tools/make_gama_dmu/` | New GAMA DMU, 4 regions, 238.11 deg² |
-| `sdss_groups.parquet`, `sdss_galaxies.parquet` | `/Users/00115372/Desktop/my_tools/nessie_tutorials/python/SDSS/` | Nessie SDSS |
+| `G3CGalv10.fits` | `../data/` | Official G3C v10 galaxy table (204,110 rows, all regions); identical to Data Central `gama_dr4.G3CGalv10`. Has membership, `Z`, `Rpetro` -- **no zmax**. |
+| `G3CFoFGroup.fits`, `G3CGal.fits` | `/Users/00115372/Desktop/my_tools/make_gama_dmu/` | New GAMA DMU, 4 regions, 238.11 deg². Rebuild: `uv run python main.py` there (~2 min); randoms from `~/Desktop/my_tools/randoms` |
+| `sdss_groups.parquet`, `sdss_galaxies.parquet` | `/Users/00115372/Desktop/my_tools/nessie_tutorials/python/SDSS/` | Nessie SDSS. Built by `sdss.ipynb` there (VizieR `J/A+A/602/A100`, b0 0.06, r0 23.8); ~2 min |
+
+`GAMAGalsInGroups.csv`'s `zmax_19p8` is not in any public GAMA table except
+DR2's partial `StellarMasses` (55% of members). Keep the file backed up.
 
 ### Generated (Driver's V1..V8 column order)
 
@@ -421,6 +516,8 @@ everything from `co_dist` / `co_vol`; keep it that way.
 
 Reference values for the new data: area 238.11 deg², `vlimit` = 2.756602e+07,
 `cosvariance` = 0.060440, 1833 groups (g09 403, g12 501, g15 500, g23 429).
+**Since the 2026-11 rebuild: 1807 groups (g09 394, g12 501, g15 502, g23
+410)**; area, `vlimit` and `cosvariance` unchanged.
 Old data: 1733 groups, **0 with NA zmax** — the `Nfof >= 5` cut guarantees every
 group has at least 5 members in the file, so the NA-weight question that an
 earlier version of this file raised does not arise.
@@ -1064,7 +1161,7 @@ default so nothing already validated moves.
 single ratio:
 
 ```
-M_hern = estimated_mass * 3**(1/3)          # sqrt(3) where Nessie codes cbrt(3)
+M_hern = estimated_mass * hern_factor       # 3**(1/3) for pre-fix Nessie, 1.0 for >= 1.1.1 (sqrt3_factor)
 M_nfw  = M_hern * kappa_NFW(M_nfw) / 4.582  # iterated; kappa is weakly mass dep.
 ```
 
@@ -2804,6 +2901,14 @@ Other facts:
 
 Ordered by value.
 
+-1. **Decide whether `regen/` replaces the committed deliverables** (see "READ
+   FIRST"). `regen/run_all.sh` re-runs the FIGURES.md set on the rebuilt
+   catalogues; `regen/mrp_table*.txt` sit beside the committed `mrp_table*.tex`
+   for comparison. If adopted, the numbers quoted in this file and in the paper
+   tables must be updated together -- chains are not bit-reproducible.
+   Also: back up `../data/` (it is git-ignored and was lost once), and commit
+   `make_gama_dmu/config.py` (`OVERFACTOR = 100`).
+
 0. **Model the leg-to-leg calibration offset properly.** The shape fit removes
    the MEAN disagreement but not its mass dependence -- the legs still differ by
    ~0.5 dex below logM 14 against ~0.22 inside 14-15, and one MRP through them
@@ -2854,12 +2959,12 @@ Ordered by value.
    `corner_combined_comp*`, `ppc_*`, `recovery_*`). They use different units and
    conventions; decide which are still meaningful.
 
-### Nessie bug to report upstream, still open
+### Nessie bugs
 
-`fof/src/group_properties.rs` codes `3f64.powf(1./3.)` — a **cube** root — where
-Tempel eq. 8 with `sigma_v = sqrt(3) sigma_1D` requires the **square** root.
-Masses are low by 0.159 dex. Independent of everything else here and worth
-reporting regardless of what this project concludes.
+~~`fof/src/group_properties.rs` codes `3f64.powf(1./3.)`~~ — **FIXED upstream**
+(fof PR #11, `9-hernquist-bug`; in nessie-py 1.1.1, not 1.0.11). Masses were low
+by 0.159 dex. Catalogues from either version are handled automatically; see
+"READ FIRST".
 
 **A second one, probable:** with 50 km/s input velocity errors
 `velocity_dispersion_gap_err` is 7.071 = sqrt(50), and the gapper subtracts

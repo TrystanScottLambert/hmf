@@ -55,6 +55,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
 
 import numpy as np
 import pandas as pd
@@ -617,7 +618,8 @@ def main():
                    choices=["tempel_eq8", "tempel_nfw", "tempel_rms", "robotham", "shift"],
                    help="mass estimator for the NESSIE SDSS leg only (--sdss "
                         "nessie).  'tempel_eq8' is the catalogue default, a "
-                        "Hernquist mass with Nessie's cbrt(3) bug. "
+                        "Hernquist mass (with the cbrt(3) bug if the parquet "
+                        "predates nessie-py 1.1.1). "
                         "'tempel_nfw' corrects both and puts it on the same "
                         "NFW scale as Tempel's published col15, which is what "
                         "Driver's SDSS leg uses.")
@@ -645,6 +647,9 @@ def main():
                         "do set max(allx) and hence the penalty range.  REFLEX "
                         "is deliberately left uncapped: it is the anchor, and "
                         "its high-mass points are the constraint, not noise.")
+    p.add_argument("--outdir", default=".",
+                   help="directory for the figure, corner plot and chain "
+                        "(default: current directory)")
     p.add_argument("--name", default=None,
                    help="basename for this deliverable: writes hmf_<name>.pdf, "
                         "corner_<name>.pdf and chain_<name>.npz.  Overrides the "
@@ -783,6 +788,9 @@ def main():
     if args.out is None:
         args.out = (f"hmf_{args.name}.pdf" if args.name
                     else f"hmf_combined_nessie{tag}.png")
+    os.makedirs(args.outdir, exist_ok=True)
+    od = lambda f: os.path.join(args.outdir, f)
+    args.out = od(args.out) if not os.path.isabs(args.out) else args.out
 
     omega_prior = args.omega_prior or args.myoption == "Omega"
     mrpx, mrpy, factor, phimrp = lcdm_curve()
@@ -1006,7 +1014,7 @@ def main():
         ]
         sets_t0 = [(chain, f"This work, MCMC posterior ({args.myoption})",
                     "#4878a8")]
-        np.savez(f"chain_{args.name}.npz" if args.name else f"chain{tag}.npz",
+        np.savez(od(f"chain_{args.name}.npz" if args.name else f"chain{tag}.npz"),
                  chain=chain, chain_driver=chain_d,
                  median=med, best=best, nm=nm, driver_published=pub_marker,
                  chi2_best=info["chi2_min"], chi2_driver=info_d["chi2_min"],
@@ -1016,8 +1024,8 @@ def main():
                  # third decimal
                  omega_draws=mc_plot["omegam"],
                  omega_draws_above=mc_plot["omegam2"])
-        cout = (f"corner_{args.name}.pdf" if args.name
-                else "corner" + (tag if tag else "_GSR") + ".png")
+        cout = od(f"corner_{args.name}.pdf" if args.name
+                  else "corner" + (tag if tag else "_GSR") + ".png")
         mh.corner_plot(sets_t0, cout, markers=markers,
                        title=f"{args.myoption}: MRP posterior, this work")
 

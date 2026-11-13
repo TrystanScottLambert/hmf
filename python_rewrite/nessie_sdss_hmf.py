@@ -78,6 +78,53 @@ KAPPA_NFW_VAL = np.array([
     2.7343, 2.7232, 2.7121, 2.7009, 2.6898, 2.6797,
     2.6691, 2.6594])
 KAPPA_NFW = 2.7551        # population median, kept for reference
+
+# Nessie's eq. 8 coded cbrt(3) where sqrt(3) is required, so its masses were low
+# by log10(3^(1/3)) = 0.159 dex.  Fixed upstream (fof PR #11, "9-hernquist-bug";
+# present in nessie-py 1.1.1, absent in 1.0.11).  WHICH VERSION WROTE A GIVEN
+# PARQUET IS NOT RECORDED, so the correction is decided from the data -- see
+# sqrt3_factor.  Applying it to an already-fixed catalogue double-counts it.
+CBRT3 = 3.0 ** (1.0 / 3.0)
+
+
+def sqrt3_factor_from_ratio(log_ratio, what="estimated_mass"):
+    """Map median log10(estimated_mass / old-cbrt(3)-formula mass) to the factor
+    that turns ``estimated_mass`` into the correct sqrt(3) Hernquist mass."""
+    r = float(np.nanmedian(log_ratio))
+    if abs(r) < 0.02:
+        return CBRT3                         # pre-fix Nessie: apply the correction
+    if abs(r - np.log10(CBRT3)) < 0.02:
+        return 1.0                           # fixed Nessie: already correct
+    raise RuntimeError(f"{what}: median log10 ratio to the cbrt(3) formula is "
+                       f"{r:+.4f}, neither 0 (pre-fix Nessie) nor "
+                       f"{np.log10(CBRT3):+.4f} (fixed Nessie)")
+
+
+def sqrt3_factor(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, n=60, seed=0):
+    """The cbrt(3) -> sqrt(3) factor for THIS parquet pair (CBRT3 or 1.0).
+
+    Recomputes the pre-fix eq. 8 mass (``vuvuzela.nessie_mass``, validated
+    against old Nessie to 0.0006 dex) for ``n`` random groups with N >= 5,
+    using the absolute magnitudes the notebook hands Nessie, and compares with
+    the stored ``estimated_mass``.
+    """
+    import vuvuzela as vz
+    grp = pd.read_parquet(group_file, columns=["group_id", "multiplicity",
+                                               "estimated_mass"])
+    grp = grp[(grp.multiplicity >= 5) & (grp.estimated_mass > 0)]
+    pick = np.random.default_rng(seed).choice(grp.group_id.values,
+                                              min(n, len(grp)), replace=False)
+    gal = pd.read_parquet(gal_file, columns=["group_id", "RAJ2000", "DEJ2000",
+                                             "zobs", "rmag"])
+    gal = gal[gal.group_id.isin(pick)]
+    dl = vz._comoving_distance(gal.zobs.values) * (1.0 + gal.zobs.values)
+    absmag = gal.rmag.values - 5.0 * np.log10(dl * 1e6 / 10.0)
+    gal = gal.assign(absmag=absmag)
+    em = grp.set_index("group_id").estimated_mass
+    lr = [np.log10(em[g] / vz.nessie_mass(s.RAJ2000.values, s.DEJ2000.values,
+                                          s.zobs.values, s.absmag.values))
+          for g, s in gal.groupby("group_id")]
+    return sqrt3_factor_from_ratio(lr, group_file)
 UNGROUPED = -1       # sentinel in *both* GroupID and group_id
 
 
@@ -141,8 +188,13 @@ def rms_dispersion_by_group(gal, zcol="z_t", gcol="group_id"):
     return sig.where(n >= 2)
 
 
-def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
+def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0, hern_factor=None):
     """The mass column, with the estimator made explicit.
+
+    ``hern_factor`` is the cbrt(3) -> sqrt(3) correction for the parquet the
+    masses came from (``sqrt3_factor``): CBRT3 for pre-fix Nessie, 1.0 for
+    nessie-py >= 1.1.1.  It is required by ``tempel_nfw`` / ``tempel_rms``.
+    ``tempel_eq8`` returns ``estimated_mass`` as stored either way.
 
     Nessie carries more than one estimator and they are **not** interchangeable:
 
@@ -161,10 +213,11 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
       published ``col15``, by applying two corrections established from
       Tempel+2014 itself (see CLAUDE.md, "Hernquist vs NFW"):
 
-      1. ``* 3 ** (1/3)``.  Eq. 8 takes the **3D** dispersion, and section 4
-         states sigma_v = sqrt(3) sigma_1D.  Nessie codes ``3f64.powf(1./3.)``
-         -- a cube root where a square root is required -- so its masses are
-         low by 0.159 dex.  This is a genuine bug in the Rust.
+      1. ``* hern_factor``.  Eq. 8 takes the **3D** dispersion, and section 4
+         states sigma_v = sqrt(3) sigma_1D.  Pre-fix Nessie coded
+         ``3f64.powf(1./3.)`` -- a cube root where a square root is required --
+         so its masses are low by 0.159 dex and hern_factor = 3^(1/3).  Fixed
+         in nessie-py 1.1.1, where hern_factor = 1.0 (``sqrt3_factor``).
       2. ``* KAPPA_NFW / 4.582``.  Nessie's 4.582 is the correct Hernquist
          coefficient (paper section 4.2, Rg = 6a = 4.582 sigma_sky), but the
          column Driver uses is ``mass_nfw``, not ``mass_her``.
@@ -177,13 +230,16 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
     so ``tempel_eq8`` is the faithful default; ``robotham`` is the consistent
     one.  Which is right depends on the question being asked.
     """
+    if mass_mode in ("tempel_nfw", "tempel_rms") and hern_factor is None:
+        raise ValueError(f"{mass_mode} needs hern_factor (see sqrt3_factor)")
     if mass_mode == "tempel_eq8":
         m = grp.estimated_mass.astype(float).values
     elif mass_mode == "shift":
         m = grp.estimated_mass.astype(float).values * 10.0 ** mass_shift
     elif mass_mode == "tempel_nfw":
-        # Correct Hernquist mass first: sqrt(3) where Nessie codes cbrt(3).
-        m_hern = grp.estimated_mass.astype(float).values * 3.0 ** (1.0 / 3.0)
+        # Correct Hernquist mass first: sqrt(3) where pre-fix Nessie coded
+        # cbrt(3).  hern_factor is CBRT3 or 1.0 depending on the parquet.
+        m_hern = grp.estimated_mass.astype(float).values * hern_factor
         # Then Hernquist -> NFW.  kappa depends on the mass, so iterate; the
         # dependence is weak enough that this converges in a few steps.
         m = m_hern * (KAPPA_NFW / KAPPA_HERNQUIST)
@@ -207,7 +263,7 @@ def group_masses(grp, mass_mode="tempel_eq8", mass_shift=0.0):
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio2 = np.where((sg > 0) & np.isfinite(sr), (sr / sg) ** 2, np.nan)
         m_hern = (grp.estimated_mass.astype(float).values
-                  * 3.0 ** (1.0 / 3.0) * ratio2)
+                  * hern_factor * ratio2)
         m = m_hern * (KAPPA_NFW / KAPPA_HERNQUIST)
         for _ in range(30):
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -262,7 +318,14 @@ def build_groups(group_file=NESSIE_GROUPS, gal_file=NESSIE_GALS, verbose=True,
                   f"{len(grp)} groups")
             print(f"    median log10(sigma_rms / sigma_gapper) = {np.median(r):+.4f}"
                   f"  -> {2 * np.median(r):+.4f} dex in mass")
-    grp["mass"] = group_masses(grp, mass_mode, mass_shift)
+    hern_factor = None
+    if mass_mode in ("tempel_nfw", "tempel_rms"):
+        hern_factor = sqrt3_factor(group_file, gal_file)
+        if verbose:
+            print(f"  cbrt(3)->sqrt(3) correction : x{hern_factor:.4f} "
+                  + ("(pre-fix Nessie parquet)" if hern_factor != 1.0
+                     else "(parquet already has the sqrt(3) fix)"))
+    grp["mass"] = group_masses(grp, mass_mode, mass_shift, hern_factor)
 
     # Only the scatter is swapped here: the debiasing (Driver's masscorr) is
     # used by the `robotham` mass mode alone -- Tempel eq. 8 carries no A
