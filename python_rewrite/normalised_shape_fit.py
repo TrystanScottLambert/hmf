@@ -263,6 +263,7 @@ def main():
             np.savez(od(f"chain_{args.name}.npz"), chain=chain,
                      median=np.median(chain, axis=0), best=best, nm=nmv,
                      chi2_best=info["chi2_min"], chi2_nm=val,
+                     n_points=len(allx),
                      murray_rescaled=murv,
                      scales=np.array([legs[l]["scale"] for l in order]),
                      legs=np.array(order, dtype=object), allow_pickle=True)

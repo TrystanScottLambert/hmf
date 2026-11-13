@@ -223,9 +223,16 @@ def shape_rows(verbose=True):
                         railed=railed(d["chain"]),
                         chi2=float(d["chi2_best"]) if "chi2_best" in d.files
                         else None,
+                        npts=(int(d["n_points"]) if "n_points" in d.files
+                              else None),
                         murray=(d["murray_rescaled"]
                                 if "murray_rescaled" in d.files else None)))
     return out
+
+
+def dof(r):
+    """nu = fitted bins - 4 MRP parameters (None if the chain predates n_points)."""
+    return r["npts"] - 4 if r.get("npts") else None
 
 
 SHAPE_NOTE = (
@@ -241,13 +248,16 @@ def shape_as_text(rs):
     print("\nShape-only MRP fits, y-rescaled to a common 10^14-10^15 integral")
     print("(posterior median with 16/84 credible intervals)\n")
     head = f"  {'Sample':<36s}" + "".join(f"{p:>21s}" for p in PLAIN)
-    print(head + f"{'chi2':>9s}")
-    print("  " + "-" * (len(head) + 9))
+    print(head + f"{'chi2':>9s}{'chi2_nu':>9s}{'dof':>5s}")
+    print("  " + "-" * (len(head) + 23))
     for r in rs:
         cells = "".join(
             f"{r['med'][i]:>9.2f} +{r['hi'][i]:.2f}/-{r['lo'][i]:.2f} "
             for i in range(4))
         c = f"{r['chi2']:>9.1f}" if r["chi2"] is not None else f"{'--':>9s}"
+        nu = dof(r)
+        c += (f"{r['chi2'] / nu:>9.2f}{nu:>5d}" if nu
+              else f"{'--':>9s}{'--':>5s}")
         flag = "  <- RAILED, interval set by the prior" if r["railed"] else ""
         print(f"  {r['label']:<36s}{cells}{c}{flag}")
     mur = next((r["murray"] for r in rs if r["murray"] is not None), None)
@@ -270,24 +280,30 @@ def shape_as_latex(rs):
           r"posterior medians with 16th/84th percentile credible intervals.  "
           r"Rows marked $\dagger$ have a posterior that rails against the "
           r"prior boundary at $\log_{10}(M_*/{\rm M}_\odot) = 11$, where the "
-          r"interval reflects the prior rather than the data.}")
-    print(r"\begin{tabular}{lccccc}")
+          r"interval reflects the prior rather than the data.  "
+          r"$\chi^2_\nu = \chi^2/\nu$ with $\nu = N_{\rm bins} - 4$ "
+          r"degrees of freedom.}")
+    print(r"\begin{tabular}{lcccccc}")
     print(r"\hline")
-    print("Sample & " + " & ".join(PARAMS) + r" & $\chi^2$ \\")
-    print(r" & & Mpc$^{-3}$ dex$^{-1}$ & & & \\")
+    print("Sample & " + " & ".join(PARAMS)
+          + r" & $\chi^2$ & $\chi^2_\nu$ ($\nu$) \\")
+    print(r" & & Mpc$^{-3}$ dex$^{-1}$ & & & & \\")
     print(r"\hline")
     for r in rs:
         cells = " & ".join(
             f"${r['med'][i]:.2f}^{{+{r['hi'][i]:.2f}}}_{{-{r['lo'][i]:.2f}}}$"
             for i in range(4))
         c = f"{r['chi2']:.1f}" if r["chi2"] is not None else "--"
+        nu = dof(r)
+        c += f" & {r['chi2'] / nu:.2f} ({nu})" if nu else " & --"
         print(f"{r['label']}{r'$\dagger$' if r['railed'] else ''} & {cells} "
               f"& {c} " + r"\\")
     mur = next((r["murray"] for r in rs if r["murray"] is not None), None)
     if mur is not None:
         print(r"\hline")
         print("Murray+21 $\\Lambda$CDM, rescaled & "
-              + " & ".join(f"${mur[i]:.2f}$" for i in range(4)) + r" & -- \\")
+              + " & ".join(f"${mur[i]:.2f}$" for i in range(4))
+              + r" & -- & -- \\")
     print(r"\hline")
     print(r"\end{tabular}")
     print(r"\label{tab:mrp_shape}")

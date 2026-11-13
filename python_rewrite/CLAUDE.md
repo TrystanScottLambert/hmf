@@ -87,6 +87,11 @@ distorts the GAMA normalisation. `--ml-cut 0.8` removes it and restores Table 4
 (all-legs 12.70 / -1.03 / chi2 184.7 vs paper 12.60 / -1.02 / 185.9). See
 `regen/README.md`, "mlcut08".
 
+Table 4 now also carries **chi2_nu = chi2 / (N_bins - 4)**: 1.42 (10), 3.03 (37),
+2.31 (80). `normalised_shape_fit.py` saves `n_points` in the chain and
+`mrp_table.py --shape` prints the column; the three existing `chain_shape_*.npz`
+had `n_points` (14/41/84, from the run logs) added without touching the samples.
+
 `combined_hmf.py` and `normalised_shape_fit.py` take `--outdir`; `mrp_table.py`
 takes `--chain-dir`. All default to `.`.
 
